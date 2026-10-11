@@ -454,6 +454,9 @@
   .send.stopping svg{animation:none}
   @keyframes rot{to{transform:rotate(360deg)}}
   .hint{max-width:760px;margin:7px auto 0;text-align:center;font-size:11.5px;color:var(--ink3)}
+  /* 权限说明平时收起来，鼠标停到「默认权限」上才展开（见 bindPermHint） */
+  .composer-wrap .hint{display:none}
+  .composer-wrap.show-hint .hint{display:block}
   .pool-hint{max-width:760px;margin:6px auto 0;text-align:center;font-size:11.5px;color:var(--ink3);opacity:.85}
 
   /* ============ 设置页 ============ */
@@ -955,6 +958,10 @@ let threshold = 60000;
 let autoPlan = true;
 let catalog = null;        // /api/models 的完整快照
 let view = 'chat';
+/* 对话区的滚动位置：切到设置/记忆页时对话区会被 display:none，浏览器顺手把
+   滚动位置也清零了，回到对话就只剩开头几条（看着像「对话跑到上面去」）。
+   所以隐藏前自己记一份，再显示时放回去，见 setThreadHidden。 */
+let threadScroll = 0, threadScrollRAF = 0;
 let workspaceRoot = '';    // 工作区根目录，用来把产出文件的绝对路径显示成相对路径
 // 权限默认「完全访问」，且记住上一次的选择：这里只是首屏占位，真正的值
 // 从服务端偏好 /api/prefs 读（换标签页、刷新、后台发起的任务都沿用同一份）
@@ -987,6 +994,9 @@ function el(tag, cls, text){
   return n;
 }
 function scrollBottom(){
+  // 有消息进来就以「贴底」为准：撤销可能还排队等着的那次滚动恢复
+  cancelAnimationFrame(threadScrollRAF);
+  threadScrollRAF = 0;
   const near = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 140;
   if(near || !busy) thread.scrollTop = thread.scrollHeight;
 }
@@ -1012,7 +1022,9 @@ function renderLanding(){
   else if(!on && inHero) mainEl.appendChild(composerWrapEl);
   // 落地页才显示大标题；发送后随输入框一起落到底部
   if(view === 'chat') hero.classList.toggle('hide', !on);
-  if(on && inHero) positionLanding();
+  // 判断要按「搬完之后」的位置算：用搬之前那个 inHero，会漏掉
+  // 「从设置页回来、输入框刚被搬回 hero」这一趟，落地页就停在旧的内边距上。
+  if(on && composerWrapEl.parentElement === hero) positionLanding();
 }
 /* 落地页整体上移：让输入框里的「+」按钮正好压在页面的竖直中线上。
    关键：必须先把上一次自己加的 paddingTop 归零再量。
@@ -1050,6 +1062,22 @@ function renderAttach(){
 }
 
 /* ================= 视图切换 ================= */
+/* 隐藏/显示对话区。隐藏用 display:none，浏览器会连滚动位置一起清掉，
+   所以隐藏前把位置记下来，显示后放回去——否则从设置页回来时，
+   长对话会跳回开头，看起来就像「对话跑到页面上方去了」。 */
+function setThreadHidden(on){
+  const wasHidden = thread.classList.contains('hide');
+  if(on === wasHidden) return;
+  if(on) threadScroll = thread.scrollTop;       // 隐藏前记住
+  thread.classList.toggle('hide', on);
+  if(!on){
+    thread.scrollTop = threadScroll;            // 立刻放回
+    // 个别浏览器要等这一帧布局落定才认这个赋值，下一帧再确认一次；
+    // 期间若来了新消息，scrollBottom 会先把它取消掉（贴底优先）。
+    cancelAnimationFrame(threadScrollRAF);
+    threadScrollRAF = requestAnimationFrame(()=>{ thread.scrollTop = threadScroll; });
+  }
+}
 function showView(v){
   view = v;
   const isSet = v === 'settings';
@@ -1061,7 +1089,7 @@ function showView(v){
   renderLanding();
   const land = isLanding();
   hero.classList.toggle('hide', isSet || isMem || !land);
-  thread.classList.toggle('hide', isSet || isMem || history.length === 0);
+  setThreadHidden(isSet || isMem || history.length === 0);
   if(!isSet && !isMem) rebuildRail();   // 离开对话视图时收起右侧回溯导航
   $('btnBack').classList.toggle('hide', !(isSet || isMem));
   $('btnMenu').classList.toggle('hide', isSet || isMem);
@@ -2836,6 +2864,25 @@ $('planBtn').onclick = ()=>{
     ? '已开启：复合任务会被拆解并分配给不同模型'
     : '已关闭：整段任务交给单个最合适的模型';
 };
+/* 那条权限说明（「越出工作区的路径与黑名单命令仍会被拦截…」）平时不占地方，
+   只有把鼠标停到「默认权限 / 完全访问权限」这颗按钮上时才展开；焦点落到按钮上
+   （键盘 Tab）也一样展开。离开时留一点宽限，方便把鼠标顺势移到说明本体上。 */
+(function bindPermHint(){
+  const wrap = composerWrapEl, btn = permBtn;
+  if(!wrap || !btn) return;
+  const hint = wrap.querySelector('.hint');
+  let t = null;
+  const show = ()=>{ clearTimeout(t); wrap.classList.add('show-hint'); };
+  const hide = ()=>{ clearTimeout(t); t = setTimeout(()=> wrap.classList.remove('show-hint'), 200); };
+  btn.addEventListener('mouseenter', show);
+  btn.addEventListener('mouseleave', hide);
+  btn.addEventListener('focus', show);
+  btn.addEventListener('blur', hide);
+  if(hint){
+    hint.addEventListener('mouseenter', show);
+    hint.addEventListener('mouseleave', hide);
+  }
+})();
 $('permBtn').onclick = async ()=>{
   allowWrite = !allowWrite;
   renderPerm();
