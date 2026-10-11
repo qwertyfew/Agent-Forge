@@ -652,10 +652,17 @@ class _Handler(BaseHTTPRequestHandler):
         # （/api/tasks/<id>/stream）靠它重放+续播，不再只有干巴巴的进度条
         bus = TaskBus()
         self.buses[task_id] = bus
+        # 发起连接可能中途掉线（浏览器刷新、curl 超时）；掉线后任务不能死，
+        # 事件继续进总线，前端可用 /api/tasks/<id>/stream 接管续播
+        direct_dead = [False]
 
         def emit(event: str, data: dict):
             bus.publish(event, json.dumps(data, ensure_ascii=False))
-            self._sse(event, data)
+            if not direct_dead[0]:
+                try:
+                    self._sse(event, data)
+                except OSError:
+                    direct_dead[0] = True  # 发起方掉线：之后只进总线
 
         runcontrol.set_current_task(task_id)   # 让 remember 工具知道记忆归属哪个任务
         stop_ev = runcontrol.register(task_id)
