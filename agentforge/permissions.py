@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import contextvars
 from pathlib import Path
 
 from .config import Config
+
+# 「当前这次工具调用是否放行工作区之外的路径」。完全访问权限的任务里为 True。
+# 用 ContextVar 而不是 Guard 的实例属性：Web 端是 ThreadingHTTPServer，多个任务
+# 各占一条线程却共用同一个 Guard，改实例属性会互相串味；ContextVar 按线程隔离，
+# 每个 _execute 只影响自己这一次工具调用。
+OUTSIDE_OK: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "af_outside_ok", default=False
+)
 
 
 class PermissionDenied(Exception):
@@ -10,7 +19,14 @@ class PermissionDenied(Exception):
 
 
 class Guard:
-    """工作区边界 + 命令黑名单 + 人工审批。"""
+    """工作区边界 + 命令黑名单 + 人工审批。
+
+    路径边界有两个放行开关，命中任意一个就不再拦：
+    - cfg.allow_outside：config.yaml [workspace] 里的静态开关，永远生效；
+    - OUTSIDE_OK：随每次工具调用注入，完全访问权限（auto_approve=True）的任务
+      里为 True，见 loop.Agent._execute。
+    命令黑名单不随权限放开——那是防误删误格盘的底线，两种模式都拦。
+    """
 
     def __init__(self, cfg: Config, approver=None):
         self.cfg = cfg
@@ -24,7 +40,7 @@ class Guard:
         if not p.is_absolute():
             p = self.cfg.workspace_root / p
         p = p.resolve()
-        if self.cfg.allow_outside:
+        if self.cfg.allow_outside or OUTSIDE_OK.get():
             return p
         root = self.cfg.workspace_root.resolve()
         try:

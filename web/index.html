@@ -793,7 +793,7 @@
         </div>
       </div>
       <div class="pool-hint hide" id="poolHint"></div>
-      <div class="hint">越出工作区的路径与黑名单命令仍会被拦截；在「完全访问权限」下写文件与命令直接执行，切到「默认权限」则需要人工确认</div>
+      <div class="hint">「默认权限」下写文件与执行命令需人工确认，越出工作区的路径会被拦截；「完全访问权限」下直接执行，工作区之外的文件夹也允许读写（黑名单命令始终拦截）</div>
     </div>
 
     <!-- ============ 设置视图 ============ -->
@@ -2949,8 +2949,8 @@ function renderPerm(){
   permTxt.textContent = allowWrite ? '完全访问权限' : '默认权限';
   permBtn.classList.toggle('warn', allowWrite);
   permBtn.title = allowWrite
-    ? '完全访问权限：写文件与执行命令直接放行。点击切回默认权限'
-    : '默认权限：写文件与执行命令需人工确认。点击切换为完全访问权限';
+    ? '完全访问权限：写文件与命令直接放行，工作区之外的文件夹也允许读写。点击切回默认权限'
+    : '默认权限：写文件与执行命令需人工确认，越出工作区的路径会被拦截。点击切换为完全访问权限';
   const g = $('genPerm');
   if(g) g.textContent = (allowWrite ? '完全访问权限' : '默认权限')
     + '（在对话输入框左侧切换，会记住并作为后续新任务的默认值）';

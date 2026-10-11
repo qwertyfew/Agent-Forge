@@ -9,7 +9,7 @@ from .artifact import classify_tool_write
 from .context import Compressor, measure
 from .llm import OllamaClient, parse_text_tool_calls
 from .memory import MemoryStore
-from .permissions import Guard, PermissionDenied
+from .permissions import OUTSIDE_OK, Guard, PermissionDenied
 from .pricing import cost_of, is_free
 from .providers import ClientHub
 from .router import Router
@@ -21,7 +21,7 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
 ## 工作环境
 - 操作系统：{os}
 - 工作区根目录：{root}
-- 相对路径一律相对工作区根目录解析；越出工作区的路径会被拒绝
+- 相对路径一律相对工作区根目录解析；{outside_rule}
 - 当前使用的模型：{model}（{model_desc}）
 
 ## 工作方式
@@ -42,6 +42,14 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
 - 被拒绝时不要反复重试同一操作，换一种方式或向用户说明。
 - 禁止删除工作区之外的任何东西。
 """
+
+# 系统提示里的路径规则一句话，按权限模式二选一（渲染见 _system()）。
+# 完全访问权限放开的是「读写」工作区之外；「禁止删除工作区之外的任何东西」
+# 是安全底线，写在模板末尾，两种模式都保留。
+OUTSIDE_RULE = {
+    True: "完全访问权限下也允许读写工作区之外的文件夹（用绝对路径）",
+    False: "越出工作区的路径会被拒绝",
+}
 
 # 长期记忆注入时的标题。写成指令而不是资料，模型才会真的照做
 MEMORY_HEADER = """## 长期记忆（来自以往任务，继续遵守）
@@ -94,6 +102,8 @@ class Agent:
         self.memory = MemoryStore(cfg.state() / "memory.md")
         # 权限模式的中文名，只用于系统提示里的一句话说明
         self.permission_label = "完全访问权限"
+        # 是否处于完全访问权限（决定路径边界放不放工作区之外，见 OUTSIDE_RULE）
+        self.full_access = True
 
     # ---------- 模型 ----------
     def set_model(self, key: str) -> None:
@@ -121,6 +131,7 @@ class Agent:
             model=spec.display,
             model_desc=spec.desc,
             permission=self.permission_label,
+            outside_rule=OUTSIDE_RULE[self.full_access],
         )
         if self.skills and self.skills.skills:
             base += "\n" + self.skills.catalog() + "\n"
@@ -211,8 +222,9 @@ class Agent:
         stop_check 是个无参可调用对象，返回 True 表示用户请求停止。每个检查点
         （每轮推理开始前、每次调工具前）问一次，命中就正常收尾退出。
 
-        auto_approve  True = 完全访问权限（写文件与命令直接放行）
-                      False/None = 走 Guard 的审批逻辑
+        auto_approve  True = 完全访问权限（写文件与命令直接放行，工作区之外的
+                      路径也允许读写）；False/None = 走 Guard 的审批逻辑，此时若
+                      Guard.auto_approve_all 已打开（CLI 的 --yes / /yes），效果等同 True
         每轮运行单独传入而不是改 Guard 的全局开关——同一个 Agent 实例可能被
         多个请求共用，改全局状态会串味。
 
@@ -224,7 +236,12 @@ class Agent:
         任务台账不受影响。
         """
         stopped = stop_check or (lambda: False)
-        self.permission_label = "完全访问权限" if auto_approve else "默认权限"
+        # 完全访问 = 本次调用显式传入 auto_approve=True，或 Guard 的全局自动批准
+        # 已打开（CLI 的 --yes / /yes 走这条路）。两条通道必须给同一个答案，
+        # 否则会出现「命令不用确认了、路径还是被拦」的分裂状态。
+        full = auto_approve is True or bool(getattr(self.guard, "auto_approve_all", False))
+        self.permission_label = "完全访问权限" if full else "默认权限"
+        self.full_access = full
 
         if auto_route and not self.model_pinned:
             picked = self.router.classify(user_text)
@@ -385,6 +402,10 @@ class Agent:
         ):
             return f"[已拒绝] 用户拒绝了 {name} 的执行。请不要重试，改换方案或向用户说明。"
 
+        # 完全访问权限的任务里，这一次工具调用允许读写工作区之外的路径。
+        # 判据与 run() 里的 full 保持一致：显式 auto_approve，或 Guard 全局自动批准。
+        # 只放开「读写」；命令黑名单不随之放开（见 Guard.check_command）。
+        token = OUTSIDE_OK.set(auto_approve is True or bool(getattr(self.guard, "auto_approve_all", False)))
         try:
             out = str(tool.run(**(args or {})))
         except PermissionDenied as e:
@@ -393,6 +414,8 @@ class Agent:
             return f"[错误] 工具 {name} 参数不对：{e}"
         except Exception as e:  # noqa: BLE001
             return f"[错误] 工具 {name} 执行异常：{type(e).__name__}: {e}"
+        finally:
+            OUTSIDE_OK.reset(token)
 
         # 记下这次调用改动的文件（任务台账据此展示「任务产出」，并在清空时可选删除）
         if file_log is not None:
