@@ -161,11 +161,36 @@
   .model-pop .mp-foot{margin-top:10px;padding-top:9px;border-top:1px solid var(--line);
     font-size:11px;color:var(--ink3);display:flex;align-items:center;gap:6px}
 
+  /* 悬停顶栏「上下文 N%」时弹出的用量卡片：总额 + 分段条 + 逐项占比 */
+  .ctx-pop{position:fixed;z-index:56;width:252px;padding:13px 14px;border-radius:14px;
+    border:1px solid var(--line2);background:var(--panel);box-shadow:var(--shadow);
+    display:none;font-size:12px;color:var(--ink2)}
+  .ctx-pop.on{display:block}
+  .ctx-pop .cp-head{display:flex;align-items:center;margin-bottom:8px}
+  .ctx-pop .cp-head b{font-size:12.5px;font-weight:500;color:var(--ink)}
+  .ctx-pop .cp-close{margin-left:auto;width:20px;height:20px;flex:none;border-radius:6px;
+    display:flex;align-items:center;justify-content:center;font-size:15px;line-height:1;color:var(--ink3)}
+  .ctx-pop .cp-close:hover{background:var(--hover);color:var(--ink)}
+  .ctx-pop .cp-sum{display:flex;align-items:baseline;gap:7px;margin-bottom:9px}
+  .ctx-pop .cp-pct{font-size:22px;font-weight:600;letter-spacing:-.4px;color:var(--ink);
+    font-variant-numeric:tabular-nums}
+  .ctx-pop .cp-used{font-size:11.5px;color:var(--ink3);font-variant-numeric:tabular-nums}
+  .ctx-pop .cp-bar{display:flex;height:8px;border-radius:99px;overflow:hidden;
+    background:var(--bar);margin-bottom:11px}
+  .ctx-pop .cp-bar i{display:block;height:100%}
+  .ctx-pop .cp-legend{display:flex;flex-direction:column;gap:7px}
+  .ctx-pop .cp-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink2)}
+  .ctx-pop .cp-dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .ctx-pop .cp-row .v{margin-left:auto;color:var(--ink);font-variant-numeric:tabular-nums}
+  .ctx-pop .cp-foot{margin-top:10px;padding-top:9px;border-top:1px solid var(--line);
+    font-size:11px;line-height:1.6;color:var(--ink3)}
+  .ctx-pop .cp-warn{color:#d9930a}
+
   .side-foot{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
   .ctx-line{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink3)}
   .ctx-bar{flex:1;height:4px;border-radius:99px;background:var(--bar);overflow:hidden}
   /* 顶栏里的圆环计量：占比越多颜色越红（绿 → 橙 → 红） */
-  .ctx-line.top{flex:none;gap:7px;margin-right:2px}
+  .ctx-line.top{flex:none;gap:7px;margin-right:2px;cursor:help}
   .ctx-line.top.hide{display:none}
   .ctx-ring{flex:none;transform:rotate(-90deg)}
   .ctx-ring circle{fill:none;stroke-width:4}
@@ -671,6 +696,7 @@
 
   <!-- 悬停「模型配置」时弹出的当前组合信息（原来常驻侧栏） -->
   <div class="model-pop" id="modelPop"></div>
+  <div class="ctx-pop" id="ctxPop"></div>
 
   <main>
     <div class="topbar">
@@ -684,7 +710,7 @@
       <span class="top-run hide" id="topRun"><span class="rd"></span><span id="topRunTxt">任务执行中</span></span>
       <div class="spacer"></div>
       <!-- 上下文占用与压缩是同一件事：长对话才用，统一放在任务顶栏 -->
-      <div class="ctx-line top hide" id="ctxLine" title="当前对话占用模型上下文窗口的比例（按 token 估算）">
+      <div class="ctx-line top hide" id="ctxLine" aria-label="当前对话占用模型上下文窗口的比例（按 token 估算）；悬停看明细">
         <svg class="ctx-ring" width="16" height="16" viewBox="0 0 36 36" aria-hidden="true">
           <circle class="bg" cx="18" cy="18" r="15.9" pathLength="100"/>
           <circle class="fg" id="ctxFill" cx="18" cy="18" r="15.9" pathLength="100"/>
@@ -2524,6 +2550,8 @@ let sentMsgs = [];     // 本次请求发出去的完整消息列表（含本轮
 let statsSeen = 0;     // 本次请求已经收到几个 stats（只有第一个能用来校准）
 let windowWarned = false;   // 窗口跨度警告每次打开页面只提示一次
 let poolWarned = false;     // 「勾选的模型本机都跑不起来」也只提示一次
+/* 最近一次算出的上下文数值，由 updateContextMeter 写入，供悬停卡片取用 */
+let ctxLast = { tokens:0, conv:0, limit:0, pct:0, alt:[], win:0, who:'', span:null, measured:false };
 /* 「勾选且本机能跑」的模型：本地模型可能还没装（available=false），
    那种不该算进窗口与占比——任务实际不会跑在它上面。
    一个能跑的都没有时保持原样，提示交给后端。 */
@@ -2577,6 +2605,9 @@ function ctxBudget(){
     measured: head ? head.measured : false,
     sysTok: (catalog && catalog.prompt_system) ? (catalog.prompt_system[head ? head.key : ''] || 0) : 0,
     toolTok: (catalog && catalog.prompt_tools) || 0,
+    // 核心工具 schema 与名字索引是两笔账，后端的 prompt_tools 是两者之和。
+    // 明细要分开列「工具」与「技能」，所以这里单独取核心那一份，避免重复计数。
+    toolCoreTok: (catalog && catalog.prompt_tools_core) || 0,
     toolAll: (catalog && catalog.prompt_tools_all) || 0,
     indexTok: (catalog && catalog.prompt_index) || 0,
     span,
@@ -2593,31 +2624,11 @@ function updateContextMeter(size, th){
   const pct = Math.max(0, Math.min(100, Math.round(tokens / limit * 1000) / 10));
   // 短对话不足 1% 时保留一位小数，否则恒显示 0% 看不出变化
   $('ctxPct').textContent = `上下文 ${pct < 10 ? pct.toFixed(1) : Math.round(pct)}%`;
-  const breakdown = b.toolTok
-    ? `（系统提示 ${b.sysTok.toLocaleString()} + 工具定义 ${b.toolTok.toLocaleString()}`
-      + (b.toolAll > b.toolTok ? `，仅下发常用工具；全量下发要 ${b.toolAll.toLocaleString()}` : '')
-      + `）`
-    : '';
-  const srcTag = b.measured ? '实测' : '估算';
-  const altLine = b.others.length
-    ? '\n  ' + b.others.map(o => `${o.who}（窗口 ${o.win.toLocaleString()}）约 `
-        + `${Math.min(100, tokens / o.win * 100).toFixed(1)}%`).join('；')
-    : '';
-  const spanLine = (b.span && b.span.ratio >= 4)
-    ? `\n⚠ 池内窗口跨度 ${b.span.ratio.toFixed(1)} 倍（${b.span.hi.who} ${b.span.hi.win.toLocaleString()}`
-      + ` ↔ ${b.span.lo.who} ${b.span.lo.win.toLocaleString()}）：多模型接力时整条链路按最小窗口封顶，`
-      + `大窗口模型用不上，建议同池模型的上下文窗口不要差一个数量级`
-    : '';
-  const line = $('ctxLine');
-  if(line) line.title =
-    `合计 ≈ ${tokens.toLocaleString()} tokens\n`
-    + `  固定开销 ${b.overhead.toLocaleString()}${breakdown}（${srcTag}，每轮都要发，不属于对话）\n`
-    + `  对话历史 ${conv.toLocaleString()}\n`
-    + (b.win
-        ? `占用窗口 ${b.win.toLocaleString()} tokens（取启用模型里最小的：${b.who}）` + altLine
-        : `未取到模型窗口，按压缩阈值 ≈${Math.round(limit).toLocaleString()} 粗估`)
-    + spanLine
-    + `\n超过 80% 建议点「压缩上下文」`;
+  // 明细改由悬停卡片承载（renderCtxPop）。这里只留存本次的数值供它取用，
+  // 顺带在卡片正开着的时候就地刷新，免得数字停在旧的一帧上。
+  ctxLast = { tokens, conv, limit, pct, alt: b.others, win: b.win, who: b.who,
+              span: b.span, measured: b.measured };
+  if($('ctxPop').classList.contains('on')) renderCtxPop();
   const fill = $('ctxFill');
   if(fill){
     fill.style.strokeDasharray = `${Math.max(pct, pct > 0 ? 3 : 0)} 100`;
@@ -2625,6 +2636,132 @@ function updateContextMeter(size, th){
     fill.classList.toggle('hot', pct > 80);
   }
 }
+
+/* ================= 上下文用量卡片（悬停顶栏占比时出现） =================
+   版式：标题 + 大号占比 +「已使用 / 窗口」+ 分段条 + 逐项占比。
+   逐项之和恒等于总占比：固定开销三项先按后端估算值定比例，再整体摊成
+   「实测 or 估算」的固定开销总额——模型侧实测出的开销与三项估算之和并不完全
+   相等，各写各的就会出现「各项加起来对不上标题里那个百分比」。
+   本产品没有 MCP/连接器，所以没有那一行：只列真实存在的四类来源。 */
+const CTX_COLOR = { sys:'#3b7dd8', tool:'#2f9e5f', conv:'#e0892a', skill:'#cf5a9b', other:'#8b8b8b' };
+function fmtTokK(n){
+  n = Math.max(0, Math.round(n || 0));
+  if(n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if(n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return String(n);
+}
+function fmtPct1(p){
+  p = Math.max(0, p || 0);
+  return (p > 0 && p < 0.05) ? '<0.1%' : p.toFixed(1) + '%';
+}
+function ctxRows(){
+  const b = ctxBudget();
+  const est = b.sysTok + b.toolCoreTok + b.indexTok;    // 固定开销的三项估算
+  if(!est){                                             // 目录还没回来：只分得开两笔账
+    return [['固定开销', b.overhead, CTX_COLOR.other],
+            ['对话消息', ctxLast.conv, CTX_COLOR.conv]];
+  }
+  const k = b.overhead / est;
+  return [['系统提示词', b.sysTok * k, CTX_COLOR.sys],
+          ['工具及子智能体', b.toolCoreTok * k, CTX_COLOR.tool],
+          ['对话消息', ctxLast.conv, CTX_COLOR.conv],
+          ['技能', b.indexTok * k, CTX_COLOR.skill]];
+}
+function renderCtxPop(){
+  const box = $('ctxPop');
+  if(!box) return;
+  const b = ctxBudget();
+  const L = ctxLast.limit || 1;
+  const pct = ctxLast.pct || 0;
+  const rows = ctxRows();
+  box.textContent = '';
+
+  const head = el('div','cp-head');
+  head.appendChild(el('b','','上下文用量'));
+  const close = el('button','cp-close','×');
+  close.setAttribute('aria-label','收起');
+  close.onclick = ev => { ev.stopPropagation(); ctxKeepOpen = true; hideCtxPop(); };
+  head.appendChild(close);
+  box.appendChild(head);
+
+  const sum = el('div','cp-sum');
+  sum.appendChild(el('span','cp-pct', (pct < 10 ? pct.toFixed(1) : String(Math.round(pct))) + '%'));
+  sum.appendChild(el('span','cp-used', `已使用 ${fmtTokK(ctxLast.tokens)} / ${fmtTokK(L)}`));
+  box.appendChild(sum);
+
+  // 分段条：每段宽度 = 该项占「整个窗口」的比例，余下留白是还没用到的部分
+  const bar = el('div','cp-bar');
+  for(const [, tok, color] of rows){
+    const seg = document.createElement('i');
+    seg.style.width = Math.min(100, tok / L * 100) + '%';
+    seg.style.background = color;
+    bar.appendChild(seg);
+  }
+  box.appendChild(bar);
+
+  const legend = el('div','cp-legend');
+  for(const [name, tok, color] of rows){
+    const row = el('div','cp-row');
+    const dot = el('span','cp-dot');
+    dot.style.background = color;
+    row.appendChild(dot);
+    row.appendChild(el('span','', name));
+    row.appendChild(el('span','v', fmtPct1(tok / L * 100)));
+    legend.appendChild(row);
+  }
+  box.appendChild(legend);
+
+  const foot = el('div','cp-foot');
+  foot.appendChild(el('div','',
+    `合计 ≈ ${ctxLast.tokens.toLocaleString()} tokens · 固定开销 ${b.overhead.toLocaleString()}`
+    + `（${b.measured ? '实测' : '估算'}，每轮都要发，不属于对话）`));
+  if(b.toolTok && b.toolAll > b.toolTok)
+    foot.appendChild(el('div','',
+      `工具按需下发：常规轮次 ${b.toolTok.toLocaleString()}，全量要 ${b.toolAll.toLocaleString()}`));
+  if(ctxLast.win){
+    foot.appendChild(el('div','',
+      `占用窗口 ${ctxLast.win.toLocaleString()}（取启用模型里最小的：${ctxLast.who}）`));
+    for(const o of (ctxLast.alt || []))
+      foot.appendChild(el('div','',
+        `${o.who}（窗口 ${o.win.toLocaleString()}）约 `
+        + `${Math.min(100, ctxLast.tokens / o.win * 100).toFixed(1)}%`));
+  }else{
+    foot.appendChild(el('div','', `未取到模型窗口，按压缩阈值 ≈${Math.round(L).toLocaleString()} 粗估`));
+  }
+  if(ctxLast.span && ctxLast.span.ratio >= 4)
+    foot.appendChild(el('div','cp-warn',
+      `⚠ 池内窗口跨度 ${ctxLast.span.ratio.toFixed(1)} 倍（${ctxLast.span.hi.who} ↔ ${ctxLast.span.lo.who}）：`
+      + `多模型接力按最小窗口封顶，大窗口模型用不上`));
+  if(pct > 80)
+    foot.appendChild(el('div','cp-warn','已超过 80%，建议点「压缩上下文」'));
+  box.appendChild(foot);
+}
+let ctxTimer = null, ctxKeepOpen = false;
+function showCtxPop(){
+  const line = $('ctxLine');
+  if(!line || line.classList.contains('hide')) return;
+  renderCtxPop();
+  const pop = $('ctxPop');
+  pop.classList.add('on');
+  const r = line.getBoundingClientRect();
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  let top = r.bottom + 10;                       // 计量条在页面顶部，一律往下弹
+  if(top + h > innerHeight - 8) top = Math.max(8, r.top - h - 10);
+  pop.style.left = Math.max(10, Math.min(r.right - w, innerWidth - w - 10)) + 'px';
+  pop.style.top = top + 'px';
+}
+function hideCtxPop(){ $('ctxPop').classList.remove('on'); }
+(function bindCtxPop(){
+  const line = $('ctxLine'), pop = $('ctxPop');
+  // 点过叉就先别再弹，等鼠标离开计量条再恢复，否则指针还停在原地会立刻重新冒出
+  line.addEventListener('mouseenter', ()=>{ if(ctxKeepOpen) return; clearTimeout(ctxTimer); showCtxPop(); });
+  line.addEventListener('mouseleave', ()=>{ ctxKeepOpen = false; ctxTimer = setTimeout(hideCtxPop, 180); });
+  pop.addEventListener('mouseenter', ()=> clearTimeout(ctxTimer));
+  pop.addEventListener('mouseleave', ()=>{ ctxTimer = setTimeout(hideCtxPop, 180); });
+  line.addEventListener('click', ()=>{ ctxKeepOpen = false; showCtxPop(); });
+  window.addEventListener('scroll', hideCtxPop, true);
+  window.addEventListener('resize', hideCtxPop);
+})();
 
 /* ================= 压缩 ================= */
 $('btnCompact').onclick = async ()=>{
