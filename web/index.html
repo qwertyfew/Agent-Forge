@@ -164,10 +164,15 @@
   .side-foot{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
   .ctx-line{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink3)}
   .ctx-bar{flex:1;height:4px;border-radius:99px;background:var(--bar);overflow:hidden}
-  /* 顶栏里的计量条：固定窄宽度，跟「压缩上下文」并排 */
+  /* 顶栏里的圆环计量：占比越多颜色越红（绿 → 橙 → 红） */
   .ctx-line.top{flex:none;gap:7px;margin-right:2px}
-  .ctx-line.top .ctx-bar{width:46px;flex:none}
   .ctx-line.top.hide{display:none}
+  .ctx-ring{flex:none;transform:rotate(-90deg)}
+  .ctx-ring circle{fill:none;stroke-width:4}
+  .ctx-ring .bg{stroke:var(--line)}
+  .ctx-ring .fg{stroke:var(--ok);stroke-linecap:round;transition:stroke-dasharray .35s ease,stroke .35s ease}
+  .ctx-ring .fg.mid{stroke:#d9930a}
+  .ctx-ring .fg.hot{stroke:var(--err)}
   .ctx-bar i{display:block;height:100%;width:0;border-radius:99px;background:var(--ink2);transition:width .3s ease}
   .ctx-bar i.hot{background:var(--err)}
   .foot-btn{display:flex;align-items:center;gap:8px;padding:6px 8px;margin:0 -8px;border-radius:9px;
@@ -679,9 +684,12 @@
       <span class="top-run hide" id="topRun"><span class="rd"></span><span id="topRunTxt">任务执行中</span></span>
       <div class="spacer"></div>
       <!-- 上下文占用与压缩是同一件事：长对话才用，统一放在任务顶栏 -->
-      <div class="ctx-line top hide" id="ctxLine" title="当前对话已占用模型上下文窗口的比例（按字符数估算）">
+      <div class="ctx-line top hide" id="ctxLine" title="当前对话占用模型上下文窗口的比例（按 token 估算）">
+        <svg class="ctx-ring" width="16" height="16" viewBox="0 0 36 36" aria-hidden="true">
+          <circle class="bg" cx="18" cy="18" r="15.9" pathLength="100"/>
+          <circle class="fg" id="ctxFill" cx="18" cy="18" r="15.9" pathLength="100"/>
+        </svg>
         <span id="ctxPct">上下文 0%</span>
-        <div class="ctx-bar"><i id="ctxFill"></i></div>
       </div>
       <button class="top-act hide" id="btnCompact" title="把较早的对话重写成摘要，节省上下文">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6M4 10h10M4 18h4M20 4l-4 4m0-4l4 4M14 20l6-6"/></svg>
@@ -965,8 +973,11 @@ const mainEl = document.querySelector('main');
 let attachments = [];          // 已上传附件：[{name, path}]
 function isLanding(){
   // 落地态只看「有没有开始对话」：输入中仍停在页面中部，
-  // 点发送（busy / 有历史）后才落到底部
-  return view === 'chat' && !busy && !taskActive() && history.length === 0;
+  // 点发送（busy / 有历史）后才落到底部。
+  // 打开过某个任务（openTaskId 非空）时绝不视为落地页——否则刷新后
+  // 第一次点任务，history 还没拉回来，输入栏会被误搬进 hero 再被隐藏。
+  return view === 'chat' && !busy && !taskActive() && history.length === 0
+    && !openTaskId;
 }
 function renderLanding(){
   const on = isLanding();
@@ -1920,7 +1931,7 @@ function renderHistory(hist){
     t.state.textContent = '未执行';
     t.state.className = 'tool-state deny';
   }
-  updateContextMeter(ctxSize(history), threshold);
+  updateContextMeter(history, threshold);
   updateCompactBtn();
 }
 
@@ -1930,21 +1941,25 @@ function openTask(id){
   fetch('/api/tasks?id=' + encodeURIComponent(id)).then(r=>r.json()).then(d=>{
     const task = d.task;
     if(!task) return;
+    if(task.status === 'running'){
+      // 关键：看正在跑的任务时不能沿用上一次的对话历史，
+      // 否则接着发消息会把旧上下文一起塞给新任务（之前就是这么串档的）。
+      history = [];
+      viewingHistory = false;
+    }else{
+      viewingHistory = true;
+      history = task.history || [];   // 先把历史挂上再切视图，否则会误判成落地页
+    }
     showView('chat');
     enterChat(task.title || '历史任务');
     log.innerHTML = '';
     hideShimmer();
     closeThinking();
     if(task.status === 'running'){
-      // 关键：看正在跑的任务时不能沿用上一次的对话历史，
-      // 否则接着发消息会把旧上下文一起塞给新任务（之前就是这么串档的）。
-      history = [];
-      viewingHistory = false;
       updateContextMeter(0, threshold);
       showShimmer();
       return;
     }
-    viewingHistory = true;
     // 不再弹方框介绍条，只在顶栏标题后补一个轻量标记说明这是回看
     if($('topTitle')) $('topTitle').textContent += ' · 历史回看';
     if((task.history || []).length){
@@ -2430,18 +2445,51 @@ function ctxSize(hist){
   for(const m of hist||[]) if(typeof m.content === 'string') n += m.content.length;
   return n;
 }
+/* ================= 上下文占用 =================
+   真正按「token / 模型上下文窗口」来算：
+   - token 估算：中日韩字符 ≈ 1 token/字，拉丁字符 ≈ 4 字符/token，另加
+     系统提示与工具定义的固定开销；
+   - 分母取当前启用模型里最小的上下文窗口（短板模型先撑爆），
+     拿不到窗口信息时退回压缩阈值（字符数）做粗估。 */
+function estTokens(s){
+  let cjk = 0;
+  for(const ch of s){
+    const c = ch.codePointAt(0);
+    if((c >= 0x3400 && c <= 0x9fff) || (c >= 0xf900 && c <= 0xfaff) || (c >= 0x3040 && c <= 0x30ff)) cjk++;
+  }
+  return cjk * 1.05 + (s.length - cjk) / 3.8;
+}
+function ctxTokens(list){
+  let t = 1200;   // 系统提示 + 工具 schema 的粗略开销
+  for(const m of list || []) if(typeof m.content === 'string') t += estTokens(m.content);
+  return Math.round(t);
+}
+function minCtxWindow(){
+  if(!catalog || !Array.isArray(catalog.models)) return 0;
+  const wins = catalog.models.filter(m => m.enabled)
+    .map(m => (m.spec && m.spec.num_ctx) || m.context_window || 0)
+    .filter(Boolean);
+  return wins.length ? Math.min(...wins) : 0;
+}
 function updateContextMeter(size, th){
   th = th || threshold;
-  if(!th) return;
-  const used = size || 0;
-  const pct = Math.min(100, Math.round(used / th * 1000) / 10);
+  // 兼容两种入参：传 history 数组按 token 精算；传数字按字符粗估
+  const tokens = Array.isArray(size) ? ctxTokens(size) : Math.round((size || 0) * 0.8);
+  const win = minCtxWindow();
+  const limit = win || (th ? th * 0.8 : 60000);
+  const pct = Math.max(0, Math.min(100, Math.round(tokens / limit * 1000) / 10));
   // 短对话不足 1% 时保留一位小数，否则恒显示 0% 看不出变化
   $('ctxPct').textContent = `上下文 ${pct < 10 ? pct.toFixed(1) : Math.round(pct)}%`;
   const line = $('ctxLine');
-  if(line) line.title = `当前对话约 ${used.toLocaleString()} 字符 / 上限 ${th.toLocaleString()} 字符（按字符数估算，超过上限建议压缩）`;
+  if(line) line.title = `估算 ${tokens.toLocaleString()} tokens / 窗口 `
+    + (win ? `${win.toLocaleString()} tokens（取启用模型中最小的窗口）` : `≈${Math.round(limit).toLocaleString()}（未取到窗口，按压缩阈值粗估）`)
+    + `；超过 80% 建议点「压缩上下文」`;
   const fill = $('ctxFill');
-  fill.style.width = Math.max(pct, pct > 0 ? 2 : 0) + '%';
-  fill.classList.toggle('hot', pct > 80);
+  if(fill){
+    fill.style.strokeDasharray = `${Math.max(pct, pct > 0 ? 3 : 0)} 100`;
+    fill.classList.toggle('mid', pct >= 50 && pct <= 80);
+    fill.classList.toggle('hot', pct > 80);
+  }
 }
 
 /* ================= 压缩 ================= */
@@ -2460,7 +2508,7 @@ $('btnCompact').onclick = async ()=>{
     else{
       history = r.messages || [];
       addPillNote(r.note || '压缩完成');
-      updateContextMeter(r.size, r.threshold);
+      updateContextMeter(history, r.threshold);
     }
   }catch(e){ showView('chat'); addError('压缩失败：'+e); }
   btn.disabled = false;
@@ -2592,6 +2640,8 @@ async function send(){
   showView('chat');
   enterChat(text);
   addUser(text);
+  // 本地先临时拼上这条提问刷一次计量（不动 history 本身，后端会自己 append）
+  updateContextMeter(history.concat([{ role: 'user', content: text }]), threshold);
   await streamChat(text, history);
 }
 
@@ -2703,7 +2753,7 @@ async function streamChat(text, hist){
         refreshMemCount();
       }
     }
-    else if(ev === 'history'){ history = data.messages; attachMsgFoot(); updateCompactBtn(); }
+    else if(ev === 'history'){ history = data.messages; attachMsgFoot(); updateCompactBtn(); updateContextMeter(history, threshold); }
     else if(ev === 'error'){ addError(data.message); }
     else if(ev === 'stopped'){
       attachMsgFoot();               // 已生成的部分回复也带上工具条
@@ -2720,7 +2770,7 @@ async function streamChat(text, hist){
     else if(ev === 'done'){
       attachMsgFoot();
       hideShimmer(); closeThinking();
-      updateContextMeter(ctxSize(history), threshold);
+      updateContextMeter(history, threshold);
       setBusy(false);
       if(liveTask && liveTask.status === 'running') endLiveTask('done');
       loadTasks();
