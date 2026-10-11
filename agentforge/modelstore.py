@@ -147,6 +147,13 @@ class ModelStore:
         self.just_probed: list[str] = []
         self._catalog: list[ModelEntry] = []
         self.load()
+        # 配置文件里显式声明的本地模型名（构造时的快照）。
+        # catalog() 会把自动发现的模型也注册进 cfg.models，此后就再也分不清
+        # 「配置声明的」和「自动发现的」了——而窗口来源与 auto_ctx 标记都要靠这个区分，
+        # 所以在这里先记一份。
+        self.declared: set[str] = {
+            s.name for s in cfg.models.values() if getattr(s, "kind", "") != "paid"
+        }
 
     # ------------------------------------------------------------ 持久化
     def _load_local(self) -> None:
@@ -232,7 +239,9 @@ class ModelStore:
         for key, spec in list(self.cfg.models.items()):
             if spec.kind == "paid":
                 continue
-            entries.append(self._local_entry(key, spec.name, spec.desc, spec, discovered=False))
+            entries.append(self._local_entry(
+                key, spec.name, spec.desc, spec,
+                discovered=(spec.name not in self.declared)))
 
         # 2) Ollama 里发现但 config.yaml 没声明的模型：自动成为可用模型。
         #    首次见到时自动探一次原生窗口，省得用户自己去查模型文档再手填 num_ctx。
@@ -303,7 +312,10 @@ class ModelStore:
             context_window=win,
             discovered=discovered,
             native_ctx=int(auto.get("native_ctx") or 0),
-            auto_ctx=bool(discovered and not getattr(spec, "num_ctx", 0) and auto),
+            # 「自动配置」= 这个窗口确实来自自动探测，且模型不是配置文件里声明的。
+            # 判据不看 spec.num_ctx——自动发现的模型被注册进 cfg 之后那个值就有了，
+            # 会把这个标记错误地翻成 False。
+            auto_ctx=bool(auto) and name not in self.declared,
         )
 
     def _paid_entry(self, item: dict) -> ModelEntry:
