@@ -56,6 +56,38 @@ def measure(messages: list[dict]) -> int:
     return total
 
 
+def _est_tokens(text: str) -> float:
+    """粗估 token 数：中日韩 ≈ 1 token/字，其余 ≈ 3.8 字符/token。"""
+    cjk = 0
+    for ch in text:
+        c = ord(ch)
+        if (0x3400 <= c <= 0x9FFF) or (0xF900 <= c <= 0xFAFF) or (0x3040 <= c <= 0x30FF):
+            cjk += 1
+    return cjk * 1.05 + (len(text) - cjk) / 3.8
+
+
+def measure_tokens(messages: list[dict]) -> int:
+    """按 token 估算同一批消息，口径与前端「上下文占比」一致。
+
+    字符数阈值对中文会严重失真（6 万汉字 ≈ 6.3 万 token），中文长对话下
+    可能在字符数还没到阈值时就已经把模型窗口撑爆、被 Ollama 从头部静默截断
+    （最先被丢的正是系统提示）。所以再拿 token 数跟窗口比一次。
+    """
+    total = 0.0
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, str):
+            total += _est_tokens(c)
+        elif isinstance(c, list):
+            for block in c:
+                if isinstance(block, dict):
+                    total += _est_tokens(str(block.get("text") or ""))
+        tc = m.get("tool_calls")
+        if tc:
+            total += _est_tokens(str(tc))
+    return int(total)
+
+
 def _turn_starts(messages: list[dict]) -> list[int]:
     """每条 user 消息的位置，即安全的轮次边界。"""
     return [i for i, m in enumerate(messages) if m.get("role") == "user"]
@@ -114,8 +146,29 @@ class Compressor:
         """压缩后至少保留多少字符的近期对话。"""
         return int(getattr(self.cfg, "compact_keep_chars", 20_000))
 
-    def need(self, messages: list[dict]) -> bool:
-        return measure(messages) > self.threshold
+    def window(self, model_key: str) -> int:
+        """模型的上下文窗口（token）。取不到就返回 0，退回纯字符阈值判断。"""
+        try:
+            spec = self.cfg.model(model_key)
+        except Exception:  # noqa: BLE001  模型被删了就按没有上限处理
+            return 0
+        return int(getattr(spec, "num_ctx", 0) or 0)
+
+    def over_budget(self, messages: list[dict], model_key: str = "") -> bool:
+        """该不该压缩：字符阈值到了，或者 token 数已经逼近模型窗口。
+
+        token 这一路留 60% 的余量——剩下的 40% 要装系统提示、工具定义和
+        模型这一轮生成的输出。不留余量的话请求会因为超窗口被静默截头。
+        """
+        if measure(messages) > self.threshold:
+            return True
+        win = self.window(model_key)
+        if win:
+            return measure_tokens(messages) > win * 0.6
+        return False
+
+    def need(self, messages: list[dict], model_key: str = "") -> bool:
+        return self.over_budget(messages, model_key)
 
     def _summarize(self, chunk: list[dict], model_key: str) -> str:
         lines = []
@@ -169,18 +222,17 @@ class Compressor:
     ) -> CompactResult:
         """压缩历史。返回新列表与说明，原列表不被修改。"""
         before = measure(messages)
-        if not force and before <= self.threshold:
+        if not force and not self.over_budget(messages, model_key):
             return CompactResult(messages, "none", before, before)
 
         # L1 先来一遍，便宜且立刻见效
         keep_recent = int(getattr(self.cfg, "keep_recent_tool_results", 4))
         step1 = truncate_tool_results(messages, keep_recent)
         after1 = measure(step1)
-        if after1 <= self.threshold and not force:
+        if not force and not self.over_budget(step1, model_key):
             return CompactResult(
                 step1, "truncate", before, after1,
-                f"已压缩 {len(messages) - len(step1) if False else ''}".strip()
-                or f"上下文 {before} → {after1} 字（截断较早工具返回）",
+                f"上下文 {before} → {after1} 字（截断较早工具返回）",
             )
 
         if not allow_summarize:

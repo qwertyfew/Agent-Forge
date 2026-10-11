@@ -988,14 +988,18 @@ function renderLanding(){
   if(view === 'chat') hero.classList.toggle('hide', !on);
   if(on && inHero) positionLanding();
 }
-/* 落地页整体上移：让输入框里的「+」按钮正好压在页面的竖直中线上 */
+/* 落地页整体上移：让输入框里的「+」按钮正好压在页面的竖直中线上。
+   关键：必须先把上一次自己加的 paddingTop 归零再量。
+   否则「读自己刚写的位置 → 再写回去」会变成 x ← K - x 的两点迭代，
+   每敲一个键就上下翻一次（表现就是输入时对话框在中/下之间反复跳）。 */
 function positionLanding(){
   if(composerWrapEl.parentElement !== hero) return;
   hero.style.justifyContent = 'flex-start';
   const plus = $('btnAttach');
+  hero.style.paddingTop = '0px';          // 用自然布局测量，结果与上一次调用无关
   const hr = hero.getBoundingClientRect();
   const pr = plus.getBoundingClientRect();
-  const off = pr.top - hr.top;   // 加号在 hero 内的偏移（hero 顶部 padding 此时为 0）
+  const off = pr.top - hr.top;   // 自然布局下加号相对 hero 顶部的偏移
   // 目标：加号中心 = 视口竖直中线（hr.top 是 hero 在视口里的起点，别漏了顶栏高度）
   hero.style.paddingTop = Math.max(6,
     window.innerHeight / 2 - hr.top - off - pr.height / 2) + 'px';
@@ -1203,6 +1207,8 @@ function refreshModels(){
     renderProviders();
     updatePoolHint();
     updateApplyButtons();
+    // 窗口与固定开销都来自这份目录，拿到后重算一次占比（首屏时它可能还没回来）
+    updateContextMeter(history.length ? history : 0, threshold);
   }).catch(()=>{});
 }
 
@@ -2447,10 +2453,12 @@ function ctxSize(hist){
 }
 /* ================= 上下文占用 =================
    真正按「token / 模型上下文窗口」来算：
-   - token 估算：中日韩字符 ≈ 1 token/字，拉丁字符 ≈ 4 字符/token，另加
-     系统提示与工具定义的固定开销；
-   - 分母取当前启用模型里最小的上下文窗口（短板模型先撑爆），
-     拿不到窗口信息时退回压缩阈值（字符数）做粗估。 */
+   - 对话历史：按字符类型估 token（中日韩 ≈ 1 token/字，拉丁 ≈ 3.8 字符/token）；
+   - 固定开销：系统提示 + 全部工具 schema。这部分每轮请求都会发给模型，
+     但它不在对话历史里，前端看不见。以前这里写死 1200，实测约 5300，
+     等于把占比少报了三四倍——所以现在改由后端 /api/models 的
+     prompt_tokens 直接给出真实估算值；
+   - 分母取当前启用模型里最小的上下文窗口（短板模型先撑爆）。 */
 function estTokens(s){
   let cjk = 0;
   for(const ch of s){
@@ -2460,10 +2468,19 @@ function estTokens(s){
   return cjk * 1.05 + (s.length - cjk) / 3.8;
 }
 function ctxTokens(list){
-  let t = 1200;   // 系统提示 + 工具 schema 的粗略开销
+  let t = 0;
   for(const m of list || []) if(typeof m.content === 'string') t += estTokens(m.content);
   return Math.round(t);
 }
+const PROMPT_FALLBACK = 1200;   // 后端拿不到时的兜底值
+/* 实测校准：Ollama 在每轮返回里给出真实的 prompt_eval_count，用它减去我们
+   估的对话部分，就得到该模型真实的固定开销。跑过一次之后，占比显示的就是
+   跟模型侧对齐的数字，而不是估算值。按模型分开存（窗口不同、提示词也不同）。 */
+let promptReal = {};
+try{ promptReal = JSON.parse(localStorage.getItem('afPromptReal') || '{}') || {}; }catch(e){ promptReal = {}; }
+let sentTokens = 0;    // 本次请求发出去时，对话部分的估算 token
+let sentMsgs = [];     // 本次请求发出去的完整消息列表（含本轮提问）
+let statsSeen = 0;     // 本次请求已经收到几个 stats（只有第一个能用来校准）
 function minCtxWindow(){
   if(!catalog || !Array.isArray(catalog.models)) return 0;
   const wins = catalog.models.filter(m => m.enabled)
@@ -2471,19 +2488,70 @@ function minCtxWindow(){
     .filter(Boolean);
   return wins.length ? Math.min(...wins) : 0;
 }
+/* 分母与固定开销：取「启用模型里窗口最小的那个」，并用它自己的开销配对，
+   这样分子分母描述的是同一个模型，占比才有意义。
+   其余启用模型的占比在提示里一并给出（默认模型窗口更大，占比往往只有一半）。 */
+function ctxBudget(){
+  const pt = (catalog && catalog.prompt_tokens) || null;
+  const on = (catalog && Array.isArray(catalog.models)) ? catalog.models.filter(m=>m.enabled) : [];
+  // 固定开销几乎与模型无关（系统提示只差模型名，工具定义完全一样），所以某个
+  // 模型还没实测过的，可以借用别的模型实测出来的值，比后端的估算更贴实际。
+  const reals = Object.values(promptReal);
+  const shared = reals.length ? Math.max(...reals) : 0;
+  const list = [];
+  for(const m of on){
+    const w = (m.spec && m.spec.num_ctx) || m.context_window || 0;
+    if(!w) continue;
+    const key = m.key || m.id;
+    const real = promptReal[key] || promptReal[m.name || key];
+    list.push({
+      key,
+      who: m.name || key,
+      win: w,
+      overhead: real || shared || (pt ? (pt[key] || 0) : 0) || PROMPT_FALLBACK,
+      measured: !!(real || shared),
+    });
+  }
+  list.sort((a,b)=>a.win-b.win);
+  const head = list[0] || null;
+  return {
+    win: head ? head.win : minCtxWindow(),
+    who: head ? head.who : '',
+    key: head ? head.key : '',
+    overhead: head ? head.overhead : PROMPT_FALLBACK,
+    measured: head ? head.measured : false,
+    sysTok: (catalog && catalog.prompt_system) ? (catalog.prompt_system[head ? head.key : ''] || 0) : 0,
+    toolTok: (catalog && catalog.prompt_tools) || 0,
+    others: list.slice(1, 4),
+  };
+}
 function updateContextMeter(size, th){
   th = th || threshold;
   // 兼容两种入参：传 history 数组按 token 精算；传数字按字符粗估
-  const tokens = Array.isArray(size) ? ctxTokens(size) : Math.round((size || 0) * 0.8);
-  const win = minCtxWindow();
-  const limit = win || (th ? th * 0.8 : 60000);
+  const conv = Array.isArray(size) ? ctxTokens(size) : Math.round((size || 0) * 0.8);
+  const b = ctxBudget();
+  const tokens = conv + b.overhead;
+  const limit = b.win || (th ? th * 0.8 : 60000);
   const pct = Math.max(0, Math.min(100, Math.round(tokens / limit * 1000) / 10));
   // 短对话不足 1% 时保留一位小数，否则恒显示 0% 看不出变化
   $('ctxPct').textContent = `上下文 ${pct < 10 ? pct.toFixed(1) : Math.round(pct)}%`;
+  const breakdown = b.toolTok
+    ? `（系统提示 ${b.sysTok.toLocaleString()} + 工具定义 ${b.toolTok.toLocaleString()}）`
+    : '';
+  const srcTag = b.measured ? '实测' : '估算';
+  const altLine = b.others.length
+    ? '\n  ' + b.others.map(o => `${o.who}（窗口 ${o.win.toLocaleString()}）约 `
+        + `${Math.min(100, tokens / o.win * 100).toFixed(1)}%`).join('；')
+    : '';
   const line = $('ctxLine');
-  if(line) line.title = `估算 ${tokens.toLocaleString()} tokens / 窗口 `
-    + (win ? `${win.toLocaleString()} tokens（取启用模型中最小的窗口）` : `≈${Math.round(limit).toLocaleString()}（未取到窗口，按压缩阈值粗估）`)
-    + `；超过 80% 建议点「压缩上下文」`;
+  if(line) line.title =
+    `合计 ≈ ${tokens.toLocaleString()} tokens\n`
+    + `  固定开销 ${b.overhead.toLocaleString()}${breakdown}（${srcTag}，每轮都要发，不属于对话）\n`
+    + `  对话历史 ${conv.toLocaleString()}\n`
+    + (b.win
+        ? `占用窗口 ${b.win.toLocaleString()} tokens（取启用模型里最小的：${b.who}）` + altLine
+        : `未取到模型窗口，按压缩阈值 ≈${Math.round(limit).toLocaleString()} 粗估`)
+    + `\n超过 80% 建议点「压缩上下文」`;
   const fill = $('ctxFill');
   if(fill){
     fill.style.strokeDasharray = `${Math.max(pct, pct > 0 ? 3 : 0)} 100`;
@@ -2648,6 +2716,10 @@ async function send(){
 /* 发送消息与「重新回答」共用的流式管线：text 是这次要执行的话，
    hist 是它之前已有的上下文（新用户消息由服务端追加，不在这里放） */
 async function streamChat(text, hist){
+  // 记下这次发出去的对话部分有多大、并把计数器归零，供第一条 stats 校准固定开销
+  sentMsgs = (hist || []).concat([{ role: 'user', content: text }]);
+  sentTokens = ctxTokens(sentMsgs);
+  statsSeen = 0;
   const handle = (ev, data)=>{
     if(ev === 'combo'){
       updatePoolHint();
@@ -2717,6 +2789,19 @@ async function streamChat(text, hist){
       lastStats.tokens += data.tokens || 0;
       lastStats.cost += (data.cost || 0);
       if(data.model) lastStats.model = data.model;
+      // 本次请求的第一条 stats = 首轮调用，它的 prompt_tokens 就是
+      // 「系统提示 + 工具定义 + 对话」的真实总量；减掉对话部分即真实固定开销。
+      // 存下来，下次这个模型的占比直接用实测值（比任何估算都准）。
+      if(statsSeen === 0 && Number(data.prompt_tokens) > 0){
+        const fixed = Number(data.prompt_tokens) - sentTokens;
+        const k = data.model_key || data.model;
+        if(k && fixed > 200 && fixed < 2_000_000){
+          promptReal[k] = Math.round(fixed);
+          try{ localStorage.setItem('afPromptReal', JSON.stringify(promptReal)); }catch(e){}
+        }
+      }
+      statsSeen++;
+      updateContextMeter(sentMsgs.length ? sentMsgs : history, threshold);
     }
     else if(ev === 'usage'){
       if(liveTask){

@@ -28,6 +28,20 @@ INDEX = HERE / "web" / "index.html"
 _DISCOVER_TTL = 5.0
 
 
+def est_tokens(text: str) -> float:
+    """粗估 token 数：中日韩 ≈ 1 token/字，其余 ≈ 3.8 字符/token。
+
+    与前端 web/index.html 的 estTokens 保持同一口径，两边的百分比才对得上。
+    只是量级估算（真实 tokenizer 依赖具体模型），用来给用户一个占比参考足够。
+    """
+    cjk = 0
+    for ch in text:
+        c = ord(ch)
+        if (0x3400 <= c <= 0x9FFF) or (0xF900 <= c <= 0xFAFF) or (0x3040 <= c <= 0x30FF):
+            cjk += 1
+    return cjk * 1.05 + (len(text) - cjk) / 3.8
+
+
 class _Handler(BaseHTTPRequestHandler):
     cli: "CLI" = None  # type: ignore[assignment]
     cfg: Config = None  # type: ignore[assignment]
@@ -345,7 +359,37 @@ class _Handler(BaseHTTPRequestHandler):
     def _models_snapshot(self) -> dict:
         snap = self.store.snapshot(self._discover())
         snap["pool"] = self.store.summary_line()
+        snap.update(self._prompt_budget())
         return snap
+
+    def _prompt_budget(self) -> dict:
+        """每轮请求的固定开销（系统提示 + 全部工具 schema）token 估算。
+
+        这部分每轮都会随请求发出去，但它不属于对话历史，前端从 history 里
+        看不到；前端以前写死 1200，而实测 35 个工具 + 系统提示约 5300 tokens，
+        导致「上下文占比」被少报三四倍。所以由后端算好直接给前端。
+
+        用浅拷贝而不是直接改 self.cli.agent：agent 是全局单例，正在跑的任务
+        也用它，改它的 model_key 会把并发请求带偏。
+        """
+        import copy as _copy
+
+        tool_json = json.dumps(self.cli.registry.schemas(), ensure_ascii=False)
+        tool_tok = int(round(est_tokens(tool_json)))
+        proto = _copy.copy(self.cli.agent)
+        system: dict[str, int] = {}
+        for key in self.cfg.models:
+            proto.model_key = key
+            proto.system_prompt = ""
+            try:
+                system[key] = int(round(est_tokens(proto._system())))
+            except Exception:  # noqa: BLE001  某个模型配置坏了不该拖垮整个列表
+                system[key] = 0
+        return {
+            "prompt_tools": tool_tok,
+            "prompt_system": system,
+            "prompt_tokens": {k: v + tool_tok for k, v in system.items()},
+        }
 
     def _handle_models(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -575,7 +619,8 @@ class _Handler(BaseHTTPRequestHandler):
                     )
                     self._sse("stats", {
                         "tps": ev.get("tps", 0), "tokens": ct, "prompt_tokens": pt,
-                        "model": ev.get("model", ""), "free": bool(ev.get("free", True)),
+                        "model": ev.get("model", ""), "model_key": ev.get("model_key", ""),
+                        "free": bool(ev.get("free", True)),
                         "cost": round(call_cost, 6),
                     })
                     # 累计用量：前端「已消耗预估费用」直接读这里，不用自己算

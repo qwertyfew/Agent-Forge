@@ -14,7 +14,9 @@ models:
   # 无法与最终答案分离（实测如此）。
   gemma:
     name: gemma4:12b
-    num_ctx: 32768
+    # 32K → 128K：实测显存几乎不变（32K 时 1.4GB / 128K 时 1.2GB，全程 100% GPU），
+    # 但可用上下文翻了 4 倍。注意系统提示 + 34 个工具定义每轮固定吃掉约 5.3K tokens。
+    num_ctx: 131072
     temperature: 1.0
     top_p: 0.95
     think: true
@@ -23,7 +25,9 @@ models:
   # 上一代 qwen3:4b 的全面升级版（LCB 55.8 vs 旧款约 35，262K 上下文，约 2.5GB）
   smart-mini:
     name: qwen3.5:4b
-    num_ctx: 16384
+    # 16K → 64K。这张卡上 128K 会占到约 7.4GB（和 gemma 同时常驻容易吃紧），
+    # 64K 是本机能长期稳住的档位，也够日常任务用。
+    num_ctx: 65536
     temperature: 0.6
     top_p: 0.9
     think: true
