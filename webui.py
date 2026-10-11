@@ -662,7 +662,14 @@ class _Handler(BaseHTTPRequestHandler):
                     err_msg = ev["message"]
                     self._sse("error", {"message": ev["message"]})
                 elif kind == "combo":
-                    self._sse("combo", {"combo": ev["combo"], "models": ev["models"]})
+                    # 这里要显式带上附注字段：前端靠 window_notice 提示窗口跨度、
+                    # 靠 pool_notice 提示"已自动改用可用模型"。原先只转发 combo+models，
+                    # 两条提示都收不到。
+                    payload = {"combo": ev["combo"], "models": ev["models"]}
+                    for extra in ("window_notice", "pool_notice"):
+                        if ev.get(extra):
+                            payload[extra] = ev[extra]
+                    self._sse("combo", payload)
                 elif kind == "plan":
                     step_total = len(ev["subtasks"])
                     self._sse("plan", {"subtasks": ev["subtasks"], "summary": ev["summary"]})

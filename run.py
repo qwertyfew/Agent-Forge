@@ -73,19 +73,27 @@ def main() -> int:
         print(f"错误：未知模型 key '{args.model}'，可选本地模型 {keys}")
         return 2
 
-    if not cli.client.ping():
-        print(f"错误：连不上 Ollama（{cfg.ollama_host}）。请先启动 Ollama。")
-        return 1
+    # 连不上 Ollama 不再直接退出：在线模型不依赖它，本地模型一个没装时
+    # 照样能靠在线模型开工。只提示一句，让路由去挑能跑的。
+    ollama_up = cli.client.ping()
+    if ollama_up:
+        available = cli.client.list_models()
+        # 只检查本地模型：付费模型本来就不在本机 Ollama 里，算进来会一直误报
+        # 「尚未下载」，把真正缺的本地模型淹掉。
+        missing = [s.name for s in cfg.models.values()
+                   if s.kind != "paid" and s.name not in available]
+        if missing:
+            print("提示：以下本地模型尚未安装，用到时会报错：")
+            for m in missing:
+                print(f"  ollama pull {m}")
+    else:
+        print(f"提示：连不上 Ollama（{cfg.ollama_host}），本地模型暂不可用，将只用在线模型。")
 
-    available = cli.client.list_models()
-    # 只检查本地模型：付费模型本来就不在本机 Ollama 里，算进来会一直误报
-    # 「尚未下载」，把真正缺的本地模型淹掉。
-    missing = [s.name for s in cfg.models.values()
-               if s.kind != "paid" and s.name not in available]
-    if missing:
-        print("警告：以下模型尚未下载，用到时会报错：")
-        for m in missing:
-            print(f"  ollama pull {m}")
+    # 默认模型跑不起来时会自动改用能跑的（见 Router.fallback_key），先说清楚
+    picked = args.model or cli.router.fallback_key()
+    spec = cfg.models.get(picked)
+    if spec is not None and picked != cfg.routing_default and not args.model:
+        print(f"默认模型本机不可用，本次改用：{spec.display}")
 
     if args.task:
         cli.run_once(args.task)

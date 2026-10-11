@@ -94,6 +94,8 @@ class ModelEntry:
     discovered: bool = False   # 从 Ollama 自动发现、未在 config.yaml 里显式声明
     native_ctx: int = 0        # 模型原生的上下文长度（探测所得，仅自动发现的模型有）
     auto_ctx: bool = False     # 当前窗口是不是自动探测决定的（而不是 config 里写的）
+    # 这台机器上现在能不能真的跑起来（本地=Ollama 装了没，付费=密钥填了没）
+    available: bool = True
 
     @property
     def display(self) -> str:
@@ -119,6 +121,7 @@ class ModelEntry:
             "discovered": self.discovered,
             "native_ctx": self.native_ctx,
             "auto_ctx": self.auto_ctx,
+            "available": self.available,
             "spec": {
                 "num_ctx": getattr(spec, "num_ctx", 0),
                 "temperature": getattr(spec, "temperature", 0),
@@ -281,12 +284,41 @@ class ModelStore:
         if enabled is None:
             self.enabled_ids = [e.id for e in entries]
 
-        # 注册进 cfg，供 Agent / Router 使用
+        # 注册进 cfg，供 Agent / Router 使用；顺手标一下「这台机器能不能跑」。
+        # have 为 None 表示这次没问过 Ollama（例如 save() 触发的内部 catalog），
+        # 那就无从判断，保持 available=True——宁可让调用真报错，也不要凭空禁用。
+        have = None if discovered is None else set(discovered)
         for e in entries:
-            self.cfg.register_model(self._spec_of(e))
+            spec = self.cfg.register_model(self._spec_of(e))
+            if e.kind == "local":
+                e.available = True if have is None else (e.name in have)
+            else:
+                e.available = bool(getattr(spec, "api_key", ""))
+            spec.available = e.available
 
         self._catalog = entries
         return entries
+
+    def usable(self) -> list[ModelEntry]:
+        """启用且这台机器上真能跑的模型——任务池的来源。
+
+        比 enabled() 多一层「能不能跑」：勾了但本机没装的本地模型不该进池子，
+        否则任务会在第一步就撞上 Ollama 的 model not found。
+        """
+        return [e for e in self._catalog if e.enabled and e.available]
+
+    def fallback_pool(self) -> list[ModelEntry]:
+        """任务池：优先用「勾选且能跑」的那组。
+
+        如果那组是空的（典型场景：换台电脑 clone 下来，一个本地模型都还没 pull，
+        enabled 里只剩勾着的本地模型），就退回到**所有能跑的模型**——付费模型
+        只要密钥在就立刻能用，这正是「拿到仓库就能开工」该有的行为。
+        """
+        pool = self.usable()
+        if pool:
+            return pool
+        spare = [e for e in self._catalog if e.available]
+        return sorted(spare, key=lambda e: -e.total)
 
     def _local_entry(self, key: str, name: str, desc: str, spec: ModelSpec | None,
                      discovered: bool) -> ModelEntry:
@@ -378,6 +410,17 @@ class ModelStore:
     def find(self, entry_id: str) -> ModelEntry | None:
         for e in self._catalog:
             if e.id == entry_id:
+                return e
+        return None
+
+    def find_any(self, token: str) -> ModelEntry | None:
+        """按 id 或 key 找目录项，**只查当前目录、不重新发现模型**。
+
+        任务执行期间不能调 catalog()：那会带上 discovered=None 重建一遍，
+        把「本机装没装」的判断抹掉（见 catalog 里的 have）。所以这里查缓存。
+        """
+        for e in self._catalog:
+            if e.id == token or e.key == token:
                 return e
         return None
 
@@ -488,11 +531,16 @@ class ModelStore:
     def snapshot(self, discovered: list[str] | None = None, probe=None) -> dict:
         entries = self.catalog(discovered, probe=probe)
         pool = [e for e in entries if e.enabled]
+        usable = self.usable()
         best_local = self.best_local_combo()
+        # 勾选的模型里有多少是本机真能跑的？前端靠它提示「勾了但没装」
         return {
             "dimensions": [{"key": k, "label": v} for k, v in DIMENSIONS],
             "models": [e.as_dict(self.cfg.models.get(e.key)) for e in entries],
             "enabled": [e.id for e in pool],
+            "usable": [e.id for e in usable],
+            "unavailable": [e.id for e in pool if not e.available],
+            "fallback": not usable,   # 勾选的全不可用时，任务池会退回到所有能跑的模型
             "combo": self.combo_info(pool),
             "best": [e.id for e in self.best_combo()],
             "best_local": [e.id for e in best_local],

@@ -153,23 +153,33 @@ def run_task(
     stopped = stop_check or (lambda: False)
     pinned_key = (model_key or "").strip()
     pinned: dict | None = None
-    pool = store.enabled()
+    # 任务池 = 「勾选且本机能跑」。一个都没有时退回到所有能跑的模型——
+    # 换台电脑 clone 下来、本地模型一个都还没 pull 时，正是靠这条路
+    # 直接用上在线模型开工。（不能调 catalog()，那会抹掉可用性判断）
+    pool = store.fallback_pool()
+    pool_fallback = not store.usable() and bool(pool)
     if pinned_key and pinned_key != "auto":
-        pinned = next(
-            (e for e in ({ "id": x.id, "key": x.key, "name": x.display,
-                           "scores": x.scores, "total": x.total } for x in pool)
-             if e["id"] == pinned_key or e["key"] == pinned_key),
-            None,
-        )
-        if pinned is None:
-            yield {"type": "error", "message": f"指定的模型不可用：{pinned_key}"}
+        found = store.find_any(pinned_key)
+        if found is None:
+            yield {"type": "error", "message": f"指定的模型不存在：{pinned_key}"}
             return
+        if not found.available:
+            tip = (f"先 `ollama pull {found.name}`" if found.kind == "local"
+                   else "检查它的 API Key / base_url 配置")
+            yield {
+                "type": "error",
+                "message": f"指定的模型本机跑不起来：{found.display}（{tip}）",
+            }
+            return
+        pinned = {"id": found.id, "key": found.key, "name": found.display,
+                  "scores": found.scores, "total": found.total}
 
-    entries = _entries_of(pool if pinned else store.enabled())
+    entries = _entries_of(pool)
     if not entries:
         yield {
             "type": "error",
-            "message": "当前没有启用任何模型。请打开左下角设置 → 可用模型管理，勾选至少一个模型。",
+            "message": "当前没有可用的模型：本机没装本地模型，且还没有配置可用的在线模型。"
+                       "请先 `ollama pull` 一个本地模型，或到设置 → 可用模型管理里添加在线模型。",
         }
         return
 
@@ -179,6 +189,12 @@ def run_task(
         "models": [{"id": e["id"], "name": e["name"]} for e in entries],
         # 窗口跨度警告：接力式多模型协作会被最小窗口封顶
         "window_notice": window_notice(entries),
+        # 勾选的模型本机全跑不起来、已自动改用别的模型时告诉用户一句
+        "pool_notice": (
+            "勾选的模型在这台机器上都跑不起来（本地模型可能还没安装），"
+            f"本次已改用可用模型：{'、'.join(e['name'] for e in entries[:3])}"
+            if pool_fallback else ""
+        ),
     }
 
     plan: list[Subtask] = []

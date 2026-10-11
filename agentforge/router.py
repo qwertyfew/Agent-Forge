@@ -22,9 +22,33 @@ class Router:
         lang_score = sum(1 for rx in self.lang_rx if rx.search(text))
         return code_score, lang_score
 
+    def _usable(self, key: str) -> bool:
+        """这个 key 对应的模型在这台机器上现在能不能真的跑起来。"""
+        spec = self.cfg.models.get(key)
+        return bool(spec and getattr(spec, "available", True))
+
+    def fallback_key(self) -> str:
+        """默认模型跑不起来时挑一个能顶上的。
+
+        优先在线模型：换台电脑 clone 下来时本地模型往往还没 pull，
+        而在线模型只要密钥在就立刻能用——这正是「拿到仓库就能开工」的路径。
+        都不行就退回原默认值，让上层把真实错误报出来。
+        """
+        if self._usable(self.cfg.routing_default):
+            return self.cfg.routing_default
+        for k, s in self.cfg.models.items():
+            if getattr(s, "available", True) and getattr(s, "kind", "") == "paid":
+                return k
+        for k, s in self.cfg.models.items():
+            if getattr(s, "available", True):
+                return k
+        return self.cfg.routing_default
+
     def _pick(self, key: str) -> str:
-        """语义 key（general/code）若未在 config 中声明，则退回默认模型。"""
-        return key if key in self.cfg.models else self.cfg.routing_default
+        """语义 key（general/code）不可用时退回一个本机能跑的模型。"""
+        if key in self.cfg.models and self._usable(key):
+            return key
+        return self.fallback_key()
 
     def classify(self, text: str) -> str:
         code_score, lang_score = self.scores(text)
@@ -33,7 +57,7 @@ class Router:
             return self._pick("general")
         if code_score > 0:
             return self._pick("code")
-        return self.cfg.routing_default
+        return self.fallback_key()
 
     def explain(self, text: str) -> str:
         c, l = self.scores(text)

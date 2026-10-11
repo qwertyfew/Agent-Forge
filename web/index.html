@@ -2523,9 +2523,18 @@ let sentTokens = 0;    // 本次请求发出去时，对话部分的估算 token
 let sentMsgs = [];     // 本次请求发出去的完整消息列表（含本轮提问）
 let statsSeen = 0;     // 本次请求已经收到几个 stats（只有第一个能用来校准）
 let windowWarned = false;   // 窗口跨度警告每次打开页面只提示一次
+let poolWarned = false;     // 「勾选的模型本机都跑不起来」也只提示一次
+/* 「勾选且本机能跑」的模型：本地模型可能还没装（available=false），
+   那种不该算进窗口与占比——任务实际不会跑在它上面。
+   一个能跑的都没有时保持原样，提示交给后端。 */
+function usableModels(){
+  const on = (catalog && Array.isArray(catalog.models)) ? catalog.models.filter(m => m.enabled) : [];
+  const ok = on.filter(m => m.available !== false);
+  return ok.length ? ok : on;
+}
 function minCtxWindow(){
   if(!catalog || !Array.isArray(catalog.models)) return 0;
-  const wins = catalog.models.filter(m => m.enabled)
+  const wins = usableModels()
     .map(m => (m.spec && m.spec.num_ctx) || m.context_window || 0)
     .filter(Boolean);
   return wins.length ? Math.min(...wins) : 0;
@@ -2535,7 +2544,7 @@ function minCtxWindow(){
    其余启用模型的占比在提示里一并给出（默认模型窗口更大，占比往往只有一半）。 */
 function ctxBudget(){
   const pt = (catalog && catalog.prompt_tokens) || null;
-  const on = (catalog && Array.isArray(catalog.models)) ? catalog.models.filter(m=>m.enabled) : [];
+  const on = usableModels();
   // 固定开销几乎与模型无关（系统提示只差模型名，工具定义完全一样），所以某个
   // 模型还没实测过的，可以借用别的模型实测出来的值，比后端的估算更贴实际。
   const reals = Object.values(promptReal);
@@ -2787,6 +2796,12 @@ async function streamChat(text, hist){
         addPillNote(`注意：池内模型窗口相差 <b>${wn.ratio} 倍</b>`
           + `（${esc(wn.max_name)} ${Number(wn.max).toLocaleString()} ↔ ${esc(wn.min_name)} ${Number(wn.min).toLocaleString()}），`
           + `多步接力时整条链路按<b>最小窗口</b>算，大窗口模型发挥不出来`);
+      }
+      // 勾选的模型本机全跑不起来、后端已自动改用别的模型：说清楚用的是谁
+      const pn = data.pool_notice;
+      if(pn && !poolWarned){
+        poolWarned = true;
+        addPillNote(esc(pn));
       }
     }
     else if(ev === 'plan'){

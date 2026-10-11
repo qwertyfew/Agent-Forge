@@ -52,6 +52,10 @@ class ModelSpec:
     label: str = ""             # 界面上展示的名字（付费模型用）
     entry_id: str = ""          # 可用模型目录里的 id
     kind: str = "local"         # local | paid
+    # 这台机器上现在能不能真的跑起来：本地模型要看 Ollama 装没装，
+    # 付费模型要看 API Key 填没填。由 ModelStore.catalog() 在登记模型时写入，
+    # 抢不到信息的场合保持 True（宁可试一下报错，也不要凭空禁用）。
+    available: bool = True
 
     @property
     def display(self) -> str:
@@ -218,9 +222,10 @@ class Config:
             raise KeyError(f"未定义的模型 key: {key}，可选: {list(self.models)}")
         return self.models[key]
 
-    def register_model(self, spec: ModelSpec) -> None:
+    def register_model(self, spec: ModelSpec) -> ModelSpec:
         """运行时注册模型（自动发现的本地模型、用户添加的付费模型都走这里）。"""
         self.models[spec.key] = spec
+        return spec
 
     def unregister_model(self, key: str) -> None:
         self.models.pop(key, None)

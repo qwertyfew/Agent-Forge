@@ -82,6 +82,9 @@ class Agent:
         self.skills = skill_registry
         self.compressor = Compressor(cfg, client, hub=self.hub)
         self.model_key = model_key or cfg.routing_default
+        # 用户是否显式指定过模型。自动路由的开关看它，而不是看「当前是不是默认模型」——
+        # 默认模型本机跑不起来时会被替换成别的 key，那种情况下不该从此不再路由。
+        self.model_pinned = bool(model_key)
         self.system_prompt = ""
         self.last_compact: str = ""
         self._skill_hint: str = ""
@@ -97,6 +100,9 @@ class Agent:
         if key not in self.cfg.models:
             raise KeyError(f"未定义的模型 key: {key}")
         self.model_key = key
+        # 调用方明确点名了模型（编排层给每一步分配、用户 /model 切换），
+        # 后续这一轮就不该再被自动路由改掉。
+        self.model_pinned = True
         self.system_prompt = ""
 
     @property
@@ -220,7 +226,7 @@ class Agent:
         stopped = stop_check or (lambda: False)
         self.permission_label = "完全访问权限" if auto_approve else "默认权限"
 
-        if auto_route and self.model_key == self.cfg.routing_default:
+        if auto_route and not self.model_pinned:
             picked = self.router.classify(user_text)
             if picked != self.model_key:
                 self.model_key = picked
