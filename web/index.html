@@ -359,13 +359,11 @@
   .msg-foot .meta{margin-left:auto;display:inline-flex;align-items:center;gap:6px;
     font-size:11px;color:var(--ink3);font-variant-numeric:tabular-nums;white-space:nowrap}
 
-  /* 思考过程 */
-  .think summary{display:inline-flex;align-items:center;gap:6px;cursor:pointer;list-style:none;
-    font-size:12px;color:var(--ink3);user-select:none;padding:2px 0}
-  .think summary::-webkit-details-marker{display:none}
-  .think summary:hover{color:var(--ink2)}
-  .think .tval{margin-top:6px;padding:8px 12px;border-left:2px solid var(--line2);
-    font-size:12.5px;color:var(--ink2);white-space:pre-wrap;max-height:260px;overflow:auto}
+  /* 思考过程：不要卡片不要折叠，就三样——分割线、一行计时、纯文本（结束再加一条分割线） */
+  .think-plain{margin:6px 0 2px}
+  .think-sep{font-size:12px;color:var(--ink3);white-space:pre;overflow:hidden;user-select:none;line-height:1.4}
+  .think-time{font-size:13px;color:var(--ink2);margin-top:2px;font-variant-numeric:tabular-nums}
+  .think-lines{font-size:13px;color:var(--ink2);white-space:pre-wrap;max-height:260px;overflow:auto}
   .shimmer{font-size:13px;background:linear-gradient(90deg,var(--ink3) 0%,var(--ink) 50%,var(--ink3) 100%);
     background-size:200% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
     animation:sh 1.6s linear infinite;width:fit-content}
@@ -2340,28 +2338,32 @@ function addAssistant(){
 let cur = null, curTool = null, lastStats = null, lastAssign = null;
 
 let thinkBox = null;
+const THINK_SEP_TOP = '========================分割线========================';
+const THINK_SEP_BOT = '================分割线=====================================';
+function fmtThinkDur(ms){
+  const s = Math.floor(ms / 1000), m = Math.floor(s / 60);
+  return m > 0 ? m + 'm' + String(s % 60).padStart(2, '0') + 's' : s + 's';
+}
 function addThinking(){
   if(thinkBox) return thinkBox;
-  const d = el('details','think');
-  const s = el('summary');
-  s.appendChild(el('span','','思考过程'));
-  s.appendChild(el('span','','· 展开中'));
-  d.appendChild(s);
-  const v = el('div','tval');
-  d.appendChild(v);
-  d.open = true;   // 思考流式输出时自动展开，出结果后保持展开方便回看
+  const d = el('div','think-plain');
+  const sep = el('div','think-sep', THINK_SEP_TOP);
+  const time = el('div','think-time','思考中 · 0s');
+  const v = el('div','think-lines');
+  d.appendChild(sep); d.appendChild(time); d.appendChild(v);
   log.appendChild(d);
-  thinkBox = { d, s, v, text:'' };
+  const t0 = Date.now();
+  const timer = setInterval(()=>{ time.textContent = '思考中 · ' + fmtThinkDur(Date.now() - t0); }, 1000);
+  thinkBox = { d, time, v, text:'', t0, timer };
   scrollBottom();
   return thinkBox;
 }
 function closeThinking(){
   if(!thinkBox) return;
-  // 不再收起：只把标题定格为「已完成 N 字」，内容保持展开可随时回看
-  thinkBox.s.innerHTML = '';
-  thinkBox.s.appendChild(el('span','','思考过程'));
-  thinkBox.s.appendChild(el('span','',
-    '· 已完成 ' + thinkBox.text.length + ' 字'));
+  // 定格计时、补上收尾分割线；内容保持原样可回看
+  clearInterval(thinkBox.timer);
+  thinkBox.time.textContent = '已处理 ' + fmtThinkDur(Date.now() - thinkBox.t0);
+  thinkBox.d.appendChild(el('div','think-sep', THINK_SEP_BOT));
   thinkBox = null;
 }
 
