@@ -134,6 +134,22 @@ KNOWLEDGE: dict[str, dict] = {
         "price_in": 0, "price_out": 0,
     },
 
+    "gpt-oss:20b": {
+        "match": ["gpt-oss:20b", "gpt-oss-20b", "gpt-oss:20b-high", "gptoss:20b"],
+        "version": "GPT-OSS 20B（OpenAI，2025-08，Apache-2.0）",
+        "scores": {"coding": 74, "reasoning": 74, "writing": 66, "math": 86,
+                   "chinese": 64, "speed": 84, "cost": 94, "context": 62},
+        "source": "榜单",
+        "evidence": "OpenAI 官方模型卡（high 推理档）：AIME2025 91.7 / AIME2024 92.1 / MMLU 85.3 / "
+                    "GPQA Diamond 71.5 / SWE-bench Verified 60.7 / Tau-Bench Retail 54.8、Airline 38.0 / "
+                    "HLE 10.9 / Aider Polyglot 34.2 / MMMLU 75.7；Codeforces Elo 2230（带工具 2516）。"
+                    "MoE 仅激活约 3.6B，16GB 卡 100% GPU 约 140 tok/s，故 speed 高。"
+                    "但 GPQA/HLE/Tau-Bench 均低于 gemma4:12b，且第三方实测 AA-LCR 仅 14%（长文推理弱），"
+                    "故 reasoning 与 context 未按其 20B 体量上抬；纯文本，无多模态。",
+        "context_window": 131072,
+        "price_in": 0, "price_out": 0,
+    },
+
     # ---------------- OpenAI ----------------
     "gpt-5.5": {
         "match": ["gpt-5.5", "gpt-5.5-high", "gpt-5.5-thinking"],
