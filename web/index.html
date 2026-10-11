@@ -2481,6 +2481,7 @@ try{ promptReal = JSON.parse(localStorage.getItem('afPromptReal') || '{}') || {}
 let sentTokens = 0;    // 本次请求发出去时，对话部分的估算 token
 let sentMsgs = [];     // 本次请求发出去的完整消息列表（含本轮提问）
 let statsSeen = 0;     // 本次请求已经收到几个 stats（只有第一个能用来校准）
+let windowWarned = false;   // 窗口跨度警告每次打开页面只提示一次
 function minCtxWindow(){
   if(!catalog || !Array.isArray(catalog.models)) return 0;
   const wins = catalog.models.filter(m => m.enabled)
@@ -2514,6 +2515,10 @@ function ctxBudget(){
   }
   list.sort((a,b)=>a.win-b.win);
   const head = list[0] || null;
+  // 窗口跨度：多模型接力时整条链路按最小窗口封顶，跨度太大 = 大窗口模型白买
+  const span = list.length >= 2
+    ? { lo: list[0], hi: list[list.length - 1], ratio: list[0].win ? list[list.length-1].win / list[0].win : 0 }
+    : null;
   return {
     win: head ? head.win : minCtxWindow(),
     who: head ? head.who : '',
@@ -2522,6 +2527,9 @@ function ctxBudget(){
     measured: head ? head.measured : false,
     sysTok: (catalog && catalog.prompt_system) ? (catalog.prompt_system[head ? head.key : ''] || 0) : 0,
     toolTok: (catalog && catalog.prompt_tools) || 0,
+    toolAll: (catalog && catalog.prompt_tools_all) || 0,
+    indexTok: (catalog && catalog.prompt_index) || 0,
+    span,
     others: list.slice(1, 4),
   };
 }
@@ -2536,12 +2544,19 @@ function updateContextMeter(size, th){
   // 短对话不足 1% 时保留一位小数，否则恒显示 0% 看不出变化
   $('ctxPct').textContent = `上下文 ${pct < 10 ? pct.toFixed(1) : Math.round(pct)}%`;
   const breakdown = b.toolTok
-    ? `（系统提示 ${b.sysTok.toLocaleString()} + 工具定义 ${b.toolTok.toLocaleString()}）`
+    ? `（系统提示 ${b.sysTok.toLocaleString()} + 工具定义 ${b.toolTok.toLocaleString()}`
+      + (b.toolAll > b.toolTok ? `，仅下发常用工具；全量下发要 ${b.toolAll.toLocaleString()}` : '')
+      + `）`
     : '';
   const srcTag = b.measured ? '实测' : '估算';
   const altLine = b.others.length
     ? '\n  ' + b.others.map(o => `${o.who}（窗口 ${o.win.toLocaleString()}）约 `
         + `${Math.min(100, tokens / o.win * 100).toFixed(1)}%`).join('；')
+    : '';
+  const spanLine = (b.span && b.span.ratio >= 4)
+    ? `\n⚠ 池内窗口跨度 ${b.span.ratio.toFixed(1)} 倍（${b.span.hi.who} ${b.span.hi.win.toLocaleString()}`
+      + ` ↔ ${b.span.lo.who} ${b.span.lo.win.toLocaleString()}）：多模型接力时整条链路按最小窗口封顶，`
+      + `大窗口模型用不上，建议同池模型的上下文窗口不要差一个数量级`
     : '';
   const line = $('ctxLine');
   if(line) line.title =
@@ -2551,6 +2566,7 @@ function updateContextMeter(size, th){
     + (b.win
         ? `占用窗口 ${b.win.toLocaleString()} tokens（取启用模型里最小的：${b.who}）` + altLine
         : `未取到模型窗口，按压缩阈值 ≈${Math.round(limit).toLocaleString()} 粗估`)
+    + spanLine
     + `\n超过 80% 建议点「压缩上下文」`;
   const fill = $('ctxFill');
   if(fill){
@@ -2723,6 +2739,14 @@ async function streamChat(text, hist){
   const handle = (ev, data)=>{
     if(ev === 'combo'){
       updatePoolHint();
+      // 池内窗口跨度太大：多模型接力会被最小窗口封顶，提示一次就够
+      const wn = data.window_notice;
+      if(wn && !windowWarned){
+        windowWarned = true;
+        addPillNote(`注意：池内模型窗口相差 <b>${wn.ratio} 倍</b>`
+          + `（${esc(wn.max_name)} ${Number(wn.max).toLocaleString()} ↔ ${esc(wn.min_name)} ${Number(wn.min).toLocaleString()}），`
+          + `多步接力时整条链路按<b>最小窗口</b>算，大窗口模型发挥不出来`);
+      }
     }
     else if(ev === 'plan'){
       addPlan(data.subtasks || [], data.summary);

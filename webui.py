@@ -374,8 +374,17 @@ class _Handler(BaseHTTPRequestHandler):
         """
         import copy as _copy
 
-        tool_json = json.dumps(self.cli.registry.schemas(), ensure_ascii=False)
-        tool_tok = int(round(est_tokens(tool_json)))
+        # 常规轮次实际下发的是「核心工具 + 按需命中」的那一小撮，外加一段工具
+        # 名字索引。这里按这个基线算，而不是按 35 个工具的全量算——否则前端
+        # 会高估固定开销（按需下发之后每轮省下来的那部分正是收益所在）。
+        sel = getattr(self.cli.registry, "selector", None)
+        if sel is not None:
+            tool_tok = int(round(est_tokens(json.dumps(sel.core_schemas(), ensure_ascii=False))))
+            index_tok = int(round(est_tokens(sel.index_text())))
+        else:
+            tool_tok = int(round(est_tokens(json.dumps(self.cli.registry.schemas(), ensure_ascii=False))))
+            index_tok = 0
+        all_tok = int(round(est_tokens(json.dumps(self.cli.registry.schemas(), ensure_ascii=False))))
         proto = _copy.copy(self.cli.agent)
         system: dict[str, int] = {}
         for key in self.cfg.models:
@@ -385,10 +394,14 @@ class _Handler(BaseHTTPRequestHandler):
                 system[key] = int(round(est_tokens(proto._system())))
             except Exception:  # noqa: BLE001  某个模型配置坏了不该拖垮整个列表
                 system[key] = 0
+        base = tool_tok + index_tok
         return {
-            "prompt_tools": tool_tok,
+            "prompt_tools": base,          # 常规轮次的工具部分（核心 schema + 名字索引）
+            "prompt_tools_core": tool_tok,
+            "prompt_index": index_tok,
+            "prompt_tools_all": all_tok,   # 全量下发时的大小，用来说明省了多少
             "prompt_system": system,
-            "prompt_tokens": {k: v + tool_tok for k, v in system.items()},
+            "prompt_tokens": {k: v + base for k, v in system.items()},
         }
 
     def _handle_models(self):

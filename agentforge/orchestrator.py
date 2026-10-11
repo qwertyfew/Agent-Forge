@@ -40,9 +40,68 @@ STEP_NEXT = """【本次执行第 {index}/{total} 步】{title}
 """
 
 
+# 多步接力时发给下一步的「进度简报」。全量历史接力会让第 N 步背上前面每一步
+# 的工具输出原文（一次 read_file 就可能上万字符），而多数步骤其实只需要知道
+# 「做过什么、产出在哪」。真正要细节时模型自己会去 read_file。
+PROGRESS_TEMPLATE = """【总体任务】
+{message}
+
+【本次执行第 {index}/{total} 步】{title}
+这一步的要求：{detail}
+
+【前面的进度】
+{done}
+
+【提示】前面步骤的完整工具输出已省略以节省上下文（上面的「产出文件」是它们的
+落脚点）。需要细节时直接 read_file / list_dir 去读文件，不要凭空猜测。
+请只完成本步，不要重复已完成的操作；做完后用一两句话说明本步结果。
+"""
+
+
+def _progress_lines(done: list[dict], limit: int = 12) -> str:
+    if not done:
+        return "（这是第一步）"
+    rows = []
+    for d in done[-limit:]:
+        line = f"  {d['index']}. {d['title']} —— {d['summary'] or '（已完成）'}"
+        if d.get("files"):
+            line += "\n     产出文件：" + "、".join(d["files"][:8])
+        rows.append(line)
+    return "\n".join(rows)
+
+
+def _last_assistant(messages: list[dict]) -> str:
+    """从历史里回捞最后一条助手正文，作为该步的摘要兜底。"""
+    for m in reversed(messages or []):
+        if m.get("role") == "assistant" and isinstance(m.get("content"), str) and m["content"].strip():
+            return m["content"].strip()
+    return ""
+
+
+def window_notice(entries: list[dict]) -> dict | None:
+    """池子里窗口最大与最小差 ≥4 倍时给个提醒。
+
+    多模型接力时，整条链路的可用上下文 = 参与模型里**最小的那个窗口**
+    （历史逐步变长，一路接力），所以混用 128K 与 8K 的模型，前者完全用不上。
+    """
+    wins = [(e["name"], e.get("window") or 0) for e in entries if e.get("window")]
+    if len(wins) < 2:
+        return None
+    lo_name, lo = min(wins, key=lambda x: x[1])
+    hi_name, hi = max(wins, key=lambda x: x[1])
+    if lo <= 0 or hi / lo < 4:
+        return None
+    return {
+        "min_name": lo_name, "min": lo,
+        "max_name": hi_name, "max": hi,
+        "ratio": round(hi / lo, 1),
+    }
+
+
 def _entries_of(pool) -> list[dict]:
     return [
-        {"id": e.id, "key": e.key, "name": e.display, "scores": e.scores, "total": e.total}
+        {"id": e.id, "key": e.key, "name": e.display, "scores": e.scores,
+         "total": e.total, "window": getattr(e, "context_window", 0) or 0}
         for e in pool
     ]
 
@@ -118,6 +177,8 @@ def run_task(
         "type": "combo",
         "combo": store.combo_info(pool),
         "models": [{"id": e["id"], "name": e["name"]} for e in entries],
+        # 窗口跨度警告：接力式多模型协作会被最小窗口封顶
+        "window_notice": window_notice(entries),
     }
 
     plan: list[Subtask] = []
@@ -142,7 +203,11 @@ def run_task(
             "summary": plan_summary(plan),
         }
 
+    # 展示/回看用的全量历史（一路接力，内容完整）
     hist = list(history)
+    # 接力省法：每一步单独记「做了什么、动了哪些文件」，下一步只看这份简报
+    brief_relay = bool(getattr(agent.cfg, "relay_brief", True)) and multi
+    done: list[dict] = []
     total = len(plan)
     for i, st in enumerate(plan):
         if stopped():
@@ -181,21 +246,36 @@ def run_task(
             prompt = STEP_FIRST.format(
                 message=message, total=total, title=st.title, detail=st.detail
             ) if multi else message
+            relay = None
         else:
-            prompt = STEP_NEXT.format(
-                index=i + 1, total=total, title=st.title, detail=st.detail
-            )
+            if brief_relay:
+                # 只带：总任务 + 本步要求 + 前几步的摘要与产出文件
+                prompt = PROGRESS_TEMPLATE.format(
+                    message=message, index=i + 1, total=total,
+                    title=st.title, detail=st.detail,
+                    done=_progress_lines(done),
+                )
+                relay = list(history)      # 之前几轮聊天的内容仍保留
+            else:
+                prompt = STEP_NEXT.format(
+                    index=i + 1, total=total, title=st.title, detail=st.detail
+                )
+                relay = None
             yield {"type": "subtask", "index": i + 1, "total": total, "text": st.detail}
 
+        files_before = len(file_log) if file_log is not None else 0
+        summary = ""
         failed = False
         halted = False
         for ev in agent.run(hist, prompt, auto_route=False, stop_check=stopped,
-                            auto_approve=auto_approve, file_log=file_log):
+                            auto_approve=auto_approve, file_log=file_log,
+                            relay=relay):
             t = ev.get("type")
             if t == "user":
                 continue                      # 用户气泡由前端本地渲染
             if t == "assistant":
-                hist = ev["history"]          # 接力上下文
+                hist = ev["history"]          # 接力上下文（全量，供回看）
+                summary = (ev.get("content") or "").strip()
             if t == "route":
                 continue                      # 编排模式下路由由我们决定
             if t == "error":
@@ -209,6 +289,21 @@ def run_task(
                        "reason": ev.get("reason") or "用户停止"}
                 return
             yield ev
+
+        # 记下这一步的摘要与产出，供下一步的简报使用
+        new_files: list[str] = []
+        if file_log is not None and len(file_log) > files_before:
+            for rec in file_log[files_before:]:
+                p = str(rec.get("path") or "")
+                if p and p not in new_files:
+                    new_files.append(p)
+        done.append({
+            "index": i + 1,
+            "title": st.title,
+            "summary": summary or _last_assistant(hist),
+            "files": new_files,
+        })
+
         if failed:
             return
 

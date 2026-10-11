@@ -42,6 +42,10 @@ def load_plugin_tools(guard, cfg) -> list[Tool]:
 class ToolRegistry:
     def __init__(self, tools: list[Tool]):
         self._tools: dict[str, Tool] = {t.name: t for t in tools}
+        # 模型主动 find_tools 要过用法的工具名：后续轮次常驻下发（避免反复查）
+        self.pinned: set[str] = set()
+        # 由 build_registry 填上：按需下发工具的选择器（见 agentforge/toolselect.py）
+        self.selector = None
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
@@ -91,8 +95,22 @@ def build_registry(guard, cfg, enable_web: bool = True, skill_registry=None) -> 
     # 自我扩展工具族：holder 让它们能拿到创建后的 live registry，实现热加载
     holder: dict = {}
     tools += build_ext_tools(guard, cfg, skill_registry, holder)
+    # 延迟导入：toolselect 依赖 tools.base，放模块顶部会绕成循环导入
+    from ..toolselect import ToolSelector, build_select_tools
+
+    tools += build_select_tools(holder, lazy=getattr(cfg, "tools_lazy", True))
     reg = ToolRegistry(tools)
     holder["registry"] = reg
+    # 工具选择器：主循环（按需下发）与 find_tools（现取用法）共用同一份
+    sel = ToolSelector(
+        reg,
+        core=getattr(cfg, "tools_core", None),
+        limit=getattr(cfg, "tools_limit", 16),
+        min_score=getattr(cfg, "tools_min_score", 2),
+        lazy=getattr(cfg, "tools_lazy", True),
+    )
+    reg.selector = sel
+    holder["selector"] = sel
     return reg
 
 

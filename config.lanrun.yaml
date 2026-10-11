@@ -86,6 +86,18 @@ agent:
   max_tool_output_chars: 16000   # 单条工具输出截断长度
   keep_recent_tool_results: 6    # 只保留最近 N 条工具结果原文，更早的压缩为摘要
   stream: true
+  # 多步任务的接力方式：brief = 只传「计划 + 各步摘要 + 产出文件」（默认）；
+  # full = 把前面每一步的完整对话与工具输出全带上（更保险，但很快吃满窗口）
+  relay: brief
+
+# 工具按需下发：35 个工具的完整 schema 约 4.1K tokens，每轮都要重发。
+# 开启后每轮只下发「核心工具 + 任务关键词命中的工具」，其余只列名字进系统提示，
+# 模型需要时用 find_tools 现取用法。
+tools:
+  lazy: true
+  limit: 16             # 单轮最多下发几个完整 schema
+  min_score: 3.0        # 相关度阈值（IDF 加权），调高更省、调低更容易命中
+  core: []              # 常驻工具名，留空用内置清单
 
 # 上下文压缩：超过阈值自动瘦身，CLI 用 /compact、Web 点按钮可手动触发
 compact:
@@ -100,6 +112,7 @@ compact:
 skills:
   auto_load: true        # 任务命中 skill 描述时自动注入正文
   min_score: 2           # 自动注入所需的最低关键词命中数，调高可减少误触发
+  auto_max_chars: 1600   # 自动注入时正文的截断长度（按小节切，不切半句）
   dirs:
     - D:\AI_develop\project\agent-forge\skills
   # 除了上面这些目录，还会自动扫描 ~/.agentforge/skills

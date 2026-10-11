@@ -75,7 +75,7 @@ class Skill:
         return target.read_text(encoding="utf-8", errors="replace")
 
     def instructions(self) -> str:
-        """Tier 2 正文 + 可用资源清单，供 agent 决定是否继续深挖。"""
+        """Tier 2 正文全量 + 可用资源清单。"""
         body = self.load()
         res = self.resources()
         head = f"[skill: {self.name}]\n"
@@ -83,6 +83,44 @@ class Skill:
             head += "可用资源（需要时用 read_skill_resource 读取）：\n"
             head += "\n".join(f"  - {r}" for r in res[:30]) + "\n"
         return head + "\n" + body
+
+    def brief(self, max_chars: int = 1600) -> str:
+        """Tier 2 精简版：只注入正文开头若干个**完整小节**，附上取全文的指引。
+
+        自动命中时用它，避免一个 8.7K tokens 的大 skill 把 64K 窗口直接吃掉 14%。
+        按小节切而不是硬截断：半句话的指令比没有指令更坏。
+        """
+        body = self.load()
+        head = f"[skill: {self.name}]\n"
+        res = self.resources()
+        if res:
+            head += "可用资源（需要时用 read_skill_resource 读取）：\n"
+            head += "\n".join(f"  - {r}" for r in res[:30]) + "\n"
+        if len(body) <= max_chars:
+            return head + "\n" + body
+        cut = _cut_at_section(body, max_chars)
+        return (
+            head + "\n" + body[:cut].rstrip()
+            + f"\n\n…（正文共 {len(body)} 字，此处只注入了前 {cut} 字。）"
+            + f"需要完整步骤与细节时，调用 use_skill('{self.name}') 加载全文。"
+        )
+
+
+def _cut_at_section(body: str, limit: int) -> int:
+    """在 limit 附近找一个标题边界切，避免把某个小节拦腰截断。
+
+    先往后多看 40% 找最近的标题行；找不到就往回收，最少保留 limit 的一半。
+    """
+    window = int(limit * 1.4)
+    best = 0
+    for m in re.finditer(r"^#{1,4} .*$", body[:window], re.M):
+        if m.start() <= limit:
+            best = m.start()
+        else:
+            break
+    if best <= 0:
+        return max(int(limit * 0.5), min(limit, len(body)))
+    return best
 
 
 def split_frontmatter(text: str) -> tuple[dict, str]:
@@ -198,15 +236,19 @@ class SkillRegistry:
     def get(self, name: str) -> Skill | None:
         return self.skills.get(name)
 
-    def auto_hint(self, user_text: str, min_score: int = 2) -> str:
-        """自动提示：匹配度够高时，直接把该 skill 的正文塞进上下文。"""
+    def auto_hint(self, user_text: str, min_score: int = 2,
+                  max_chars: int = 1600) -> str:
+        """自动提示：匹配度够高时，注入该 skill 正文的**精简版**。
+
+        注入摘要而不是全文——最长的一个 skill 正文 8.7K tokens，命中即吃掉
+        小窗口模型 14% 的上下文。摘要里带上 use_skill 的指引，模型真需要
+        完整步骤时会自己取。返回还带上被命中的 skill 名，方便上层上报事件。
+        """
         hits = [(s, sc) for s, sc in self.match(user_text) if sc >= min_score]
         if not hits:
             return ""
-        parts = []
-        for s, sc in hits[:1]:  # 自动加载只取最匹配的一个，避免撑爆上下文
-            parts.append(s.instructions())
-        return "\n\n".join(parts)
+        s, _ = hits[0]           # 自动加载只取最匹配的一个，避免撑爆上下文
+        return s.brief(max_chars)
 
 
 def default_dirs(root: Path, extra: list[str] | None = None) -> list[Path]:

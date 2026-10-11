@@ -48,6 +48,14 @@ MEMORY_HEADER = """## 长期记忆（来自以往任务，继续遵守）
 以下是以前的任务记下来的结论与偏好，请在本轮工作中遵守：
 """
 
+# 工具索引：只给名字，不给说明。完整 schema 里 4000 tokens 大部分当轮用不上，
+# 但模型得知道"有这么个能力"，否则会说"我做不到"。要用时用 find_tools 现取。
+TOOL_INDEX_HEADER = """## 其他可用工具（本次未展开说明）
+下面这些工具现在就能用，只是为了省上下文没有下发详细参数。需要哪个就先调用
+find_tools("关键词") 取它的用法，然后再调用它；也可以直接按名字调用。
+  {names}
+"""
+
 COMPACT_THRESHOLD = 60_000
 
 
@@ -77,6 +85,8 @@ class Agent:
         self.system_prompt = ""
         self.last_compact: str = ""
         self._skill_hint: str = ""
+        # 本轮实际下发的工具名集合：系统提示里的「工具索引」要把它们排除掉
+        self._active_tool_names: set[str] = set()
         # 长期记忆：任务开始前读进来注入系统提示，任务结束后由 remember 工具追加
         self.memory = MemoryStore(Path(cfg.workspace_root) / ".agentforge" / "memory.md")
         # 权限模式的中文名，只用于系统提示里的一句话说明
@@ -108,6 +118,13 @@ class Agent:
         )
         if self.skills and self.skills.skills:
             base += "\n" + self.skills.catalog() + "\n"
+        # 工具索引：把没下发说明的工具名字列出来（只列名字，很便宜），
+        # 让模型知道能力边界，而不是"没看到就当没有这个功能"
+        sel = self.registry.selector
+        if sel is not None and getattr(self.cfg, "tools_lazy", True):
+            idx = sel.index_text(exclude=self._active_tool_names)
+            if idx:
+                base += "\n" + TOOL_INDEX_HEADER.format(names=idx)
         # 长期记忆放在最后：它是「上一批任务留下的结论」，越靠后模型越容易当约束看
         block = self.memory.prompt_block()
         if block:
@@ -142,6 +159,36 @@ class Agent:
     def context_size(self, history: list[dict]) -> int:
         return measure(history)
 
+    # ---------- 本轮该下发哪些工具 ----------
+    def _active_tools(self, messages: list[dict]) -> list[dict]:
+        """按需下发工具 schema：核心 + 关键词命中 + 本轮已用过的。
+
+        顺便把结果记进 self._active_tool_names，供系统提示里的「工具索引」排重。
+        """
+        sel = self.registry.selector
+        if sel is None:
+            schemas = self.registry.schemas()
+            self._active_tool_names = {s["function"]["name"] for s in schemas}
+            return schemas
+
+        texts: list[str] = []
+        for m in messages[-6:]:
+            if m.get("role") not in ("user", "assistant"):
+                continue
+            c = m.get("content")
+            if isinstance(c, str) and c:
+                texts.append(c[-1500:])       # 取尾部：结论与要求通常在后面
+        sticky: set[str] = set(self.registry.pinned)
+        for m in messages[-12:]:
+            for tc in (m.get("tool_calls") or []):
+                nm = (tc.get("function") or {}).get("name") or tc.get("name")
+                if nm:
+                    sticky.add(nm)
+
+        schemas = sel.select(texts, sticky=sticky)
+        self._active_tool_names = {s["function"]["name"] for s in schemas}
+        return schemas
+
     # ---------- 主循环 ----------
     def run(
         self,
@@ -151,6 +198,7 @@ class Agent:
         stop_check=None,
         auto_approve: bool | None = None,
         file_log: list | None = None,
+        relay: list[dict] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """跑一轮完整任务。
 
@@ -163,6 +211,11 @@ class Agent:
         多个请求共用，改全局状态会串味。
 
         file_log 传进来时，写类工具动过的文件会被追加进去，供任务台账记录产出。
+
+        relay 给定时，用它**替代**全量历史作为发给模型的上下文（多步任务的接力
+        省法：只带计划 + 摘要 + 文件路径，而不是把前面每一步的工具输出全带上）。
+        注意它只影响"模型看到什么"：yield 出去的 history 仍是全量，界面回看与
+        任务台账不受影响。
         """
         stopped = stop_check or (lambda: False)
         self.permission_label = "完全访问权限" if auto_approve else "默认权限"
@@ -174,24 +227,44 @@ class Agent:
                 yield {"type": "route", "model_key": picked, "detail": self.router.explain(user_text)}
 
         history = list(history)
-        history.append({"role": "user", "content": user_text})
+        this_turn = {"role": "user", "content": user_text}
+        history.append(this_turn)
+        # ctx = 真正发给模型的消息序列。没给 relay 时直接复用 history 这个列表
+        # （同一个对象，后续 append 两边都生效）；给了 relay 就分道走。
+        ctx = history if relay is None else [*relay, this_turn]
+
+        def _push(msg: dict) -> None:
+            history.append(msg)
+            if ctx is not history:
+                ctx.append(msg)
+
+        def _pop() -> None:
+            if history:
+                history.pop()
+            if ctx is not history and ctx:
+                ctx.pop()
+
         yield {"type": "user", "content": user_text}
 
-        # Skill 自动激活：命中就把正文注入本轮上下文（Tier 2）
+        # Skill 自动激活：命中就把正文摘要注入本轮上下文（Tier 2）
         self._skill_hint = ""
         if self.skills and self.cfg.skill_auto_load:
-            hint = self.skills.auto_hint(user_text, self.cfg.skill_min_score)
+            hint = self.skills.auto_hint(
+                user_text, self.cfg.skill_min_score,
+                getattr(self.cfg, "skill_auto_max_chars", 1600),
+            )
             if hint:
                 hits = self.skills.match(user_text, 1)
                 self._skill_hint = hint
+                nm = hits[0][0].name if hits else ""
                 yield {
                     "type": "skill",
-                    "name": hits[0][0].name if hits else "",
-                    "detail": f"已自动加载 skill：{hits[0][0].name}" if hits else "",
+                    "name": nm,
+                    "detail": (f"已加载 skill 摘要：{nm}"
+                               f"（正文过长时只注入开头，需要全文用 use_skill 取）") if nm else "",
                 }
 
         spec = self.cfg.model(self.model_key)
-        tools = self.registry.schemas()
 
         for step in range(1, self.cfg.max_steps + 1):
             if stopped():
@@ -200,7 +273,9 @@ class Agent:
                        "history": history}
                 return
             yield {"type": "step", "step": step, "model_key": self.model_key, "model": spec.display}
-            messages = self._compact(self.messages_with_system(history))
+            # 每轮重算：这轮刚用过的工具、刚 find_tools 取过的工具，下一轮要常驻下发
+            tools = self._active_tools(ctx)
+            messages = self._compact(self.messages_with_system(ctx))
 
             result = None
             try:
@@ -246,7 +321,7 @@ class Agent:
 
             if not result.tool_calls:
                 assistant_msg = {"role": "assistant", "content": result.content}
-                history.append(assistant_msg)
+                _push(assistant_msg)
                 yield {"type": "assistant", "content": result.content, "history": history}
                 return
 
@@ -255,23 +330,21 @@ class Agent:
                 {"function": {"name": tc.name, "arguments": tc.arguments}}
                 for tc in result.tool_calls
             ]
-            history.append(
-                {"role": "assistant", "content": result.content or "", "tool_calls": tc_payload}
-            )
+            _push({"role": "assistant", "content": result.content or "", "tool_calls": tc_payload})
 
             for tc in result.tool_calls:
                 if stopped():
                     # 这次工具没执行，把已追加的 assistant(tool_calls) 摘掉：
                     # 否则历史里会留下一个没有 tool 应答的悬空调用，下次续聊会报错
                     if history and history[-1].get("tool_calls"):
-                        history.pop()
+                        _pop()
                     yield {"type": "stopped", "step": step,
                            "reason": "用户停止（工具尚未执行）", "history": history}
                     return
                 yield {"type": "tool_start", "name": tc.name, "args": tc.arguments}
                 out = self._execute(tc.name, tc.arguments, auto_approve, file_log)
                 yield {"type": "tool_result", "name": tc.name, "output": out}
-                history.append({"role": "tool", "content": out})
+                _push({"role": "tool", "content": out})
 
         yield {"type": "error", "message": f"已达到最大步数 {self.cfg.max_steps}，任务未收敛，请拆小任务或提高上限。"}
 
@@ -285,6 +358,18 @@ class Agent:
     ) -> str:
         tool = self.registry.get(name)
         if tool is None:
+            # 按需下发模式下，模型可能凭印象报了个名字（例如把 git_push 叫成 push）。
+            # 这里替它找一次：名字沾边的直接把用法递过去并粘住，下一轮就带完整说明了。
+            sel = self.registry.selector
+            if sel is not None:
+                probe = name.lower()
+                hits = [n for n in self.registry.names()
+                        if probe == n or probe in n or n in probe or
+                        (probe.split("_")[0] and probe.split("_")[0] in n)]
+                if hits:
+                    self.registry.pinned.update(hits[:3])
+                    return (f"[工具名不符] 没有名为 {name} 的工具，你要用的可能是下面这个，"
+                            f"请用正确的名字重新调用：\n" + sel.describe_many(hits[:3]))
             return f"[错误] 未知工具 {name}。可用工具：{', '.join(self.registry.names())}"
 
         if (

@@ -97,6 +97,13 @@ class Config:
     max_tool_output_chars: int = 12000
     keep_recent_tool_results: int = 6
     stream: bool = True
+    relay_brief: bool = True           # 多步任务交接时只传「计划+摘要+文件」，不传全量历史
+
+    # ---- 工具按需下发（省固定开销，见 agentforge/toolselect.py）----
+    tools_lazy: bool = True            # True = 只下发核心 + 关键词命中的工具
+    tools_core: list[str] = field(default_factory=list)   # 常驻工具名，空则用内置清单
+    tools_limit: int = 16              # 单轮最多下发几个 schema
+    tools_min_score: int = 2           # 关键词命中的最低分
 
     # ---- 上下文压缩 ----
     compact_threshold: int = 60_000      # 超过这个字符数就触发压缩
@@ -108,6 +115,7 @@ class Config:
     skill_dirs: list[Path] = field(default_factory=list)
     skill_auto_load: bool = True         # 任务命中时自动注入 skill 正文
     skill_min_score: int = 3             # 自动注入所需的最低匹配分
+    skill_auto_max_chars: int = 1600     # 自动注入时正文截断长度（完整性用 use_skill 取）
 
     session_dir: Path = field(default_factory=lambda: ROOT / ".sessions")
 
@@ -159,6 +167,14 @@ class Config:
         cfg.max_tool_output_chars = int(a.get("max_tool_output_chars", 12000))
         cfg.keep_recent_tool_results = int(a.get("keep_recent_tool_results", 6))
         cfg.stream = bool(a.get("stream", True))
+        relay = str(a.get("relay", "brief" if cfg.relay_brief else "full")).strip().lower()
+        cfg.relay_brief = relay != "full"
+
+        t = raw.get("tools", {}) or {}
+        cfg.tools_lazy = bool(t.get("lazy", cfg.tools_lazy))
+        cfg.tools_core = [str(x) for x in (t.get("core", []) or [])]
+        cfg.tools_limit = int(t.get("limit", cfg.tools_limit))
+        cfg.tools_min_score = int(t.get("min_score", cfg.tools_min_score))
 
         c = raw.get("compact", {}) or {}
         cfg.compact_threshold = int(c.get("threshold", cfg.compact_threshold))
@@ -169,6 +185,7 @@ class Config:
         sk = raw.get("skills", {}) or {}
         cfg.skill_auto_load = bool(sk.get("auto_load", cfg.skill_auto_load))
         cfg.skill_min_score = int(sk.get("min_score", cfg.skill_min_score))
+        cfg.skill_auto_max_chars = int(sk.get("auto_max_chars", cfg.skill_auto_max_chars))
         cfg.skill_dirs = [
             Path(_expand(d)) for d in (sk.get("dirs", []) or [])
         ]
