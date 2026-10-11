@@ -693,6 +693,9 @@ class _Handler(BaseHTTPRequestHandler):
                     steps = ev["steps"]
                     self._sse("complete", {"steps": ev["steps"], "multi": ev["multi"]})
         except Exception as e:  # noqa: BLE001
+            # 常见情形：浏览器关页/刷新把 SSE 连接断了，继续生成只是白烧 token。
+            # 顺手立起停止标志，让流式循环在下一个块就退出。
+            runcontrol.request_stop(task_id)
             err_msg = f"{type(e).__name__}: {e}"
             try:
                 self._sse("error", {"message": err_msg})

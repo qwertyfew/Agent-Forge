@@ -24,7 +24,7 @@ from typing import Any, Iterator
 import requests
 
 from .config import ModelSpec
-from .llm import LLMResult, ThinkFilter, _finalize_tool_calls, _merge_tool_calls
+from .llm import LLMResult, ThinkFilter, GenerationStopped, _finalize_tool_calls, _merge_tool_calls
 
 
 class ProviderError(RuntimeError):
@@ -95,6 +95,7 @@ class OpenAIClient:
         think: bool | None = None,
         keep_alive: str | None = None,
         spec: ModelSpec | None = None,
+        stop_check=None,
     ) -> Iterator[tuple[str, Any]]:
         payload: dict[str, Any] = {
             "model": model,
@@ -127,6 +128,8 @@ class OpenAIClient:
             for raw in resp.iter_lines(decode_unicode=True):
                 if not raw:
                     continue
+                if stop_check is not None and stop_check():
+                    raise GenerationStopped(result)
                 line = raw.strip()
                 if not line.startswith("data:"):
                     continue
@@ -290,6 +293,7 @@ class AnthropicClient:
         think: bool | None = None,
         keep_alive: str | None = None,
         spec: ModelSpec | None = None,
+        stop_check=None,
     ) -> Iterator[tuple[str, Any]]:
         system, msgs = self._convert_messages(messages)
         opts = dict(options or {})
@@ -330,6 +334,8 @@ class AnthropicClient:
             for raw in resp.iter_lines(decode_unicode=True):
                 if not raw:
                     continue
+                if stop_check is not None and stop_check():
+                    raise GenerationStopped(result)
                 line = raw.strip()
                 if not line.startswith("data:"):
                     continue
@@ -463,6 +469,7 @@ class ClientHub:
     def chat_stream(self, spec: ModelSpec, messages: list[dict],
                     tools: list[dict] | None = None, **kw) -> Iterator[tuple[str, Any]]:
         client = self.client_for(spec)
+        stop_check = kw.pop("stop_check", None)   # 停止信号一路传进流式循环
         args = dict(
             model=spec.remote_model,
             messages=messages,
@@ -473,10 +480,11 @@ class ClientHub:
         )
         args.update(kw)
         if isinstance(client, (OpenAIClient, AnthropicClient)):
-            return client.chat_stream(**args)
+            return client.chat_stream(**args, stop_check=stop_check)
         return client.chat_stream(
             model=args["model"], messages=messages, tools=tools,
             options=args["options"], think=args["think"],
+            stop_check=stop_check,
         )
 
     def chat(self, spec: ModelSpec, messages: list[dict],

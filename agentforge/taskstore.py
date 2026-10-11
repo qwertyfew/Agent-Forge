@@ -149,9 +149,17 @@ class TaskStore:
         tasks: list[Task] = []
         for item in items or []:
             try:
-                tasks.append(Task(**item))
+                t = Task(**item)
             except TypeError:
                 continue
+            # 进程重启后不可能还有真在跑的任务。留着 running 会让界面
+            # 误以为有任务在执行：按钮一直停在「暂停」、落地页判定失效
+            # （输入框贴顶）。启动时统一归正为中断。
+            if t.status == "running":
+                t.status = "error"
+                t.error = "服务重启时该任务仍在执行，已标记为中断"
+                t.ended_at = t.ended_at or _now()
+            tasks.append(t)
         return tasks
 
     def _save(self) -> None:

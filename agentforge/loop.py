@@ -9,6 +9,7 @@ from .artifact import classify_tool_write
 from .context import Compressor, measure
 from .llm import OllamaClient, parse_text_tool_calls
 from .memory import MemoryStore
+from .llm import GenerationStopped
 from .permissions import OUTSIDE_OK, Guard, PermissionDenied
 from .pricing import cost_of, is_free
 from .providers import ClientHub
@@ -302,13 +303,20 @@ class Agent:
 
             result = None
             try:
-                for kind, payload in self.hub.chat_stream(spec, messages, tools):
+                for kind, payload in self.hub.chat_stream(spec, messages, tools,
+                                                          stop_check=stopped):
                     if kind == "delta":
                         yield {"type": "delta", "text": payload}
                     elif kind == "thinking":
                         yield {"type": "thinking", "text": payload}
                     elif kind == "result":
                         result = payload
+            except GenerationStopped:
+                # 用户在生成中途点了停止：此时 assistant 消息还没 push 进历史，
+                # 半截内容直接丢弃，按「用户停止」收尾，不等下一个检查点。
+                yield {"type": "stopped", "step": step,
+                       "reason": "用户停止（生成中断）", "history": history}
+                return
             except Exception as e:  # noqa: BLE001
                 yield {"type": "error", "message": f"模型调用失败：{e}"}
                 return

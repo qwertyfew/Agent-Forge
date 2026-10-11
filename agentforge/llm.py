@@ -33,6 +33,18 @@ class LLMResult:
         return self.eval_count / (self.eval_duration_ns / 1e9)
 
 
+class GenerationStopped(Exception):
+    """流式生成中途被停止信号打断（见 chat_stream 的 stop_check）。
+
+    result 里带着已生成的半截内容。调用方不要当普通错误处理：
+    不重试、不当网络故障，直接按「用户停止」收尾。
+    """
+
+    def __init__(self, result: "LLMResult"):
+        super().__init__("生成被停止信号打断")
+        self.result = result
+
+
 def _merge_tool_calls(acc: dict[int, dict], incoming: list[dict]) -> None:
     """Ollama 流式返回里 tool_calls 可能分片到达，按 index 合并。"""
     for i, tc in enumerate(incoming or []):
@@ -245,8 +257,12 @@ class OllamaClient:
         options: dict | None = None,
         think: bool | None = None,
         keep_alive: str | None = None,
+        stop_check=None,
     ) -> Iterator[tuple[str, Any]]:
-        """产出 ("delta", str) / ("thinking", str) 增量事件，最后产出 ("result", LLMResult)。"""
+        """产出 ("delta", str) / ("thinking", str) 增量事件，最后产出 ("result", LLMResult)。
+
+        stop_check 非空时在流式循环里逐块检查：返回 True 就抛 GenerationStopped，
+        让「正在生成的那一次回复」也能被暂停按钮打断，而不是等它跑完。"""
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -279,6 +295,8 @@ class OllamaClient:
             for line in resp.iter_lines(decode_unicode=True):
                 if not line:
                     continue
+                if stop_check is not None and stop_check():
+                    raise GenerationStopped(result)
                 try:
                     chunk = json.loads(line)
                 except json.JSONDecodeError:
