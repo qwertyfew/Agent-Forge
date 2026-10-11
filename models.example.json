@@ -1,0 +1,69 @@
+{
+  "_note": "模板文件，不会被程序读取。要用请先复制成 models.json（cp models.example.json models.json），再把下面每个 api_key 填成自己的密钥；api_key 为空串时该模型会被标记为「本机不可用」，不参与路由。models.json 已 gitignore，密钥只留在你那台机器上。",
+  "version": 1,
+  "enabled": [],
+  "paid": [
+    {
+      "id": "paid:deepseek-deepseek-v4-pro",
+      "key": "paid:deepseek-deepseek-v4-pro",
+      "provider": "deepseek",
+      "model_id": "deepseek-v4-pro",
+      "label": "DeepSeek V4-Pro（旗舰）",
+      "api_key": "",
+      "base_url": "https://api.deepseek.com/v1",
+      "num_ctx": 262144
+    },
+    {
+      "id": "paid:deepseek-deepseek-flash",
+      "key": "paid:deepseek-deepseek-flash",
+      "provider": "deepseek",
+      "model_id": "deepseek-flash",
+      "label": "DeepSeek Flash（快速推理）",
+      "api_key": "",
+      "base_url": "https://api.deepseek.com/v1",
+      "num_ctx": 131072
+    },
+    {
+      "id": "paid:siliconflow-deepseek-ai-deepseek-v4-flash",
+      "key": "paid:siliconflow-deepseek-ai-deepseek-v4-flash",
+      "provider": "siliconflow",
+      "model_id": "deepseek-ai/DeepSeek-V4-Flash",
+      "label": "DeepSeek V4-Flash（硅基）",
+      "api_key": "",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "num_ctx": 131072
+    },
+    {
+      "id": "paid:siliconflow-zai-org-glm-5.3",
+      "key": "paid:siliconflow-zai-org-glm-5.3",
+      "provider": "siliconflow",
+      "model_id": "zai-org/GLM-5.3",
+      "label": "GLM-5.3（智谱旗舰）",
+      "api_key": "",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "num_ctx": 262144
+    },
+    {
+      "id": "paid:siliconflow-moonshotai-kimi-k2.7-code",
+      "key": "paid:siliconflow-moonshotai-kimi-k2.7-code",
+      "provider": "siliconflow",
+      "model_id": "moonshotai/Kimi-K2.7-Code",
+      "label": "Kimi K2.7-Code（编码）",
+      "api_key": "",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "num_ctx": 262144
+    },
+    {
+      "id": "paid:siliconflow-qwen-qwen3.8-27b",
+      "key": "paid:siliconflow-qwen-qwen3.8-27b",
+      "provider": "siliconflow",
+      "model_id": "Qwen/Qwen3.8-27B",
+      "label": "Qwen3.8-27B（中文/通用）",
+      "api_key": "",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "num_ctx": 262144
+    }
+  ],
+  "budget": 3,
+  "score_overrides": {}
+}

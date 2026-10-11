@@ -10,12 +10,12 @@
 本地模型全部自动进入目录（用户不用手填）；付费模型由用户在设置页添加，
 填好厂商 / 模型号 / API Key 之后自动成为可用模型，并参与评分与路由。
 
-状态分两个文件落盘，按"是否跟机器走"来分：
+状态分两个文件落盘，**两个都不进版本库**——密钥和本机探测结果都不该跟着代码走：
 
-    models.json       在线模型配置与 API Key —— **跟着版本库走**，换台电脑 clone
-                      下来就能直接用（本项目单人使用，密钥随库走是可接受的取舍）
-    models.local.json 本地模型的自动探测结果（窗口该开多大）—— **不进版本库**，
-                      因为它只对探测时那台机器（那台机器的模型与显存）成立。
+    models.json       在线模型配置与 API Key —— 含密钥，只留本机；
+                      仓库里放的是模板 models.example.json（api_key 留空）
+    models.local.json 本地模型的自动探测结果（窗口该开多大）—— 只对探测时那台
+                      机器（那台机器的模型与显存）成立
 """
 
 from __future__ import annotations
@@ -33,7 +33,8 @@ ROOT = Path(__file__).resolve().parent.parent
 STORE_PATH = ROOT / "models.json"
 # 本地模型的自动配置（原生窗口等）单独存一份：每台机器上的模型与显存不同，
 # 探测结果跟着代码走版本库只会误导（那边可能根本没装这个模型）。
-# models.json 则是要跟着走的——里面有在线模型的 API Key，换台机器 clone 下来就能用。
+# models.json 同样不进版本库——里面有在线模型的 API Key，一旦提交就永久留在 git 历史里；
+# 仓库里只放模板 models.example.json（api_key 留空），照它复制一份再填密钥即可。
 LOCAL_PATH = ROOT / "models.local.json"
 
 # 付费厂商预设：base_url 与常见模型号，前端用它填默认值

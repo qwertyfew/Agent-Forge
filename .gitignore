@@ -23,9 +23,11 @@ _tmp/
 .vscode/
 .idea/
 
-# 本地模型的自动配置（每台机器上装了哪些模型、显存多大都不同，探测结果不入库）
-# 注意：models.json **故意入库**——里面有在线模型的 API Key，
-# 这样换台电脑 clone 下来就直接能用，不用重新填 key。
+# 模型状态文件一律只留本机，不入库：
+# models.json 里存着在线模型的 API Key，入库等于把密钥写进 git 历史（改不掉，只能重写历史）。
+# 通用模板是 models.example.json（已入库），照它复制一份 models.json 再填 key。
+# models.local.json 是本地模型的自动探测结果（每台机器装了哪些模型、显存多大都不同）。
+models.json
 models.local.json
 
 # 任务历史与运行状态（每次运行都在变，不入库）

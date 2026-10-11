@@ -58,8 +58,13 @@ cd Agent-Forge
 
 两个脚本都会在缺虚拟环境时**自动创建并安装依赖**，然后起服务（`http://127.0.0.1:8787`）。
 
-`config.yaml` 里不含任何绝对路径，在线模型与 API Key 也已在 `models.json` 里跟着仓库走，
-所以**clone 下来就能直接用在线模型开工**——不必先装 Ollama，也不必先拉本地模型：
+`config.yaml` 里不含任何绝对路径，但**在线模型的 API Key 不在版本库里**（见下文「配置」），
+所以 clone 下来只需做一次「复制模板 + 填 Key」，就能直接用在线模型开工，
+不必先装 Ollama、也不必先拉本地模型：
+
+```bash
+cp models.example.json models.json   # 再把里面的 api_key 填成自己的
+```
 
 - **在线模型：开箱可用。** 本机一个本地模型都没有时，任务池会自动退回到所有配好的在线模型，
   路由按各维度得分分配；界面上会提示一句「勾选的模型在这台机器上都跑不起来…本次已改用可用模型：X」。
@@ -112,10 +117,19 @@ workspace:
   # state_dir: D:\where\to\keep\.agentforge   # 长期记忆与附件的落点，默认 <工作区>/.agentforge
 ```
 
-版本库里**包含** `models.json`：在线模型的配置与 API Key 都在里面，换台电脑 clone 下来就能用，
-不用重新填 key（仓库是私有的）。
+版本库里**不含** `models.json`：里面存着在线模型的 API Key，入库等于把密钥写进 git 历史
+（一旦提交就只能靠重写历史清除），所以它已 gitignore。仓库里放的是**模板**
+`models.example.json`——结构与 `models.json` 完全一致，只是 `api_key` 全部留空：
 
-**不含**下列机器相关状态（已 gitignore）：`config.lanrun.yaml` / `config.local.yaml`
+```bash
+cp models.example.json models.json   # 填上 api_key 即可用
+```
+
+`api_key` 为空串的模型会被标成「本机不可用」，自动退出路由与任务池，
+所以模板里没填的那几家不会把任务带沟里，只会被跳过。
+
+**不含**下列机器相关状态（已 gitignore）：`models.json`（在线模型配置与 API Key）、
+`config.lanrun.yaml` / `config.local.yaml`
 （本机专属配置，含绝对路径与按显存调的模型窗口）、`models.local.json`（本地模型的自动探测结果，
 每台机器装了哪些模型、显存多大都不同）、`.tasks.json`、`.prefs.json`、`.agentforge/`
 （工作区记忆）、`.sessions/`、`.venv/`、`.run/`。

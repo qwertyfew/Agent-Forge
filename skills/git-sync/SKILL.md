@@ -60,19 +60,21 @@ style: 侧栏栏目互斥淡显
 
 ## 红线（必须遵守）
 
-1. **提交范围按「跟不跟机器走」划分**（本项目单人使用，密钥随库走是明确的取舍）：
-   - **要提交**：源码、`config.yaml`（通用模板，**不含绝对路径**）、`models.json`（在线模型
-     配置与 API Key，换台电脑 clone 下来就能用，**不要**把它当成需要排除的密钥文件）、
-     `README`、`docs/`、`examples/`。
-   - **不提交**：`config.lanrun.yaml` / `config.local.yaml`（本机专属配置，含绝对路径与
-     按本机显存调的模型窗口）、`models.local.json`（本地模型自动探测结果，只对探测那台机器
-     成立）、`.tasks.json`、`.prefs.json`、`.agentforge/`、`.sessions/`、`.run/`、`.venv/`
-     （均已在 `.gitignore` 里）。
+1. **提交范围按「跟不跟机器走」划分**：
+   - **要提交**：源码、`config.yaml`（通用模板，**不含绝对路径**）、`models.example.json`
+     （模型配置模板，里面的 `api_key` 必须留空）、`README`、`docs/`、`examples/`。
+   - **不提交**：`models.json`（在线模型配置与 **API Key**——密钥一旦提交就会永久留在 git
+     历史里，只能靠重写历史清除）、`config.lanrun.yaml` / `config.local.yaml`（本机专属配置，
+     含绝对路径与按本机显存调的模型窗口）、`models.local.json`（本地模型自动探测结果，只对
+     探测那台机器成立）、`.tasks.json`、`.prefs.json`、`.agentforge/`、`.sessions/`、
+     `.run/`、`.venv/`（均已在 `.gitignore` 里）。
    `git add -A` 之后必须用
-   `git diff --cached --name-only | grep -Ei "config\.(lanrun|local)\.yaml|models\.local\.json|tasks\.json|prefs\.json|\.venv|\.run/|sessions|\.env"`
-   自查一遍，命中就 `git reset` 掉再处理。
+   `git diff --cached --name-only | grep -Ei "(^|/)models\.json$|config\.(lanrun|local)\.yaml|models\.local\.json|tasks\.json|prefs\.json|\.venv|\.run/|sessions|\.env"`
+   自查一遍，命中就 `git reset` 掉再处理。**任何像 `sk-` 开头的长串都不许进提交**。
 2. 不提交二进制/大文件（模型权重、截图、日志）。
 3. 不 `git push --force`、不 `git reset --hard` 丢弃他人提交。
+   唯一例外：清除已误提交的密钥需要重写历史，此时必须**先经用户显式同意**，
+   且动手前先 `git bundle` 或建备份分支留退路。
 4. 提交前确保代码能跑（至少 `python -c "import ast; ast.parse(open('webui.py',encoding='utf-8').read())"`
    与前端 `<script>` 语法校验通过）。
 
