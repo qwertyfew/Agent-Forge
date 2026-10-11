@@ -331,9 +331,19 @@
   .rail:hover .rl{display:block}
   .rail-it:hover .mk{opacity:.85;width:18px}
   .rail-it.cur .mk{opacity:1;width:22px;background:var(--ink)}
-  .msg-user{display:flex;justify-content:flex-end}
+  .msg-user{display:flex;justify-content:flex-end;position:relative}
   .msg-user .bub{max-width:78%;background:var(--bubble);color:var(--bubble-ink);
     border-radius:20px;padding:9px 15px;white-space:pre-wrap;word-break:break-word}
+  /* 自己发的那条也能复制：平时不占地方，鼠标靠近气泡右下方才浮出来（见 bindUserCopy）。
+     图标与回复工具条上的复制用同一个（FOOT_ICON.copy）。
+     挂在气泡外侧，所以给个 --shadow 让它像浮片一样压在上面，而不是贴在下面那条消息上。 */
+  .msg-user .ubcopy{position:absolute;right:0;bottom:-21px;z-index:2;width:22px;height:22px;
+    display:flex;align-items:center;justify-content:center;border-radius:8px;font-size:13px;line-height:1;
+    border:1px solid var(--line);background:var(--panel);color:var(--ink3);box-shadow:var(--shadow);
+    opacity:0;pointer-events:none;transition:opacity .14s ease,color .14s ease,border-color .14s ease}
+  .msg-user.show-copy .ubcopy,.msg-user .ubcopy:focus-visible{opacity:1;pointer-events:auto}
+  .msg-user .ubcopy:hover{color:var(--ink);border-color:var(--ink3)}
+  .msg-user .ubcopy.done{color:var(--ok);border-color:var(--ok)}
   .msg-ai{display:flex;flex-direction:column;gap:2px;min-width:0}
   .msg-ai .body{white-space:pre-wrap;word-break:break-word}
   .msg-ai .body pre{background:var(--code);border:1px solid var(--line);border-radius:12px;
@@ -2274,9 +2284,53 @@ function resetChat(){
 }
 $('btnNew').onclick = resetChat;
 
+/* 自己发的那条也能复制。按钮和回复工具条上的复制是同一个图标（FOOT_ICON.copy），
+   平时 opacity:0 收着，指针凑到气泡右下角附近才浮出来——省得每条提问下面都挂一排图标。 */
+const USER_COPY_ZONE = 150;   // 距气泡右下角多近算「靠近」
+function userCopyBtn(text){
+  const btn = el('button','ubcopy');
+  btn.type = 'button';
+  btn.innerHTML = FOOT_ICON.copy;
+  btn.title = '复制这条提问';
+  btn.setAttribute('aria-label','复制这条提问');
+  btn.onclick = async ()=>{
+    if(!await copyToClipboard(text)) return;
+    btn.classList.add('done');
+    btn.innerHTML = '✓';
+    setTimeout(()=>{ btn.classList.remove('done'); btn.innerHTML = FOOT_ICON.copy; }, 1200);
+  };
+  return btn;
+}
+function bindUserCopy(m){
+  const bub = m.querySelector('.bub');
+  const btn = m.querySelector('.ubcopy');
+  if(!bub || !btn) return;
+  let t = null, rect = null;
+  m.addEventListener('mouseenter', ()=>{ clearTimeout(t); rect = bub.getBoundingClientRect(); });
+  m.addEventListener('mousemove', e=>{
+    if(m.classList.contains('show-copy')) return;   // 已经露出来了，不必每帧再量一次
+    if(!rect) rect = bub.getBoundingClientRect();
+    const dx = rect.right - e.clientX, dy = rect.bottom - e.clientY;
+    // 邻域以气泡右下角为原点：向左、向上各 150px；向右、向下留 30px——
+    // 下面那 30px 是给按钮本身留的，它挂在气泡外侧，指针得够得着。
+    if(dx > -30 && dx < USER_COPY_ZONE && dy > -30 && dy < USER_COPY_ZONE){
+      clearTimeout(t);
+      m.classList.add('show-copy');
+    }
+  });
+  // 移开就收，留一点宽限，指针从气泡挪到按钮上时不会先消失
+  m.addEventListener('mouseleave', ()=>{
+    rect = null;
+    clearTimeout(t);
+    t = setTimeout(()=> m.classList.remove('show-copy'), 200);
+  });
+  btn.addEventListener('blur', ()=> m.classList.remove('show-copy'));
+}
 function addUser(text){
   const m = el('div','msg-user');
   m.appendChild(el('div','bub', text));
+  m.appendChild(userCopyBtn(text));
+  bindUserCopy(m);
   log.appendChild(m);
   scrollBottom();
   rebuildRail();
@@ -2435,6 +2489,30 @@ function plainText(mdText){
   return d.textContent || '';
 }
 
+/* 复制到剪贴板。异步 Clipboard API 只在安全上下文（https 或 localhost）下可用，
+   从局域网 IP 打开时是 undefined，所以留一条 execCommand 的退路。 */
+async function copyToClipboard(text){
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  }catch(e){ /* 落到下面的兜底 */ }
+  try{
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly','');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return !!ok;
+  }catch(e){ return false; }
+}
+
 function attachMsgFoot(){
   if(!cur || cur.foot) return;
   const text = cur.text;
@@ -2445,11 +2523,9 @@ function attachMsgFoot(){
   bCopy.innerHTML = FOOT_ICON.copy + '<span>复制</span>';
   bCopy.title = '复制全文';
   bCopy.onclick = async ()=>{
-    try{
-      await navigator.clipboard.writeText(text);
-      bCopy.querySelector('span').textContent = '已复制';
-      setTimeout(()=>{ bCopy.querySelector('span').textContent = '复制'; }, 1200);
-    }catch(e){}
+    if(!await copyToClipboard(text)) return;
+    bCopy.querySelector('span').textContent = '已复制';
+    setTimeout(()=>{ bCopy.querySelector('span').textContent = '复制'; }, 1200);
   };
 
   const bRedo = el('button','act');
