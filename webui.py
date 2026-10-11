@@ -845,7 +845,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         root = Path(self.cfg.workspace_root).resolve()
-        folder = root / ".agentforge" / "uploads"
+        folder = self.cfg.state() / "uploads"
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / safe
         # 同名不覆盖，改名 a-1.png、a-2.png …
@@ -857,7 +857,12 @@ class _Handler(BaseHTTPRequestHandler):
             target = folder / f"{stem}-{i}{suffix}"
         target.write_bytes(blob)
 
-        rel = target.relative_to(root).as_posix()
+        try:
+            rel = target.relative_to(root).as_posix()
+        except ValueError:
+            # 状态目录被配到了工作区之外。附件要能被智能体读到才算数，
+            # 这里不崩、退回绝对路径，让用户从提示里看出问题。
+            rel = str(target)
         self._json(
             {
                 "ok": True,
@@ -921,7 +926,7 @@ def serve(cfg: Config, auto_approve: bool, port: int, host: str = "127.0.0.1"):
     cli = CLI(cfg, auto_approve=auto_approve)
     tasks = TaskStore(HERE / ".tasks.json")
     prefs = PrefsStore(HERE / ".prefs.json")
-    mem = MemoryStore(Path(cfg.workspace_root) / ".agentforge" / "memory.md")
+    mem = MemoryStore(cfg.state() / "memory.md")
     # 上次进程退出时没来得及收尾的任务：标成「已中断」，别让界面一直转圈
     orphans = tasks.mark_orphaned()
     handler = type(

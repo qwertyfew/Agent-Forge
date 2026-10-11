@@ -13,4 +13,8 @@ if [ ! -d .venv ]; then
 fi
 
 mkdir -p .run
-exec .venv/bin/python run.py -c config.lanrun.yaml --web --port 8787
+# 本机专属配置优先；新克隆的机器上还没有它，就退回通用模板 config.yaml
+CFG=config.yaml
+[ -f config.lanrun.yaml ] && CFG=config.lanrun.yaml
+echo "[AgentForge] 使用配置 $CFG"
+exec .venv/bin/python run.py -c "$CFG" --web --port 8787

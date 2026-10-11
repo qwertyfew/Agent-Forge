@@ -22,5 +22,8 @@ if not exist .venv (
 )
 
 if not exist .run mkdir .run
-start "AgentForge" /min .venv\Scripts\python.exe run.py -c config.lanrun.yaml --web --port 8787
-echo [AgentForge] 已启动，稍候几秒后打开 http://127.0.0.1:8787
+rem 本机专属配置优先；新克隆的机器上还没有它，就退回通用模板 config.yaml
+set CFG=config.yaml
+if exist config.lanrun.yaml set CFG=config.lanrun.yaml
+start "AgentForge" /min .venv\Scripts\python.exe run.py -c %CFG% --web --port 8787
+echo [AgentForge] 已启动（配置 %CFG%），稍候几秒后打开 http://127.0.0.1:8787

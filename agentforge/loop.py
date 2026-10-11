@@ -88,7 +88,7 @@ class Agent:
         # 本轮实际下发的工具名集合：系统提示里的「工具索引」要把它们排除掉
         self._active_tool_names: set[str] = set()
         # 长期记忆：任务开始前读进来注入系统提示，任务结束后由 remember 工具追加
-        self.memory = MemoryStore(Path(cfg.workspace_root) / ".agentforge" / "memory.md")
+        self.memory = MemoryStore(cfg.state() / "memory.md")
         # 权限模式的中文名，只用于系统提示里的一句话说明
         self.permission_label = "完全访问权限"
 

@@ -57,12 +57,13 @@ cd Agent-Forge
 ```
 
 两个脚本都会在缺虚拟环境时**自动创建并安装依赖**，然后起服务（`http://127.0.0.1:8787`）。
-模型清单与在线模型的 API Key 已在 `models.json` 里跟着仓库走，不用重填；
-只有两件事需要按新机器改一下：
+`config.yaml` 里不含任何绝对路径、在线模型与 API Key 也已在 `models.json` 里跟着仓库走，
+所以**开箱即可跑**，只剩一件事：
 
-1. `config.yaml` / `config.lanrun.yaml` 里的 `workspace.root` 是绝对路径，改成那台机器上的目录
-   （或启动时用 `-w <目录>` 覆盖）。
-2. `ollama pull` 你需要的本地模型（拉完自动配置，见上）。
+1. `ollama pull` 你需要的本地模型（拉完自动配置窗口，见上）。
+
+想管别的工作区、或按显存调模型窗口，再照 `config.yaml` 复制一份 `config.lanrun.yaml` 来改；
+也可以启动时临时用 `-w <目录>` 覆盖工作区。
 
 ## 运行
 
@@ -75,14 +76,23 @@ python run.py -t "在工作区里新建 hello.py 并运行它"
 
 # Web 界面（默认 http://127.0.0.1:8787）
 python run.py --web
-python run.py -c config.lanrun.yaml --web --port 8787   # 局域网访问
+python run.py -c config.lanrun.yaml --web --port 8787   # 用本机专属配置（若已创建）
 ```
 
 Windows 下可直接双击 `start-web.bat` 后台起服务，日志写入 `.run/web.log`。
 
 ## 配置
 
-`config.yaml` 是主配置，`config.lanrun.yaml` 是局域网/长时间任务的版本（放宽了推理轮数与工具输出长度）。
+`config.yaml` 是**通用模板**，跟着仓库走，刻意不含任何绝对路径——换台电脑 clone 下来直接能用。
+
+想按本机情况调整（工作区路径、模型窗口、步数上限…），**照它复制一份 `config.lanrun.yaml` 来改**：
+
+```bash
+cp config.yaml config.lanrun.yaml
+```
+
+`config.lanrun.yaml` 已 gitignore，属于你那台机器，不会污染版本库。启动脚本会优先用它，
+没有就退回 `config.yaml`。也可以随时用 `-c` 指定别的配置文件。
 
 ```yaml
 ollama:
@@ -93,13 +103,16 @@ models:
     num_ctx: 32768
     think: true     # 必须为 true，否则推理过程会混进正文
 workspace:
-  root: D:\path\to\your\workspace   # Agent 可访问的根目录，越界读写一律拒绝
+  # 不写 root = 用本仓库所在目录，换机器免改
+  root: D:\path\to\your\workspace   # 想管别的工作区时才写，越界读写一律拒绝
+  # state_dir: D:\where\to\keep\.agentforge   # 长期记忆与附件的落点，默认 <工作区>/.agentforge
 ```
 
 版本库里**包含** `models.json`：在线模型的配置与 API Key 都在里面，换台电脑 clone 下来就能用，
 不用重新填 key（仓库是私有的）。
 
-**不含**下列机器相关状态（已 gitignore）：`models.local.json`（本地模型的自动探测结果，
+**不含**下列机器相关状态（已 gitignore）：`config.lanrun.yaml` / `config.local.yaml`
+（本机专属配置，含绝对路径与按显存调的模型窗口）、`models.local.json`（本地模型的自动探测结果，
 每台机器装了哪些模型、显存多大都不同）、`.tasks.json`、`.prefs.json`、`.agentforge/`
 （工作区记忆）、`.sessions/`、`.venv/`、`.run/`。
 

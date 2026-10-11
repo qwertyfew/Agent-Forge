@@ -7,6 +7,12 @@ __pycache__/
 .venv/
 .sessions/
 .run/
+
+# 本机专属配置：工作区绝对路径、模型窗口、步数上限这些换台机器就不成立，
+# 所以不入库。通用模板是 config.yaml（入库），照它复制一份改成本机值即可。
+config.lanrun.yaml
+config.local.yaml
+
 # 开发期诊断脚本与验证截图（本地用，不入库）
 tools/shots*/
 tools/*_probe.py

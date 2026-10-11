@@ -89,6 +89,9 @@ class Config:
     workspace_root: Path = field(default_factory=Path.cwd)
     allow_outside: bool = False
     git_root: Path | None = None      # git 操作的工作目录，默认同工作区根
+    # 运行期状态目录（长期记忆 memory.md、上传的附件）。默认 <工作区>/.agentforge；
+    # 想让它跟着项目走而不落在工作区里，在 config 里指定 state_dir 即可。
+    state_dir: Path | None = None
 
     require_approval: list[str] = field(default_factory=list)
     command_blocklist: list[str] = field(default_factory=list)
@@ -157,6 +160,10 @@ class Config:
         cfg.allow_outside = bool(w.get("allow_outside", False))
         gr = w.get("git_root")
         cfg.git_root = Path(_expand(gr)) if gr else None
+        sd = w.get("state_dir")
+        if sd:
+            p = Path(_expand(sd))
+            cfg.state_dir = p if p.is_absolute() else ROOT / p
 
         p = raw.get("permissions", {}) or {}
         cfg.require_approval = list(p.get("require_approval", []) or [])
@@ -196,6 +203,15 @@ class Config:
             cfg.session_dir = ROOT / cfg.session_dir
 
         return cfg
+
+    def state(self) -> Path:
+        """运行期状态目录（长期记忆、上传附件）的唯一来源。
+
+        此前有四处各自拼 `workspace_root / ".agentforge"`，改一处漏三处；
+        统一到这里。默认落在工作区里，因为记忆是「这个工作区的记忆」，
+        换个工作区就该换一份。
+        """
+        return self.state_dir or (Path(self.workspace_root) / ".agentforge")
 
     def model(self, key: str) -> ModelSpec:
         if key not in self.models:

@@ -15,7 +15,7 @@ from .base import WRITE, make_tool
 
 
 def memory_path(cfg) -> Path:
-    return Path(cfg.workspace_root) / ".agentforge" / "memory.md"
+    return cfg.state() / "memory.md"
 
 
 def build_memory_tools(guard, cfg):

@@ -1,5 +1,9 @@
-# AgentForge 配置
+# AgentForge 配置 —— 通用模板，跟着仓库走
 # 修改后重启生效（Web UI 会在每次请求时重读）
+#
+# 这里是「换台电脑也能直接用」的默认值，所以刻意不写任何绝对路径。
+# 本机专属的调整（工作区路径、模型窗口、步数上限…）请另存一份 config.lanrun.yaml
+# 来改——那个文件不入库，只属于你这台机器。用法见 README「配置」一节。
 
 ollama:
   host: http://localhost:11434
@@ -53,10 +57,14 @@ routing:
     - translate - summarize - rewrite - draft - explain
 
 workspace:
-  # 智能体可访问的根目录，越出此目录的读写一律拒绝
-  root: D:\AI_develop\project
-  # 允许临时越出工作区（例如读取系统文件）。false = 严格限制
+  # 智能体可访问的根目录，越出此目录的读写一律拒绝。
+  # 不写就用本仓库所在目录——clone 到哪就在哪工作，换台电脑不用改这个文件。
+  # 想让它管别的工作区（例如仓库的上级目录）时再打开下面这行：
+  # root: D:\projects\my-workspace
   allow_outside: false
+  # 运行期状态目录（长期记忆 memory.md、上传的附件）。
+  # 不写 = <工作区>/.agentforge。留空即可，除非你想让它落在别处。
+  # state_dir: D:\AI_develop\project\agent-forge\.agentforge
 
 permissions:
   # 这些工具执行前需要人工确认（CLI 会弹确认，Web UI 会标红）
@@ -119,9 +127,10 @@ skills:
   min_score: 2           # 自动注入所需的最低关键词命中数，调高可减少误触发
   auto_max_chars: 1600   # 自动注入时正文的截断长度（按小节切，不切半句）；
                          # 完整的正文模型会用 use_skill 自己取
-  dirs:
-    - D:\AI_develop\project\agent-forge\skills
-  # 除了上面这些目录，还会自动扫描 ~/.agentforge/skills
+  # 额外扫描的 skill 目录。默认已经会扫 <工作区>/skills 与 ~/.agentforge/skills，
+  # 通常不需要写；只有技能放在别处时才打开：
+  # dirs:
+  #   - D:\my-skills
 
 session:
   dir: .sessions
