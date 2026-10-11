@@ -52,6 +52,14 @@ OUTSIDE_RULE = {
     False: "越出工作区的路径会被拒绝",
 }
 
+# 长对话末端的语言提醒。系统提示开头明明写了「用中文回复」，但本地小模型
+# 在几十轮工具调用之后经常把它「忘」了，回复漂移成英文（实测 gemma4:12b，
+# 中文维度分只有 62）。把关键输出要求复述一份放在消息列表最末尾——
+# 那是生成时注意力离得最近的位置。system 角色放末尾对三家 provider 都安全
+# （Anthropic 的 _convert_messages 会把任意位置的 system 归拢进顶层参数）。
+LANG_REMINDER = {"role": "system",
+                 "content": "提醒：忽略过程中的语言，最终回复一律用简体中文。"}
+
 # 长期记忆注入时的标题。写成指令而不是资料，模型才会真的照做
 MEMORY_HEADER = """## 长期记忆（来自以往任务，继续遵守）
 以下是以前的任务记下来的结论与偏好，请在本轮工作中遵守：
@@ -300,6 +308,7 @@ class Agent:
             # 每轮重算：这轮刚用过的工具、刚 find_tools 取过的工具，下一轮要常驻下发
             tools = self._active_tools(ctx)
             messages = self._compact(self.messages_with_system(ctx))
+            messages.append(dict(LANG_REMINDER))
 
             result = None
             try:
