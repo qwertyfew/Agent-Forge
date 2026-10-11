@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,6 +44,53 @@ def est_tokens(text: str) -> float:
     return cjk * 1.05 + (len(text) - cjk) / 3.8
 
 
+class TaskBus:
+    """任务事件广播器：让多个 SSE 订阅者看到同一条任务流。
+
+    为什么需要：任务的事件流原本只有一个消费者——发起请求的那个 HTTP 连接。
+    谁先连上谁独享，别人（典型：用户浏览器「接管」了 CLI/脚本发起的任务）
+    只能靠 5 秒一次的轮询看进度条，看不到流式的思考与回复。
+
+    现在每个运行中的任务挂一个 bus：
+    - publish 把事件同时写进缓冲（供后来的订阅者重放）和每个订阅者的队列；
+    - 发起方自己不经过 bus（直接写自己的连接），它断了也不会误伤别的订阅者；
+    - 订阅者断开只是摘掉自己，不影响任务本身。
+    """
+
+    def __init__(self, max_buffer: int = 8000):
+        self._max = max_buffer
+        self._lock = threading.Lock()
+        self._buffer: list[tuple[str, str]] = []       # (event, 已序列化的 data)
+        self._subs: list[queue.Queue] = []
+
+    def publish(self, event: str, data_json: str) -> None:
+        with self._lock:
+            self._buffer.append((event, data_json))
+            if len(self._buffer) > self._max:
+                # 留后一半：重放时丢的是最早的过程，task/combo/plan 等关键帧
+                # 可能被截掉，前端反正有轮询兜底，可接受
+                self._buffer = self._buffer[-(self._max // 2):]
+            subs = list(self._subs)
+        for q in subs:
+            q.put((event, data_json))
+
+    def subscribe(self) -> tuple[queue.Queue, list[tuple[str, str]]]:
+        q: queue.Queue = queue.Queue()
+        with self._lock:
+            backlog = list(self._buffer)
+            self._subs.append(q)
+        return q, backlog
+
+    def unsubscribe(self, q: queue.Queue) -> None:
+        with self._lock:
+            if q in self._subs:
+                self._subs.remove(q)
+
+    def subscriber_count(self) -> int:
+        with self._lock:
+            return len(self._subs)
+
+
 class _Handler(BaseHTTPRequestHandler):
     cli: "CLI" = None  # type: ignore[assignment]
     cfg: Config = None  # type: ignore[assignment]
@@ -50,6 +98,10 @@ class _Handler(BaseHTTPRequestHandler):
     tasks: TaskStore = None  # type: ignore[assignment]
     prefs: PrefsStore = None  # type: ignore[assignment]
     mem: MemoryStore = None  # type: ignore[assignment]
+    # 运行中任务的事件总线（task_id -> TaskBus）；刚结束的挪进 done_buses 供
+    # 迟到的接管者重放，数量封顶防止常驻内存
+    buses: dict = {}
+    done_buses: dict = {}
     _discovered: list[str] = []
     _discovered_at: float = 0.0
 
@@ -116,6 +168,10 @@ class _Handler(BaseHTTPRequestHandler):
             )
         elif path == "/api/models":
             self._json(self._models_snapshot())
+        elif path.startswith("/api/tasks/") and path.endswith("/stream"):
+            # 接管者的事件流：先重放缓冲，再续播实时事件，直到 done
+            tid = path[len("/api/tasks/"):-len("/stream")]
+            self._handle_task_stream(tid)
         elif path == "/api/tasks":
             self._handle_tasks_get()
         elif path == "/api/prefs":
@@ -200,6 +256,45 @@ class _Handler(BaseHTTPRequestHandler):
                 "path": str(self.mem.path),
             },
         }
+    def _handle_task_stream(self, task_id: str):
+        """接管者的 SSE：重放 + 续播一个任务的事件流。
+
+        任务的发起连接是独占的，别人接不上；但每个事件都进了 TaskBus 的缓冲，
+        这里先吐缓冲、再跟随订阅队列，网页就能看到和发起者一样的流式过程。
+        订阅者断开只影响自己，不碰任务；任务结束后总线挪进 done_buses，
+        迟到一会儿的接管者仍能重放，只是收不到「以后」的事件了。
+        """
+        bus = type(self).buses.get(task_id) or type(self).done_buses.get(task_id)
+        if bus is None:
+            self._json({"error": "该任务没有可重放的事件流"}, 404)
+            return
+        self._sse_headers()
+        q, backlog = bus.subscribe()
+        try:
+            for event, data_json in backlog:
+                self.wfile.write(f"event: {event}\ndata: {data_json}\n\n".encode("utf-8"))
+            self.wfile.write(b"retry: 2000\n\n")
+            self.wfile.flush()
+            # 缓冲里已经带着 done（任务在订阅前就结束了）：重放完直接收摊，
+            # 否则下面的队列等待永远等不到第二个 done，连接只能挂到客户端超时
+            had_done = any(e == "done" for e, _ in backlog)
+            while not had_done:
+                try:
+                    event, data_json = q.get(timeout=15)
+                except queue.Empty:
+                    # 心跳：让浏览器与中间层知道连接还活着
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    continue
+                self.wfile.write(f"event: {event}\ndata: {data_json}\n\n".encode("utf-8"))
+                self.wfile.flush()
+                if event == "done":
+                    break
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # 接管者关页/刷新，正常
+        finally:
+            bus.unsubscribe(q)
+
     def _handle_tasks_get(self):
         query = urlparse(self.path).query
         tid = ""
@@ -553,6 +648,15 @@ class _Handler(BaseHTTPRequestHandler):
         # 模型名交给后面的 assign 事件补（那里给的是给人看的展示名）。
         started_at = time.time()
         task_id = self.tasks.begin(message, permission=permission)
+        # 任务事件广播：发起连接直写自己，同时所有事件进总线——网页接管
+        # （/api/tasks/<id>/stream）靠它重放+续播，不再只有干巴巴的进度条
+        bus = TaskBus()
+        self.buses[task_id] = bus
+
+        def emit(event: str, data: dict):
+            bus.publish(event, json.dumps(data, ensure_ascii=False))
+            self._sse(event, data)
+
         runcontrol.set_current_task(task_id)   # 让 remember 工具知道记忆归属哪个任务
         stop_ev = runcontrol.register(task_id)
         file_log: list[dict] = []              # 写类工具动过的文件
@@ -585,7 +689,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         self._sse_headers()
         try:
-            self._sse(
+            emit(
                 "task",
                 {
                     "id": task_id,
@@ -601,23 +705,23 @@ class _Handler(BaseHTTPRequestHandler):
                                auto_approve=auto_approve, file_log=file_log):
                 kind = ev["type"]
                 if kind == "delta":
-                    self._sse("delta", {"text": ev["text"]})
+                    emit("delta", {"text": ev["text"]})
                 elif kind == "thinking":
-                    self._sse("thinking", {"text": ev["text"]})
+                    emit("thinking", {"text": ev["text"]})
                 elif kind == "step":
                     round_now = int(ev.get("step") or 0)
                     self.tasks.touch(task_id, model=ev.get("model") or "",
                                      progress=progress_text())
-                    self._sse("step", {"step": round_now, "model": ev.get("model", ""),
+                    emit("step", {"step": round_now, "model": ev.get("model", ""),
                                        "progress": progress_text()})
                 elif kind == "tool_start":
                     tool_calls += 1
                     self.tasks.touch(task_id, tool=True, progress=progress_text())
-                    self._sse("tool_start", {"name": ev["name"], "args": ev["args"]})
+                    emit("tool_start", {"name": ev["name"], "args": ev["args"]})
                 elif kind == "tool_result":
-                    self._sse("tool_result", {"name": ev["name"], "output": ev["output"]})
+                    emit("tool_result", {"name": ev["name"], "output": ev["output"]})
                 elif kind == "skill":
-                    self._sse("skill", {"name": ev["name"], "detail": ev["detail"]})
+                    emit("skill", {"name": ev["name"], "detail": ev["detail"]})
                 elif kind == "stats":
                     pt = int(ev.get("prompt_tokens") or 0)
                     ct = int(ev.get("tokens") or 0)
@@ -633,14 +737,14 @@ class _Handler(BaseHTTPRequestHandler):
                         free=bool(ev.get("free", True)),
                         progress=progress_text(),
                     )
-                    self._sse("stats", {
+                    emit("stats", {
                         "tps": ev.get("tps", 0), "tokens": ct, "prompt_tokens": pt,
                         "model": ev.get("model", ""), "model_key": ev.get("model_key", ""),
                         "free": bool(ev.get("free", True)),
                         "cost": round(call_cost, 6),
                     })
                     # 累计用量：前端「已消耗预估费用」直接读这里，不用自己算
-                    self._sse("usage", {
+                    emit("usage", {
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "tokens": prompt_tokens + completion_tokens,
@@ -653,14 +757,14 @@ class _Handler(BaseHTTPRequestHandler):
                 elif kind == "assistant":
                     summary = (ev["content"] or "").strip()
                     final_history = ev["history"]
-                    self._sse("history", {"messages": ev["history"]})
+                    emit("history", {"messages": ev["history"]})
                 elif kind == "history":
                     # 中途停止时编排器主动回吐已完成的部分，让界面/台账不丢上下文
                     final_history = ev["messages"]
-                    self._sse("history", {"messages": ev["messages"]})
+                    emit("history", {"messages": ev["messages"]})
                 elif kind == "error":
                     err_msg = ev["message"]
-                    self._sse("error", {"message": ev["message"]})
+                    emit("error", {"message": ev["message"]})
                 elif kind == "combo":
                     # 这里要显式带上附注字段：前端靠 window_notice 提示窗口跨度、
                     # 靠 pool_notice 提示"已自动改用可用模型"。原先只转发 combo+models，
@@ -669,10 +773,10 @@ class _Handler(BaseHTTPRequestHandler):
                     for extra in ("window_notice", "pool_notice"):
                         if ev.get(extra):
                             payload[extra] = ev[extra]
-                    self._sse("combo", payload)
+                    emit("combo", payload)
                 elif kind == "plan":
                     step_total = len(ev["subtasks"])
-                    self._sse("plan", {"subtasks": ev["subtasks"], "summary": ev["summary"]})
+                    emit("plan", {"subtasks": ev["subtasks"], "summary": ev["summary"]})
                 elif kind == "assign":
                     name = ev.get("model_name") or ""
                     step_index = int(ev.get("index") or 0)
@@ -680,25 +784,26 @@ class _Handler(BaseHTTPRequestHandler):
                     if name and name not in models:
                         models.append(name)
                         self.tasks.touch(task_id, model=name)
-                    self._sse("assign", {k: v for k, v in ev.items() if k != "type"})
+                    emit("assign", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "subtask":
-                    self._sse("subtask", {"index": ev["index"], "total": ev["total"], "text": ev["text"]})
+                    emit("subtask", {"index": ev["index"], "total": ev["total"], "text": ev["text"]})
                 elif kind == "stopped":
                     was_stopped = True
-                    self._sse("stopped", {
+                    emit("stopped", {
                         "steps": ev.get("steps", 0), "total": ev.get("total", step_total),
                         "reason": ev.get("reason", "用户停止"),
                     })
                 elif kind == "complete":
                     steps = ev["steps"]
-                    self._sse("complete", {"steps": ev["steps"], "multi": ev["multi"]})
+                    emit("complete", {"steps": ev["steps"], "multi": ev["multi"]})
         except Exception as e:  # noqa: BLE001
             # 常见情形：浏览器关页/刷新把 SSE 连接断了，继续生成只是白烧 token。
-            # 顺手立起停止标志，让流式循环在下一个块就退出。
-            runcontrol.request_stop(task_id)
+            # 但如果已有接管者挂在总线上（别人还在看），就别停，让它接着跑。
+            if bus.subscriber_count() == 0:
+                runcontrol.request_stop(task_id)
             err_msg = f"{type(e).__name__}: {e}"
             try:
-                self._sse("error", {"message": err_msg})
+                emit("error", {"message": err_msg})
             except Exception:
                 pass
         finally:
@@ -733,7 +838,7 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 total = len(added) + (1 if by_tool else 0)
                 if total:
-                    self._sse("memory", {
+                    emit("memory", {
                         "added": total,
                         "items": [e.get("text", "") for e in added],
                         "source": "规则" if added else "工具",
@@ -753,9 +858,16 @@ class _Handler(BaseHTTPRequestHandler):
                 pass
 
             try:
-                self._sse("done", {})
+                emit("done", {})
             except Exception:
                 pass
+            # 任务收摊：总线挪进 done_buses 供迟到的接管者重放，封顶防涨内存
+            type(self).buses.pop(task_id, None)
+            done = type(self).done_buses
+            done[task_id] = bus
+            if len(done) > 20:
+                for k in list(done.keys())[:-20]:
+                    done.pop(k, None)
 
 
     # ---------- 记忆管理 ----------

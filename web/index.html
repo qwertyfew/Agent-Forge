@@ -1915,6 +1915,33 @@ function loadTasks(){
    - 别的标签页 / CLI 发起的任务，靠 5 秒一次的任务轮询「接管」过来
    这样不管任务从哪来，界面上的进度、计时、费用都是对的。 */
 let liveTask = null;
+/* 接管别人发起的任务时的事件流。原本任务流只有发起连接一个消费者，
+   页面「接管」只能靠 5 秒轮询看进度条——看不到流式的思考与回复。
+   现在服务端把事件广播进 TaskBus，这里用 EventSource 订阅：
+   先重放缓冲、再续播实时事件，接管者和发起者看到一样的东西。 */
+let taskStream = null, taskStreamId = '';
+const STREAM_EVENTS = ['task','combo','plan','assign','subtask','step','skill','stats','usage',
+  'thinking','delta','tool_start','tool_result','history','error','stopped','complete','memory','done'];
+function followTaskStream(id){
+  if(busy || (taskStream && taskStreamId === id)) return;   // 自己发起的流已在手上
+  closeTaskStream();
+  taskStreamId = id;
+  taskStream = new EventSource('/api/tasks/' + encodeURIComponent(id) + '/stream');
+  STREAM_EVENTS.forEach(name=>{
+    taskStream.addEventListener(name, e=>{
+      let data = {};
+      try{ data = JSON.parse(e.data); }catch(err){}
+      if(name === 'error' && e.data && e.data.includes('没有可重放')){ closeTaskStream(); return; }
+      try{ handleTaskEvent(name, data); }catch(err){}
+      if(name === 'done'){ closeTaskStream(); loadTasks(); }
+    });
+  });
+  taskStream.onerror = ()=>{ /* 服务端 404/断开：退回纯轮询，不打扰用户 */ };
+}
+function closeTaskStream(){
+  if(taskStream){ try{ taskStream.close(); }catch(err){} }
+  taskStream = null; taskStreamId = '';
+}
 
 function adoptRunning(){
   const running = (taskData || []).find(t => t.status === 'running');
@@ -1927,6 +1954,7 @@ function adoptRunning(){
         progress: running.progress || '', models: running.models || [],
         followed: true, stopping: false
       };
+      followTaskStream(running.id);   // 接管即挂流：能看到完整思考与回复
     }else{
       liveTask.tools = Math.max(liveTask.tools || 0, running.tools || 0);
       liveTask.cost = Math.max(liveTask.cost || 0, running.cost || 0);
@@ -1937,6 +1965,7 @@ function adoptRunning(){
   }else if(liveTask && liveTask.status === 'running' && !busy){
     // 服务端已经没有在跑的任务了，但界面还停在执行中：按台账里的真实结局收尾
     // （可能是被停止的，别一律当成「已完成」）
+    closeTaskStream();
     const rec = (taskData || []).find(x => x.id === liveTask.id);
     const st = rec && rec.status && rec.status !== 'running' ? rec.status : 'done';
     if(rec){
@@ -3009,12 +3038,7 @@ async function send(){
 
 /* 发送消息与「重新回答」共用的流式管线：text 是这次要执行的话，
    hist 是它之前已有的上下文（新用户消息由服务端追加，不在这里放） */
-async function streamChat(text, hist){
-  // 记下这次发出去的对话部分有多大、并把计数器归零，供第一条 stats 校准固定开销
-  sentMsgs = (hist || []).concat([{ role: 'user', content: text }]);
-  sentTokens = ctxTokens(sentMsgs);
-  statsSeen = 0;
-  const handle = (ev, data)=>{
+function handleTaskEvent(ev, data){
     if(ev === 'combo'){
       updatePoolHint();
       // 池内窗口跨度太大：多模型接力会被最小窗口封顶，提示一次就够
@@ -3171,8 +3195,13 @@ async function streamChat(text, hist){
       // 真有新增就补提示（收尾时同步那批已经在 memory 事件里提示过了）
       setTimeout(checkMemoryGrew, 6000);
     }
-  };
+}
 
+async function streamChat(text, hist){
+  // 记下这次发出去的对话部分有多大、并把计数器归零，供第一条 stats 校准固定开销
+  sentMsgs = (hist || []).concat([{ role: 'user', content: text }]);
+  sentTokens = ctxTokens(sentMsgs);
+  statsSeen = 0;
   try{
     const res = await fetch('/api/chat',{
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -3200,7 +3229,7 @@ async function streamChat(text, hist){
           if(line.startsWith('event: ')) ev = line.slice(7);
           else if(line.startsWith('data: ')) dt += line.slice(6);
         }
-        try{ handle(ev, JSON.parse(dt)); }catch(e){}
+        try{ handleTaskEvent(ev, JSON.parse(dt)); }catch(e){}
       }
     }
   }catch(e){
