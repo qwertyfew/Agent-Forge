@@ -164,6 +164,10 @@
   .side-foot{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
   .ctx-line{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink3)}
   .ctx-bar{flex:1;height:4px;border-radius:99px;background:var(--bar);overflow:hidden}
+  /* 顶栏里的计量条：固定窄宽度，跟「压缩上下文」并排 */
+  .ctx-line.top{flex:none;gap:7px;margin-right:2px}
+  .ctx-line.top .ctx-bar{width:46px;flex:none}
+  .ctx-line.top.hide{display:none}
   .ctx-bar i{display:block;height:100%;width:0;border-radius:99px;background:var(--ink2);transition:width .3s ease}
   .ctx-bar i.hot{background:var(--err)}
   .foot-btn{display:flex;align-items:center;gap:8px;padding:6px 8px;margin:0 -8px;border-radius:9px;
@@ -600,6 +604,7 @@
     .rail{display:none}
     .top-act{padding:0 8px}
     .top-act span{display:none}
+    .ctx-line.top{display:none}
     .set-nav{width:132px;padding:10px 6px}
     .set-nav button{font-size:12px;padding:7px 8px}
     .set-pane{padding:14px 14px 60px}
@@ -643,10 +648,6 @@
     </div>
 
     <div class="side-foot">
-      <div class="ctx-line">
-        <span id="ctxPct">上下文 0%</span>
-        <div class="ctx-bar"><i id="ctxFill"></i></div>
-      </div>
       <button class="foot-btn" id="btnSettings" title="打开设置（可用模型管理）">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 2.6 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 9.5 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21.4 11a2 2 0 1 1 0 4 1.7 1.7 0 0 0-1.2 1.2z"/></svg>
         设置
@@ -677,7 +678,11 @@
       <div class="top-title" id="topTitle"></div>
       <span class="top-run hide" id="topRun"><span class="rd"></span><span id="topRunTxt">任务执行中</span></span>
       <div class="spacer"></div>
-      <!-- 长对话才用得上，所以放在任务里（有对话记录时顶栏才出现） -->
+      <!-- 上下文占用与压缩是同一件事：长对话才用，统一放在任务顶栏 -->
+      <div class="ctx-line top hide" id="ctxLine" title="当前对话已占用模型上下文窗口的比例（按字符数估算）">
+        <span id="ctxPct">上下文 0%</span>
+        <div class="ctx-bar"><i id="ctxFill"></i></div>
+      </div>
       <button class="top-act hide" id="btnCompact" title="把较早的对话重写成摘要，节省上下文">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6M4 10h10M4 18h4M20 4l-4 4m0-4l4 4M14 20l6-6"/></svg>
         <span>压缩上下文</span>
@@ -1028,10 +1033,12 @@ function showView(v){
   updateCompactBtn();
   closeSidebar();
 }
-/* 「压缩上下文」只在真正有对话记录的任务里出现 */
+/* 「压缩上下文」与其配套的上下文计量条：只在有对话记录的任务里出现 */
 function updateCompactBtn(){
-  const b = $('btnCompact');
-  if(b) b.classList.toggle('hide', !(view === 'chat' && history.length > 0));
+  const b = $('btnCompact'), line = $('ctxLine');
+  const open = view === 'chat' && history.length > 0;
+  if(b) b.classList.toggle('hide', !open);
+  if(line) line.classList.toggle('hide', !open);
 }
 let chatTitle = '';
 $('btnSettings').onclick = () => openSettings('models');
@@ -2426,10 +2433,14 @@ function ctxSize(hist){
 function updateContextMeter(size, th){
   th = th || threshold;
   if(!th) return;
-  const pct = Math.min(100, Math.round((size||0)/th*100));
-  $('ctxPct').textContent = `上下文 ${pct}%`;
+  const used = size || 0;
+  const pct = Math.min(100, Math.round(used / th * 1000) / 10);
+  // 短对话不足 1% 时保留一位小数，否则恒显示 0% 看不出变化
+  $('ctxPct').textContent = `上下文 ${pct < 10 ? pct.toFixed(1) : Math.round(pct)}%`;
+  const line = $('ctxLine');
+  if(line) line.title = `当前对话约 ${used.toLocaleString()} 字符 / 上限 ${th.toLocaleString()} 字符（按字符数估算，超过上限建议压缩）`;
   const fill = $('ctxFill');
-  fill.style.width = pct + '%';
+  fill.style.width = Math.max(pct, pct > 0 ? 2 : 0) + '%';
   fill.classList.toggle('hot', pct > 80);
 }
 
