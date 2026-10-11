@@ -216,6 +216,13 @@
   .top-run{display:inline-flex;align-items:center;gap:6px;flex:none;font-size:11.5px;color:var(--ink2);
     border:1px solid var(--line);border-radius:999px;padding:3px 10px;background:var(--panel)}
   .top-run .rd{width:6px;height:6px;border-radius:50%;background:#d9930a;animation:tpulse 1.1s ease-in-out infinite}
+  /* 任务内的次要动作按钮（如压缩上下文）：淡描边，跟侧栏按钮同一套语言 */
+  .top-act{display:inline-flex;align-items:center;gap:6px;flex:none;height:28px;padding:0 11px;
+    border:1px solid var(--line);border-radius:9px;background:transparent;color:var(--ink2);
+    font-size:12px;font-weight:500}
+  .top-act:hover{border-color:var(--ink3);color:var(--ink)}
+  .top-act:disabled{opacity:.5}
+  .top-act.hide{display:none}
 
   /* ============ 执行中状态条 ============ */
   .runbar{flex:none;margin:0 16px 8px;border:1px solid var(--line);border-radius:12px;
@@ -591,6 +598,8 @@
     .thread-in{padding:12px 14px 24px}
     .hero h1{font-size:24px}
     .rail{display:none}
+    .top-act{padding:0 8px}
+    .top-act span{display:none}
     .set-nav{width:132px;padding:10px 6px}
     .set-nav button{font-size:12px;padding:7px 8px}
     .set-pane{padding:14px 14px 60px}
@@ -638,10 +647,6 @@
         <span id="ctxPct">上下文 0%</span>
         <div class="ctx-bar"><i id="ctxFill"></i></div>
       </div>
-      <button class="foot-btn" id="btnCompact" title="把较早的对话重写成摘要，节省上下文">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6M4 10h10M4 18h4M20 4l-4 4m0-4l4 4M14 20l6-6"/></svg>
-        压缩上下文
-      </button>
       <button class="foot-btn" id="btnSettings" title="打开设置（可用模型管理）">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 2.6 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 9.5 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21.4 11a2 2 0 1 1 0 4 1.7 1.7 0 0 0-1.2 1.2z"/></svg>
         设置
@@ -672,6 +677,11 @@
       <div class="top-title" id="topTitle"></div>
       <span class="top-run hide" id="topRun"><span class="rd"></span><span id="topRunTxt">任务执行中</span></span>
       <div class="spacer"></div>
+      <!-- 长对话才用得上，所以放在任务里（有对话记录时顶栏才出现） -->
+      <button class="top-act hide" id="btnCompact" title="把较早的对话重写成摘要，节省上下文">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6M4 10h10M4 18h4M20 4l-4 4m0-4l4 4M14 20l6-6"/></svg>
+        <span>压缩上下文</span>
+      </button>
     </div>
 
     <!-- ============ 执行中状态条：计时 / 进度 / 预估费用 ============ -->
@@ -1015,7 +1025,13 @@ function showView(v){
   $('navMemory').classList.toggle('on', isMem);
   // 栏目互斥高亮：进设置/记忆管理时，「新建任务」也跟着变淡
   $('btnNew').classList.toggle('dim', isMem || isSet);
+  updateCompactBtn();
   closeSidebar();
+}
+/* 「压缩上下文」只在真正有对话记录的任务里出现 */
+function updateCompactBtn(){
+  const b = $('btnCompact');
+  if(b) b.classList.toggle('hide', !(view === 'chat' && history.length > 0));
 }
 let chatTitle = '';
 $('btnSettings').onclick = () => openSettings('models');
@@ -1898,6 +1914,7 @@ function renderHistory(hist){
     t.state.className = 'tool-state deny';
   }
   updateContextMeter(ctxSize(history), threshold);
+  updateCompactBtn();
 }
 
 function openTask(id){
@@ -2436,6 +2453,7 @@ $('btnCompact').onclick = async ()=>{
     }
   }catch(e){ showView('chat'); addError('压缩失败：'+e); }
   btn.disabled = false;
+  updateCompactBtn();
 };
 
 /* ================= 发送 ================= */
@@ -2674,7 +2692,7 @@ async function streamChat(text, hist){
         refreshMemCount();
       }
     }
-    else if(ev === 'history'){ history = data.messages; attachMsgFoot(); }
+    else if(ev === 'history'){ history = data.messages; attachMsgFoot(); updateCompactBtn(); }
     else if(ev === 'error'){ addError(data.message); }
     else if(ev === 'stopped'){
       attachMsgFoot();               // 已生成的部分回复也带上工具条
