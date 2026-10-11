@@ -187,6 +187,20 @@ class ThinkFilter:
         return visible, ""
 
 
+def native_context(info: dict) -> int:
+    """从 /api/show 的返回里挖出模型的**原生上下文长度**。
+
+    字段名随架构而变（llama.context_length / gemma3.context_length / qwen2.context_length…），
+    所以不写死键名，扫所有以 .context_length 结尾的项，取其中最大的。
+    """
+    model_info = (info or {}).get("model_info") or {}
+    best = 0
+    for k, v in model_info.items():
+        if str(k).endswith(".context_length") and isinstance(v, int) and v > best:
+            best = v
+    return best
+
+
 class OllamaClient:
     """Ollama 原生 /api/chat 客户端（含流式与工具调用）。"""
 
@@ -209,6 +223,19 @@ class OllamaClient:
             return [m["name"] for m in (r.json().get("models") or [])]
         except requests.RequestException:
             return []
+
+    def model_info(self, name: str) -> dict:
+        """向 Ollama 询问模型元信息（原生上下文长度、参数量、架构等）。
+
+        一个本地新模型该开多大窗口，只有模型自己知道。发现新模型时读一次，
+        就不用让用户自己去 config.yaml 里翻文档填了。
+        """
+        try:
+            r = requests.post(f"{self.host}/api/show", json={"model": name}, timeout=15)
+            r.raise_for_status()
+            return r.json() or {}
+        except requests.RequestException:
+            return {}
 
     def chat_stream(
         self,

@@ -534,7 +534,7 @@
   .toast.mute{background:var(--ink2);color:var(--bg)}
   html[data-theme="dark"] .toast{box-shadow:0 6px 16px rgba(0,0,0,.4),0 14px 34px rgba(0,0,0,.35)}
   @keyframes toastFloat{
-    0%  {transform:translateY(4px) scale(.97);opacity:0}
+    0%  {transform:translateY(0) scale(.97);opacity:0}
     10% {transform:translateY(0) scale(1);opacity:1}
     62% {transform:translateY(-16px);opacity:1}
     100%{transform:translateY(-40px);opacity:0}
@@ -1124,8 +1124,25 @@ async function loadMemory(){
     renderMemory(d);
   }catch(e){}
 }
+/* 前端记着「已知的记忆条数」，用来判断任务收尾后记忆有没有长出来 */
+let memKnownCount = 0;
 function refreshMemCount(){
-  fetch('/api/memory').then(r=>r.json()).then(d=>memBadge(d.count || 0)).catch(()=>{});
+  fetch('/api/memory').then(r=>r.json()).then(d=>{
+    memKnownCount = d.count || 0;
+    memBadge(d.count || 0);
+  }).catch(()=>{});
+}
+/* 后台的记忆提炼（线程里跑）可能晚于 done 才落盘，收尾后核对一次条数，
+   有新增就补一条提示，免得「记忆悄悄多了但用户不知道」。 */
+function checkMemoryGrew(){
+  fetch('/api/memory').then(r=>r.json()).then(d=>{
+    const now = d.count || 0;
+    if(memKnownCount && now > memKnownCount){
+      toast(null, `已将 ${now - memKnownCount} 条内容设为记忆`, 'ok');
+    }
+    memKnownCount = now;
+    memBadge(now);
+  }).catch(()=>{});
 }
 $('navMemory').onclick = ()=>{ showView('memory'); loadMemory(); };
 $('btnMemRefresh').onclick = ()=> loadMemory();
@@ -1209,6 +1226,12 @@ function refreshModels(){
     updateApplyButtons();
     // 窗口与固定开销都来自这份目录，拿到后重算一次占比（首屏时它可能还没回来）
     updateContextMeter(history.length ? history : 0, threshold);
+    // 后端发现新模型时会自动探一次原生窗口并写好配置，这里告诉用户做了什么
+    const auto = data.auto_configured || [];
+    if(auto.length){
+      toast(null, `已自动配置 ${auto.length} 个新模型的上下文窗口：`
+        + auto.slice(0, 2).join('、') + (auto.length > 2 ? ` 等 ${auto.length} 个` : ''), 'ok');
+    }
   }).catch(()=>{});
 }
 
@@ -1296,6 +1319,18 @@ function renderModelList(){
     if(m.provider_label) l1.appendChild(el('span','badge', m.provider_label));
     if(m.discovered) l1.appendChild(el('span','badge warn','自动发现'));
     if(m.source === '估算') l1.appendChild(el('span','badge','估算分'));
+    // 窗口徽章：自动探测来的要标清楚，用户才知道这个数字是怎么定的
+    const ctxWin = (m.spec && m.spec.num_ctx) || m.context_window || 0;
+    if(ctxWin){
+      const wb = el('span','badge', '窗口 ' + (ctxWin >= 1024 ? Math.round(ctxWin/1024) + 'K' : ctxWin));
+      wb.title = `当前使用 ${ctxWin.toLocaleString()} tokens`
+        + (m.native_ctx
+            ? (m.auto_ctx
+                ? `\n模型原生支持 ${m.native_ctx.toLocaleString()}，部署后自动设为上面这个值`
+                : `\n模型原生支持 ${m.native_ctx.toLocaleString()}`)
+            : '');
+      l1.appendChild(wb);
+    }
     const tot = el('span','mtotal');
     tot.innerHTML = '<b>' + m.total + '</b> 总分';
     l1.appendChild(tot);
@@ -1362,12 +1397,29 @@ async function postModels(payload){
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify(payload)
   }).then(x=>x.json()).catch(e=>({error:String(e)}));
-  if(r.snapshot){ catalog = r.snapshot; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons(); }
+  // 后端 POST /api/models 成功时返回的就是快照本身（顶层即 models/enabled/…），
+  // 只有 action=test 那条分支才把它包在 snapshot 字段里。两种形状都得认——
+  // 否则「一键应用」之后下方的勾选状态和按钮高亮都不会更新，要退出页面重进才对。
+  const snap = r.snapshot || (r && r.models ? r : null);
+  if(snap){ catalog = snap; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons(); }
   return r;
 }
 
-/* 浮动提示：从锚点下方冒出，向上飘移并渐隐，动画结束自动移除。
-   锚点可以是 DOM 元素，也可以是事先取好的 rect（元素会被重渲染替换掉时用后者）。 */
+/* 浮动提示的统一落点：横向居中于窗口，纵向与侧栏「清空」按钮同高。
+   坐标每次实时从「清空」按钮的 rect 取（按钮暂时隐藏时沿用上一次的值），
+   而不是把像素写死——以后侧栏间距或按钮高度再调，提示会自己跟上。 */
+let toastTopCache = 0;
+function toastSlotTop(){
+  const btn = $('btnClearTasks');
+  if(btn){
+    const r = btn.getBoundingClientRect();
+    if(r.height) toastTopCache = r.top + r.height / 2;
+  }
+  return toastTopCache || 92;
+}
+
+/* 浮动提示：从固定位置冒出，向上飘移并渐隐，动画结束自动移除。
+   第一个参数是历史遗留的锚点（保留只是为了让既有调用点不用改），定位已统一。 */
 function toast(anchor, text, cls){
   const kind = cls || 'ok';
   const mark = kind === 'bad' ? '!' : (kind === 'mute' ? '−' : '✓');
@@ -1378,19 +1430,8 @@ function toast(anchor, text, cls){
   document.body.appendChild(node);
 
   const w = node.offsetWidth, h = node.offsetHeight;
-  let r = null;
-  if(anchor) r = anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : anchor;
-  let left, top;
-  if(r && (r.width || r.height)){
-    left = r.left + r.width / 2 - w / 2;
-    top = r.bottom + 10;
-    if(top + h > innerHeight - 8) top = Math.max(8, r.top - h - 10);  // 下方放不下就翻到上方
-  }else{
-    left = innerWidth / 2 - w / 2;
-    top = innerHeight - 96;
-  }
-  node.style.left = Math.max(10, Math.min(left, innerWidth - w - 10)) + 'px';
-  node.style.top = top + 'px';
+  node.style.left = Math.max(10, Math.min(innerWidth / 2 - w / 2, innerWidth - w - 10)) + 'px';
+  node.style.top = Math.max(8, toastSlotTop() - h / 2) + 'px';
   node.addEventListener('animationend', ()=> node.remove());
   return node;
 }
@@ -2854,11 +2895,11 @@ async function streamChat(text, hist){
       loadTasks();
     }
     else if(ev === 'memory'){
-      // 规则抽取是任务收尾时同步做的，这里如实告诉用户记忆长出来了
+      // 规则抽取与模型主动 remember 都是收尾时同步落盘的，这里如实告诉用户
       if(data.added){
-        addPillNote(`已自动沉淀 ${data.added} 条记忆`
-          + (data.items && data.items.length ? `：${esc(data.items[0].slice(0,40))}…` : '')
-          + '　<span style="color:var(--ink3)">（侧栏「记忆管理」可查看与修改）</span>');
+        const first = (data.items && data.items[0]) ? String(data.items[0]) : '';
+        toast(null, `已将 ${data.added} 条内容设为记忆`
+          + (first ? `：${first.slice(0, 24)}${first.length > 24 ? '…' : ''}` : ''), 'ok');
         refreshMemCount();
       }
     }
@@ -2883,8 +2924,9 @@ async function streamChat(text, hist){
       setBusy(false);
       if(liveTask && liveTask.status === 'running') endLiveTask('done');
       loadTasks();
-      // 模型提炼是后台线程，跑完会再补几条：稍后回来刷一次计数
-      setTimeout(refreshMemCount, 5000);
+      // 模型提炼是后台线程，跑完会再补几条：稍后回来核对一次，
+      // 真有新增就补提示（收尾时同步那批已经在 memory 事件里提示过了）
+      setTimeout(checkMemoryGrew, 6000);
     }
   };
 

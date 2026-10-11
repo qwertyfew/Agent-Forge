@@ -20,9 +20,11 @@ def build_skill_tools(registry):
         lines = []
         for n in names:
             s = registry.get(n)
-            d = s.description.replace("\n", " ")
-            lines.append(f"- {n}: {d[:120]}")
-        return "已安装 skill：\n" + "\n".join(lines)
+            # 这里给**完整**描述。系统提示里的清单为了省上下文只截到 64 字符，
+            # 拿不准该用哪个时可以调这个工具看全文再决定。
+            d = " ".join((s.description or "").split())
+            lines.append(f"- {n}: {d}")
+        return "已安装 skill（完整说明，判断是否相关以这里的为准）：\n" + "\n".join(lines)
 
     def use_skill(name: str):
         s = registry.get(name)
