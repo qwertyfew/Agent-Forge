@@ -10,7 +10,12 @@
 本地模型全部自动进入目录（用户不用手填）；付费模型由用户在设置页添加，
 填好厂商 / 模型号 / API Key 之后自动成为可用模型，并参与评分与路由。
 
-状态持久化在项目根目录的 models.json（含 API Key，已加入 .gitignore）。
+状态分两个文件落盘，按"是否跟机器走"来分：
+
+    models.json       在线模型配置与 API Key —— **跟着版本库走**，换台电脑 clone
+                      下来就能直接用（本项目单人使用，密钥随库走是可接受的取舍）
+    models.local.json 本地模型的自动探测结果（窗口该开多大）—— **不进版本库**，
+                      因为它只对探测时那台机器（那台机器的模型与显存）成立。
 """
 
 from __future__ import annotations
@@ -219,7 +224,7 @@ class ModelStore:
         """构建完整目录，并把模型注册进 cfg（这样 agent.set_model 才能找到）。
 
         probe 传入时（形如 name -> {"native_ctx": int}），会对**首次见到**的本地
-        模型问一次原生上下文长度并把结果缓存进 models.json，之后不再重复问。
+        模型问一次原生上下文长度并把结果缓存进 models.local.json，之后不再重复问。
         """
         entries: list[ModelEntry] = []
 

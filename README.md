@@ -122,4 +122,19 @@ agentforge/
   pricing.py           费用估算
   tools/               内置工具集
 skills/                内置技能（frontend-design / novel-writing / web-browsing / remote-ops ...）
+tools/                 开发/运维小工具（bench.py 模型基准、ctx_probe.py 上下文占用探测）
 ```
+
+## 本地模型性能基准
+
+新增/更换本地模型后，想知道它在这台机器上到底跑多快，用 `tools/bench.py`：
+
+```
+python tools/bench.py                # 测所有已装模型
+python tools/bench.py gpt-oss:20b    # 只测一个
+python tools/bench.py --cold --tools # 冷加载 + 工具调用冒烟
+```
+
+它读的是 Ollama 自己的计时字段（不是掐秒表），所以横向可比：**加载s** 是模型进显存的耗时，
+**提示tok/s** 是预填充速度（决定首字等多久），**生成tok/s** 是解码速度（决定读起来快不快），
+末尾还会带上 `ollama ps` 的显存/算力分布，用来判断有没有被挤到 CPU 上。

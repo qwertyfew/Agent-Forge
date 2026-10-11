@@ -361,7 +361,7 @@ class _Handler(BaseHTTPRequestHandler):
         """问 Ollama 要某个本地模型的元信息（主要是原生上下文长度）。
 
         只有「Ollama 里有、config.yaml 里没声明」的模型会走到这里，而且每个模型
-        只问一次（结果缓存进 models.json），所以这点耗时可以接受。这样用户 pull
+        只问一次（结果缓存进 models.local.json），所以这点耗时可以接受。这样用户 pull
         完新模型直接勾选就能用，不必自己去查文档填 num_ctx。
         """
         try:
