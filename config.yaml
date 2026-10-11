@@ -41,6 +41,14 @@ models:
 
 routing:
   default: gemma
+  # 能力路由：按任务所需能力维度（编码/推理/写作/中文…）从可用模型里挑最强的；
+  # 默认模型在该维度偏弱且存在更强可用模型时给出升级建议。
+  # allow_upgrade=true 会直接改用更强的「本地」模型（默认只提示，不擅自切换）；
+  # allow_paid_upgrade=true 才允许自动改用付费模型（默认绝不，避免偷偷花钱）。
+  capability: true
+  quality_threshold: 78
+  allow_upgrade: false
+  allow_paid_upgrade: false
   # 命中这些信号时优先视为代码/逻辑任务（最终选哪个 key 由 router 按可用模型决定）
   code_signals:
     - 代码 - 编码 - 写个 - 写一段 - 函数 - 类 - 重构 - 重構成 - 实现 - 实现一下

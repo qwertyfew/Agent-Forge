@@ -392,6 +392,8 @@
   .pillnote span{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink3);
     border:1px solid var(--line);border-radius:999px;padding:3px 12px;background:var(--panel)}
   .pillnote b{font-weight:600;color:var(--ink2)}
+  .pillnote.warn span{color:#9a5b00;background:#fff6e6;border-color:#f0c674}
+  .theme-dark .pillnote.warn span{color:#ffce85;background:#3a2c10;border-color:#6b4a16}
 
   /* 任务计划卡片 */
   .plan{border:1px solid var(--line);border-radius:14px;background:var(--card);overflow:hidden}
@@ -663,11 +665,15 @@
         </span>
         新建任务
       </button>
-      <!-- 新建任务下方的栏目：目前是记忆管理，后续新栏目继续往下排 -->
+      <!-- 新建任务下方的栏目：记忆管理 + 技能管理，后续新栏目继续往下排 -->
       <div class="side-nav">
         <button class="nav-item" id="navMemory" title="查看与管理任务自动沉淀的记忆">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3L2.5 8 12 13l9.5-5z"/><path d="M2.5 12.5L12 17.5l9.5-5"/><path d="M2.5 17L12 22l9.5-5"/></svg>
           <span class="nt" id="memNavLabel">记忆管理</span>
+        </button>
+        <button class="nav-item" id="navSkill" title="查看与管理任务自动沉淀的技能">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19a1 1 0 0 1 1 1v13a2.5 2.5 0 0 0-2.5-2.5H6.5A2.5 2.5 0 0 1 4 12z"/><path d="M4 12a2.5 2.5 0 0 1 2.5-2.5H20"/><path d="M9 8h7M9 11h5"/></svg>
+          <span class="nt" id="skillNavLabel">技能管理</span>
         </button>
       </div>
     </div>
@@ -945,6 +951,33 @@
         </div>
       </div>
     </section>
+
+    <!-- ============ 技能管理 ============ -->
+    <section class="settings hide" id="viewSkills">
+      <div class="set-body">
+        <div class="set-pane">
+          <div class="pane-head">
+            <div>
+              <h3>技能管理</h3>
+              <p>
+                这里分两类：<b>已安装</b>的技能（你放进 skills/ 目录，或来自插件）会随任务命中自动注入上下文；
+                <b>已学习</b>的技能由 Agent 自检机制在任务收尾时自动沉淀——当某次任务浮现出可复用的
+                方法论（如「长材料先清单后成文」），会用最便宜的本地模型写成 SKILL.md 并登记进来。
+                只可删除「已学习」的技能，手写技能请在目录里管理。
+              </p>
+            </div>
+            <div class="pane-actions">
+              <button class="btn" id="btnSkillRefresh">刷新</button>
+              <button class="btn" id="btnSkillClear">清空已学习</button>
+            </div>
+          </div>
+          <div class="alist" id="skillList"></div>
+          <div class="kv" style="margin-top:18px;border-bottom:0">
+            <span class="k">已学习目录</span><span class="v mono" id="skillLearnedDir"></span>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -1087,23 +1120,27 @@ function showView(v){
   view = v;
   const isSet = v === 'settings';
   const isMem = v === 'memory';
+  const isSkill = v === 'skills';
   $('viewSettings').classList.toggle('hide', !isSet);
   $('viewMemory').classList.toggle('hide', !isMem);
-  $('composerWrap').classList.toggle('hide', isSet || isMem);
+  $('viewSkills').classList.toggle('hide', !isSkill);
+  $('composerWrap').classList.toggle('hide', isSet || isMem || isSkill);
   // 空态时输入框挂在 hero 里（页面中部），否则挂在底部常驻位置
   renderLanding();
   const land = isLanding();
-  hero.classList.toggle('hide', isSet || isMem || !land);
-  setThreadHidden(isSet || isMem || history.length === 0);
-  if(!isSet && !isMem) rebuildRail();   // 离开对话视图时收起右侧回溯导航
-  $('btnBack').classList.toggle('hide', !(isSet || isMem));
-  $('btnMenu').classList.toggle('hide', isSet || isMem);
+  hero.classList.toggle('hide', isSet || isMem || isSkill || !land);
+  setThreadHidden(isSet || isMem || isSkill || history.length === 0);
+  if(!isSet && !isMem && !isSkill) rebuildRail();   // 离开对话视图时收起右侧回溯导航
+  $('btnBack').classList.toggle('hide', !(isSet || isMem || isSkill));
+  $('btnMenu').classList.toggle('hide', isSet || isMem || isSkill);
   if(isSet) $('topTitle').textContent = '设置';
   else if(isMem) $('topTitle').textContent = '记忆管理';
+  else if(isSkill) $('topTitle').textContent = '技能管理';
   else $('topTitle').textContent = chatTitle;
   $('navMemory').classList.toggle('on', isMem);
-  // 栏目互斥高亮：进设置/记忆管理时，「新建任务」也跟着变淡
-  $('btnNew').classList.toggle('dim', isMem || isSet);
+  $('navSkill').classList.toggle('on', isSkill);
+  // 栏目互斥高亮：进设置/记忆管理/技能管理时，「新建任务」也跟着变淡
+  $('btnNew').classList.toggle('dim', isMem || isSkill || isSet);
   updateCompactBtn();
   closeSidebar();
 }
@@ -1224,7 +1261,91 @@ $('btnMemClear').onclick = async ()=>{
   const r = await memPost({action:'clear'});
   if(r && r.ok){ renderMemory(r); toast($('btnMemClear'), '记忆已清空', 'mute'); }
 };
+
+/* ================= 技能管理 =================
+   仿照记忆管理：查看自动沉淀的技能、逐条删除、整批清空。
+   只动「已学习」的技能（skills/learned/ 下），手写技能在目录里管。 */
+let skillKnownCount = 0;
+async function skillPost(body){
+  try{
+    const r = await fetch('/api/skills',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    return await r.json();
+  }catch(e){ return null; }
+}
+function renderSkills(d){
+  const box = $('skillList');
+  if(!box) return;
+  box.innerHTML = '';
+  const items = (d && d.skills) || [];
+  skillKnownCount = d.learned_count || 0;
+  if(d && d.learned_dir) $('skillLearnedDir').textContent = d.learned_dir;
+  if(!items.length){
+    box.appendChild(el('div','task-empty',
+      '还没有技能。任务里浮现出可复用的「方法论」时会自动沉淀成技能；也可以把含 SKILL.md 的目录放进 skills/ 手动安装。'));
+    return;
+  }
+  for(const s of items){
+    const row = el('div','mem-item');
+    const head = el('div','mtxt');
+    head.appendChild(el('b', '', s.name));
+    if(s.learned) head.appendChild(el('span','mtag','已学习'));
+    else head.appendChild(el('span','mtag mute','已安装'));
+    row.appendChild(head);
+    if(s.description) row.appendChild(el('div','mmeta', s.description));
+    if(s.path) row.appendChild(el('div','adesc mono', s.path));
+    const meta = el('div','mmeta');
+    if(s.learned){
+      const del = el('button','mini-btn','删除');
+      del.title = '删除这个自动沉淀的技能';
+      del.onclick = async ()=>{
+        const r = await skillPost({action:'delete', name:s.name});
+        if(r && r.ok){ renderSkills(r); toast(del, `已删除技能 ${s.name}`, 'mute'); }
+        else toast(del, (r && r.error) || '删除失败', 'bad');
+      };
+      meta.appendChild(del);
+    }
+    row.appendChild(meta);
+    box.appendChild(row);
+  }
+}
+async function loadSkills(){
+  try{
+    const d = await (await fetch('/api/skills')).json();
+    renderSkills(d);
+  }catch(e){}
+}
+/* 后台模型抽取可能晚于 done 才把 skill 落盘：收尾后核对一次，有新增就提示 */
+function checkSkillGrew(){
+  fetch('/api/skills').then(r=>r.json()).then(d=>{
+    const now = d.learned_count || 0;
+    if(skillKnownCount && now > skillKnownCount){
+      toast(null, `已自动沉淀 ${now - skillKnownCount} 个技能`, 'ok');
+    }
+    skillKnownCount = now;
+  }).catch(()=>{});
+}
+$('navSkill').onclick = ()=>{ showView('skills'); loadSkills(); };
+$('btnSkillRefresh').onclick = ()=> loadSkills();
+$('btnSkillClear').onclick = async ()=>{
+  const ok = await confirmModal({
+    title: '清空全部已学习技能？',
+    sub: '这些是由 Agent 自动沉淀的方法论，清空后不会影响你手写的技能；此操作不可撤销。',
+    danger: true, okText: '清空已学习'
+  });
+  if(!ok) return;
+  const r = await skillPost({action:'clear'});
+  if(r && r.ok){ loadSkills(); toast($('btnSkillClear'), `已清空 ${r.removed||0} 个已学习技能`, 'mute'); }
+};
+function refreshSkillCount(){
+  fetch('/api/skills').then(r=>r.json()).then(d=>{
+    skillKnownCount = d.learned_count || 0;
+  }).catch(()=>{});
+}
 refreshMemCount();
+refreshSkillCount();
 const PANES = {models:'paneModels', skills:'paneSkills', tools:'paneTools', general:'paneGeneral'};
 function openSettings(tab){
   hideModelPop();
@@ -1920,7 +2041,7 @@ let liveTask = null;
    现在服务端把事件广播进 TaskBus，这里用 EventSource 订阅：
    先重放缓冲、再续播实时事件，接管者和发起者看到一样的东西。 */
 let taskStream = null, taskStreamId = '';
-const STREAM_EVENTS = ['task','combo','plan','assign','subtask','step','skill','stats','usage',
+const STREAM_EVENTS = ['task','combo','plan','assign','subtask','step','skill','route','stats','usage',
   'thinking','delta','tool_start','tool_result','history','error','stopped','complete','memory','done'];
 function followTaskStream(id){
   if(busy || (taskStream && taskStreamId === id)) return;   // 自己发起的流已在手上
@@ -2400,9 +2521,9 @@ function showShimmer(){
 }
 function hideShimmer(){ if(shimmerEl){ shimmerEl.remove(); shimmerEl = null; } }
 
-function addPillNote(html){
+function addPillNote(html, warn){
   closeThinking(); hideShimmer();
-  const n = el('div','pillnote');
+  const n = el('div','pillnote' + (warn ? ' warn' : ''));
   const s = el('span');
   s.innerHTML = html;
   n.appendChild(s);
@@ -3080,7 +3201,25 @@ function handleTaskEvent(ev, data){
       addDivider(`第 ${data.index}/${data.total} 步`);
     }
     else if(ev === 'skill'){
-      addPillNote(`已加载技能 <b>${esc(data.name||'')}</b>`);
+      if(data.auto){
+        addPillNote(`已自动沉淀技能 <b>${esc(data.name||'')}</b>`
+          + (data.detail ? `：${esc(data.detail)}` : ''), true);
+        toast(null, `已自动沉淀技能：${data.name||''}`, 'ok');
+      } else {
+        addPillNote(`已加载技能 <b>${esc(data.name||'')}</b>`);
+      }
+    }
+    else if(ev === 'route'){
+      // 能力路由决策：把「为什么是这个模型」说清楚；若默认模型偏弱且有更强的，
+      // 用更显眼的提示引导用户去启用——直接回应「瓶颈在模型能力」的疑虑
+      const dim = data.dimension_label || '能力';
+      let note = `按能力路由：<b>${esc(dim)}</b>类任务 → ${esc(data.dimension||'')} 维度，`
+        + `选用 <b>${esc(data.chosen_name||'')}</b>(${data.chosen_score||'?'})`;
+      addPillNote(note);
+      if(data.notice){
+        addPillNote(esc(data.notice), true);
+        toast(null, '路由提示：' + data.notice, 'mute');
+      }
     }
     else if(ev === 'thinking'){
       hideShimmer();
@@ -3194,6 +3333,8 @@ function handleTaskEvent(ev, data){
       // 模型提炼是后台线程，跑完会再补几条：稍后回来核对一次，
       // 真有新增就补提示（收尾时同步那批已经在 memory 事件里提示过了）
       setTimeout(checkMemoryGrew, 6000);
+      // 技能沉淀同样在后台线程落盘，稍后核对是否自动产出了新技能
+      setTimeout(checkSkillGrew, 6000);
     }
 }
 

@@ -90,6 +90,14 @@ class Config:
     code_signals: list[str] = field(default_factory=list)
     language_signals: list[str] = field(default_factory=list)
 
+    # ---- 能力路由 ----
+    # 按任务所需的能力维度（编码/推理/写作/中文…）从可用模型里挑最合适的，
+    # 并在默认模型偏弱时给出升级建议（可选自动升级到更强的可用模型）。
+    routing_capability: bool = True          # 是否开启能力路由
+    routing_quality_threshold: int = 78     # 所需维度低于此分视为「偏弱」，触发升级评估
+    routing_allow_upgrade: bool = False      # 命中更强本地模型时是否自动改用（默认只提示）
+    routing_allow_paid_upgrade: bool = False # 是否允许自动改用付费模型（默认绝不，避免偷偷花钱）
+
     workspace_root: Path = field(default_factory=Path.cwd)
     allow_outside: bool = False
     git_root: Path | None = None      # git 操作的工作目录，默认同工作区根
@@ -158,6 +166,10 @@ class Config:
         cfg.routing_default = r.get("default", "general")
         cfg.code_signals = _expand_signals(r.get("code_signals", []) or [])
         cfg.language_signals = _expand_signals(r.get("language_signals", []) or [])
+        cfg.routing_capability = bool(r.get("capability", cfg.routing_capability))
+        cfg.routing_quality_threshold = int(r.get("quality_threshold", cfg.routing_quality_threshold))
+        cfg.routing_allow_upgrade = bool(r.get("allow_upgrade", cfg.routing_allow_upgrade))
+        cfg.routing_allow_paid_upgrade = bool(r.get("allow_paid_upgrade", cfg.routing_allow_paid_upgrade))
 
         w = raw.get("workspace", {}) or {}
         cfg.workspace_root = Path(_expand(w.get("root", str(ROOT))))

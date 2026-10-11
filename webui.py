@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from agentforge import artifact, autonote, runcontrol
+from agentforge import artifact, autonote, autoskill, runcontrol
 from agentforge.cli import CLI
 from agentforge.config import Config
 from agentforge.memory import MemoryStore
@@ -190,8 +190,19 @@ class _Handler(BaseHTTPRequestHandler):
     # ---------- 技能 / 工具 ----------
     def _skills_snapshot(self) -> dict:
         reg = self.cli.skills
+        # 每次都重扫：自动沉淀的 skill 是后台线程写盘后即时注册的，
+        # 不重扫的话管理页要等重启才看得到新技能。
+        try:
+            reg.scan()
+        except Exception:  # noqa: BLE001
+            pass
+        learned = autoskill.learned_dir(self.cfg)
         items = []
+        learned_count = 0
         for name, sk in reg.skills.items():
+            is_learned = str(sk.dirpath).startswith(str(learned))
+            if is_learned:
+                learned_count += 1
             items.append(
                 {
                     "name": name,
@@ -199,14 +210,71 @@ class _Handler(BaseHTTPRequestHandler):
                     "path": str(sk.dirpath),
                     "resources": sk.resources(),
                     "auto": True,  # 当前实现里 skill 全部参与自动匹配
+                    "learned": is_learned,  # 是否由自检机制自动沉淀（可整批管理）
                 }
             )
         return {
             "skills": items,
             "dirs": [str(d) for d in reg.dirs],
+            "learned_dir": str(learned),
+            "learned_count": learned_count,
             "auto_load": self.cfg.skill_auto_load,
             "min_score": self.cfg.skill_min_score,
         }
+
+    def _handle_skills(self):
+        """技能管理：删除单个已学习技能 / 清空全部已学习技能。
+
+        只动「自动沉淀」目录（skills/learned/）下的 skill，不碰用户手写的技能；
+        删除即移除整个 skill 目录并重扫注册表，让它立刻退出后续任务的自动匹配。
+        """
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            req = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            self._json({"error": "invalid json"}, 400)
+            return
+        action = (req.get("action") or "").strip()
+        reg = self.cli.skills
+        learned = autoskill.learned_dir(self.cfg)
+        if action == "delete":
+            name = (req.get("name") or "").strip()
+            sk = reg.get(name)
+            if sk is None:
+                self._json({"ok": False, "error": "未找到该技能"}, 400)
+                return
+            if not str(sk.dirpath).startswith(str(learned)):
+                self._json({"ok": False, "error": "只支持删除自动沉淀的技能"}, 400)
+                return
+            try:
+                import shutil
+
+                shutil.rmtree(sk.dirpath, ignore_errors=True)
+                reg.scan()
+            except Exception as e:  # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+                return
+        elif action == "clear":
+            removed = 0
+            for sk in list(reg.skills.values()):
+                if str(sk.dirpath).startswith(str(learned)):
+                    try:
+                        import shutil
+
+                        shutil.rmtree(sk.dirpath, ignore_errors=True)
+                        removed += 1
+                    except Exception:  # noqa: BLE001
+                        pass
+            try:
+                reg.scan()
+            except Exception:  # noqa: BLE001
+                pass
+            self._json({"ok": True, "removed": removed})
+            return
+        else:
+            self._json({"ok": False, "error": f"未知操作 {action}"}, 400)
+            return
+        self._json(self._skills_snapshot())
 
     def _tools_snapshot(self) -> dict:
         reg = self.cli.registry
@@ -603,6 +671,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/memory":
             self._handle_memory()
             return
+        if path == "/api/skills":
+            self._handle_skills()
+            return
         if path == "/api/open-folder":
             self._handle_open_folder()
             return
@@ -694,6 +765,18 @@ class _Handler(BaseHTTPRequestHandler):
                 return f"第 {step_index or 1}/{step_total} 步 · 第 {round_now or 1} 轮推理 · {tool_calls} 次工具"
             return f"第 {round_now or 1} 轮推理 · {tool_calls} 次工具"
 
+        # 能力路由：auto 模式下按任务所需能力维度选/建议模型。
+        # 不做全局硬切换——只在明确偏弱且存在更强可用模型时升级；否则把决策
+        # 透明地播报给用户，让他知道「为什么是这个模型、还有没有更好的」。
+        cap_route = None
+        if model_key == "auto" and getattr(self.cfg, "routing_capability", True):
+            try:
+                cap_route = self.cli.router.capability(message, self.store)
+                if cap_route.get("upgrade"):
+                    model_key = cap_route["best_key"]   # 自动升级到更强可用模型
+            except Exception:  # noqa: BLE001
+                cap_route = None
+
         self._sse_headers()
         try:
             emit(
@@ -706,6 +789,20 @@ class _Handler(BaseHTTPRequestHandler):
                     "permission": permission,
                 },
             )
+            if cap_route:
+                emit("route", {
+                    "kind": cap_route.get("kind"),
+                    "dimension": cap_route.get("dimension"),
+                    "dimension_label": cap_route.get("dimension_label"),
+                    "chosen_key": cap_route.get("chosen_key"),
+                    "chosen_name": cap_route.get("chosen_name"),
+                    "chosen_score": cap_route.get("chosen_score"),
+                    "best_key": cap_route.get("best_key"),
+                    "best_name": cap_route.get("best_name"),
+                    "best_score": cap_route.get("best_score"),
+                    "reason": cap_route.get("reason", ""),
+                    "notice": cap_route.get("notice", ""),
+                })
             for ev in run_task(cli.agent, self.store, history, message,
                                auto_plan=auto_plan, model_key=model_key,
                                stop_check=stop_ev.is_set,
@@ -855,12 +952,34 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 spec = autonote.pick_extractor(self.store, self.cfg)
                 if spec is not None and final_history:
+                    hist = list(final_history)
+                    # 记忆：后台提炼长期结论
                     threading.Thread(
                         target=autonote.capture_model,
-                        args=(self.mem, self.cli.agent.hub, spec,
-                              list(final_history), task_id),
+                        args=(self.mem, self.cli.agent.hub, spec, hist, task_id),
                         daemon=True,
                     ).start()
+
+                    # 技能：后台提炼可复用方法论；产出时发 skill 事件提示用户
+                    def _run_autoskill():
+                        try:
+                            made = autoskill.capture_model(
+                                self.cli.skills, self.cli.agent.hub, spec, hist,
+                                task_id, self.cfg, autoskill.learned_dir(self.cfg),
+                            )
+                            for sk in made:
+                                try:
+                                    emit("skill", {
+                                        "name": sk.get("name", ""),
+                                        "detail": "自动沉淀技能：" + (sk.get("description", "")),
+                                        "auto": True,
+                                        "path": sk.get("path", ""),
+                                    })
+                                except Exception:  # noqa: BLE001
+                                    pass
+                        except Exception:  # noqa: BLE001
+                            pass
+                    threading.Thread(target=_run_autoskill, daemon=True).start()
             except Exception:  # noqa: BLE001
                 pass
 
