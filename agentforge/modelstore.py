@@ -26,6 +26,10 @@ from .scores import DIMENSIONS, DIM_KEYS, combo, lookup, total_of
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE_PATH = ROOT / "models.json"
+# 本地模型的自动配置（原生窗口等）单独存一份：每台机器上的模型与显存不同，
+# 探测结果跟着代码走版本库只会误导（那边可能根本没装这个模型）。
+# models.json 则是要跟着走的——里面有在线模型的 API Key，换台机器 clone 下来就能用。
+LOCAL_PATH = ROOT / "models.local.json"
 
 # 付费厂商预设：base_url 与常见模型号，前端用它填默认值
 PROVIDERS: dict[str, dict] = {
@@ -124,6 +128,8 @@ class ModelStore:
     def __init__(self, cfg: Config, path: Path | None = None):
         self.cfg = cfg
         self.path = Path(path) if path else STORE_PATH
+        # 本地模型配置固定放在 models.json 旁边（测试传临时 path 时也跟着走）
+        self.local_path = self.path.with_name("models.local.json")
         self.paid: list[dict] = []
         self.enabled_ids: list[str] | None = None   # None = 尚未初始化，默认全选
         self.budget: int = 3                        # 最优组合最多挑几个模型
@@ -138,7 +144,19 @@ class ModelStore:
         self.load()
 
     # ------------------------------------------------------------ 持久化
+    def _load_local(self) -> None:
+        """读本地模型的自动配置（单独文件，不进版本库）。"""
+        if not self.local_path.exists():
+            return
+        try:
+            raw = json.loads(self.local_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        if isinstance(raw, dict):
+            self.local_cfg = dict(raw)
+
     def load(self) -> None:
+        self._load_local()
         if not self.path.exists():
             return
         try:
@@ -151,37 +169,35 @@ class ModelStore:
         self.budget = int(raw.get("budget") or 3)
         if isinstance(raw.get("score_overrides"), dict):
             self.score_overrides = dict(raw["score_overrides"])
-        if isinstance(raw.get("local_cfg"), dict):
+        # 兼容旧格式：早期把本地模型配置混在 models.json 里，读到就顺手迁走
+        if not self.local_cfg and isinstance(raw.get("local_cfg"), dict):
             self.local_cfg = dict(raw["local_cfg"])
+            self._save_auto_cfg()
 
     def save(self) -> None:
+        """写 models.json。**不含**本地模型的自动配置——那部分在 models.local.json。"""
         data = {
             "version": 1,
             "enabled": [e.id for e in (self._catalog or self.catalog()) if e.enabled],
             "paid": self.paid,
             "budget": self.budget,
             "score_overrides": self.score_overrides,
-            "local_cfg": self.local_cfg,
         }
         self.path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
     def _save_auto_cfg(self) -> None:
-        """只把自动探测到的模型配置写回磁盘。
+        """把自动探测到的本地模型配置写到 models.local.json。
 
-        单独开一个方法是为了避免在 catalog() 构建过程中调用 save()——
-        save() 会反过来读 catalog()，那样就递归了。这里读-改-写，不碰其他字段。
+        这个文件**故意不进版本库**：里面是"这台机器上这个模型的窗口该开多大"，
+        换台机器可能连模型都没有。从 catalog() 里调用它还能避开 save()——
+        save() 会反过来读 catalog()，那样就递归了。
         """
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
-        except (json.JSONDecodeError, OSError):
-            raw = {}
-        raw.setdefault("version", 1)
-        raw["local_cfg"] = self.local_cfg
-        try:
-            self.path.write_text(
-                json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
+            self.local_path.write_text(
+                json.dumps(self.local_cfg, ensure_ascii=False, indent=2),
+                encoding="utf-8",
             )
         except OSError:
             pass

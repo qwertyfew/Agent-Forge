@@ -7,6 +7,9 @@ __pycache__/
 .venv/
 .sessions/
 .run/
+# 开发期诊断脚本与验证截图（本地用，不入库）
+tools/shots*/
+tools/*_probe.py
 _tmp/
 *.log
 
@@ -14,8 +17,12 @@ _tmp/
 .vscode/
 .idea/
 
-# 用户配置（含 API Key，不入库）
-models.json
+# 本地模型的自动配置（每台机器上装了哪些模型、显存多大都不同，探测结果不入库）
+# 注意：models.json **故意入库**——里面有在线模型的 API Key，
+# 这样换台电脑 clone 下来就直接能用，不用重新填 key。
+models.local.json
+
+# 任务历史与运行状态（每次运行都在变，不入库）
 .tasks.json
 .prefs.json
 .tmp_research/

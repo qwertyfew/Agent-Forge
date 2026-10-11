@@ -35,6 +35,35 @@ python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
+本地模型用 Ollama 自己拉，配置里默认引用的是这两个（可以随意换）：
+
+```bash
+ollama pull gemma4:12b      # 主力：256K 上下文，原生工具调用
+ollama pull qwen3.5:4b      # 轻量：速度快，长上下文
+```
+
+拉完**不需要手改配置**：AgentForge 发现新模型时会自动探测它的原生上下文长度并写好参数，
+在设置页勾选即可用。想指定窗口大小再手写进 `config.yaml` 的 `models` 段（显式配置优先）。
+
+## 换台电脑
+
+```bash
+git clone git@github.com:qwertyfew/Agent-Forge.git
+cd Agent-Forge
+
+# Windows：双击 start-web.bat
+# Linux / macOS：
+./start-web.sh
+```
+
+两个脚本都会在缺虚拟环境时**自动创建并安装依赖**，然后起服务（`http://127.0.0.1:8787`）。
+模型清单与在线模型的 API Key 已在 `models.json` 里跟着仓库走，不用重填；
+只有两件事需要按新机器改一下：
+
+1. `config.yaml` / `config.lanrun.yaml` 里的 `workspace.root` 是绝对路径，改成那台机器上的目录
+   （或启动时用 `-w <目录>` 覆盖）。
+2. `ollama pull` 你需要的本地模型（拉完自动配置，见上）。
+
 ## 运行
 
 ```bash
@@ -67,8 +96,12 @@ workspace:
   root: D:\path\to\your\workspace   # Agent 可访问的根目录，越界读写一律拒绝
 ```
 
-以下文件**不入库**（含密钥或机器相关状态）：`models.json`（模型清单与 API Key）、`.tasks.json`、
-`.prefs.json`、`.agentforge/`（工作区记忆）、`.sessions/`、`.venv/`、`.run/`。
+版本库里**包含** `models.json`：在线模型的配置与 API Key 都在里面，换台电脑 clone 下来就能用，
+不用重新填 key（仓库是私有的）。
+
+**不含**下列机器相关状态（已 gitignore）：`models.local.json`（本地模型的自动探测结果，
+每台机器装了哪些模型、显存多大都不同）、`.tasks.json`、`.prefs.json`、`.agentforge/`
+（工作区记忆）、`.sessions/`、`.venv/`、`.run/`。
 
 ## 目录结构
 
