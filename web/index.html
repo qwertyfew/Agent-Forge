@@ -275,6 +275,21 @@
   /* 对话流 */
   .thread{flex:1;overflow-y:auto;scrollbar-width:thin}
   .thread-in{max-width:760px;margin:0 auto;padding:12px 24px 28px;display:flex;flex-direction:column;gap:16px}
+
+  /* 右侧回溯导航：常态只有小横杠，悬停展开成文字列表 */
+  .rail{position:absolute;right:10px;top:50%;transform:translateY(-50%);z-index:6;
+    display:flex;flex-direction:column;align-items:flex-end;gap:9px;
+    padding:8px 4px;max-height:72vh;overflow-y:auto;scrollbar-width:none}
+  .rail::-webkit-scrollbar{display:none}
+  .rail-it{display:flex;align-items:center;gap:7px;cursor:pointer;background:none;border:0;padding:0}
+  .rail-it .rl{display:none;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-size:11.5px;color:var(--ink2);background:var(--panel);border:1px solid var(--line);
+    border-radius:8px;padding:3px 9px;box-shadow:var(--shadow)}
+  .rail-it .mk{width:14px;height:2px;border-radius:2px;background:var(--ink3);opacity:.4;flex:none;
+    transition:width .15s ease,opacity .15s ease}
+  .rail:hover .rl{display:block}
+  .rail-it:hover .mk{opacity:.85;width:18px}
+  .rail-it.cur .mk{opacity:1;width:22px;background:var(--ink)}
   .msg-user{display:flex;justify-content:flex-end}
   .msg-user .bub{max-width:78%;background:var(--bubble);color:var(--bubble-ink);
     border-radius:20px;padding:9px 15px;white-space:pre-wrap;word-break:break-word}
@@ -575,6 +590,7 @@
     .composer-wrap{padding:6px 12px 10px}
     .thread-in{padding:12px 14px 24px}
     .hero h1{font-size:24px}
+    .rail{display:none}
     .set-nav{width:132px;padding:10px 6px}
     .set-nav button{font-size:12px;padding:7px 8px}
     .set-pane{padding:14px 14px 60px}
@@ -684,6 +700,9 @@
     <div class="thread hide" id="thread">
       <div class="thread-in" id="log"></div>
     </div>
+
+    <!-- 右侧回溯导航：同一任务多轮对话时列出每次提问，点击跳转；常态只显示小横杠 -->
+    <div class="rail hide" id="rail"></div>
 
     <div class="composer-wrap" id="composerWrap">
       <div class="composer">
@@ -930,17 +949,32 @@ function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt
 const mainEl = document.querySelector('main');
 let attachments = [];          // 已上传附件：[{name, path}]
 function isLanding(){
-  return view === 'chat' && !busy && !taskActive() && history.length === 0
-    && !input.value.trim() && attachments.length === 0;
+  // 落地态只看「有没有开始对话」：输入中仍停在页面中部，
+  // 点发送（busy / 有历史）后才落到底部
+  return view === 'chat' && !busy && !taskActive() && history.length === 0;
 }
 function renderLanding(){
   const on = isLanding();
   const inHero = composerWrapEl.parentElement === hero;
   if(on && !inHero) hero.appendChild(composerWrapEl);
   else if(!on && inHero) mainEl.appendChild(composerWrapEl);
-  // 落地页才显示大标题；开始输入后标题随输入框一起撤掉
+  // 落地页才显示大标题；发送后随输入框一起落到底部
   if(view === 'chat') hero.classList.toggle('hide', !on);
+  if(on && inHero) positionLanding();
 }
+/* 落地页整体上移：让输入框里的「+」按钮正好压在页面的竖直中线上 */
+function positionLanding(){
+  if(composerWrapEl.parentElement !== hero) return;
+  hero.style.justifyContent = 'flex-start';
+  const plus = $('btnAttach');
+  const hr = hero.getBoundingClientRect();
+  const pr = plus.getBoundingClientRect();
+  const off = pr.top - hr.top;   // 加号在 hero 内的偏移（hero 顶部 padding 此时为 0）
+  // 目标：加号中心 = 视口竖直中线（hr.top 是 hero 在视口里的起点，别漏了顶栏高度）
+  hero.style.paddingTop = Math.max(6,
+    window.innerHeight / 2 - hr.top - off - pr.height / 2) + 'px';
+}
+window.addEventListener('resize', ()=>{ if(isLanding()) positionLanding(); });
 
 function renderAttach(){
   const row = $('attachRow');
@@ -972,6 +1006,7 @@ function showView(v){
   const land = isLanding();
   hero.classList.toggle('hide', isSet || isMem || !land);
   thread.classList.toggle('hide', isSet || isMem || history.length === 0);
+  if(!isSet && !isMem) rebuildRail();   // 离开对话视图时收起右侧回溯导航
   $('btnBack').classList.toggle('hide', !(isSet || isMem));
   $('btnMenu').classList.toggle('hide', isSet || isMem);
   if(isSet) $('topTitle').textContent = '设置';
@@ -1002,8 +1037,9 @@ $('btnBack').onclick = () => showView('chat');
    任务跑完会自动往工作区记忆里沉淀条目（规则 + 本地模型提炼），
    这个页面负责查看、手动补充、逐条删除与整体清空。 */
 function memBadge(n){
+  // 栏目文字固定，不再追加条数（用户要求去掉「记忆管理(6)」里的计数）
   const b = $('memNavLabel');
-  if(b) b.textContent = n ? '记忆管理(' + n + ')' : '记忆管理';
+  if(b) b.textContent = '记忆管理';
 }
 async function memPost(body){
   try{
@@ -2103,6 +2139,28 @@ function addUser(text){
   m.appendChild(el('div','bub', text));
   log.appendChild(m);
   scrollBottom();
+  rebuildRail();
+}
+/* 右侧回溯导航：把当前对话里每次提问列成小横杠，悬停显示原文，点击跳回那条消息 */
+function rebuildRail(){
+  const rail = $('rail');
+  if(!rail) return;
+  rail.innerHTML = '';
+  const users = [...log.querySelectorAll(':scope > .msg-user')];
+  rail.classList.toggle('hide', users.length < 2 || view !== 'chat');
+  users.forEach(m=>{
+    const txt = (m.querySelector('.bub')||{}).textContent || '';
+    const it = el('button','rail-it');
+    it.title = txt.trim();
+    it.appendChild(el('span','rl', txt.trim()));
+    it.appendChild(el('i','mk'));
+    it.onclick = ()=>{
+      m.scrollIntoView({behavior:'smooth', block:'start'});
+      [...rail.children].forEach(x=>x.classList.remove('cur'));
+      it.classList.add('cur');
+    };
+    rail.appendChild(it);
+  });
 }
 function addAssistant(){
   const m = el('div','msg-ai');
@@ -2126,7 +2184,7 @@ function addThinking(){
   d.appendChild(s);
   const v = el('div','tval');
   d.appendChild(v);
-  d.open = true;   // 思考流式输出时自动展开，正文开始后收起成一行
+  d.open = true;   // 思考流式输出时自动展开，出结果后保持展开方便回看
   log.appendChild(d);
   thinkBox = { d, s, v, text:'' };
   scrollBottom();
@@ -2134,8 +2192,7 @@ function addThinking(){
 }
 function closeThinking(){
   if(!thinkBox) return;
-  thinkBox.d.open = false;
-  // 收起时把标题改成「已完成」，让用户知道刚才有一段思考
+  // 不再收起：只把标题定格为「已完成 N 字」，内容保持展开可随时回看
   thinkBox.s.innerHTML = '';
   thinkBox.s.appendChild(el('span','','思考过程'));
   thinkBox.s.appendChild(el('span','',
