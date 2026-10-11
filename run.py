@@ -25,7 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("-c", "--config", help="配置文件路径，默认 ./config.yaml")
     ap.add_argument("-w", "--workspace", help="覆盖工作区根目录")
-    ap.add_argument("-m", "--model", help="指定模型 key：general / code / fast")
+    ap.add_argument("-m", "--model",
+                    help="指定模型 key（config.yaml 里的 key，或自动发现的模型名，如 gpt-oss:20b）")
     ap.add_argument("-t", "--task", help="执行单个任务后退出，不进入交互模式")
     ap.add_argument("-y", "--yes", action="store_true", help="自动批准写文件与执行命令")
     ap.add_argument("--web", action="store_true", help="启动 Web 界面")
@@ -39,9 +40,6 @@ def main() -> int:
     cfg = Config.load(args.config)
     if args.workspace:
         cfg.workspace_root = Path(args.workspace)
-    if args.model and args.model not in cfg.models:
-        print(f"错误：未知模型 key '{args.model}'，可选 {list(cfg.models)}")
-        return 2
 
     if not cfg.workspace_root.exists():
         print(f"错误：工作区不存在 {cfg.workspace_root}")
@@ -68,12 +66,22 @@ def main() -> int:
 
     cli = CLI(cfg, auto_approve=args.yes, model_key=args.model)
 
+    # 校验放在 CLI 之后：自动发现的本地模型要等 catalog() 才注册进 cfg.models，
+    # 放在前面会把 `-m gpt-oss:20b` 这类有效的选择误判成未知模型。
+    if args.model and args.model not in cfg.models:
+        keys = [k for k, s in cfg.models.items() if s.kind != "paid"]
+        print(f"错误：未知模型 key '{args.model}'，可选本地模型 {keys}")
+        return 2
+
     if not cli.client.ping():
         print(f"错误：连不上 Ollama（{cfg.ollama_host}）。请先启动 Ollama。")
         return 1
 
     available = cli.client.list_models()
-    missing = [s.name for s in cfg.models.values() if s.name not in available]
+    # 只检查本地模型：付费模型本来就不在本机 Ollama 里，算进来会一直误报
+    # 「尚未下载」，把真正缺的本地模型淹掉。
+    missing = [s.name for s in cfg.models.values()
+               if s.kind != "paid" and s.name not in available]
     if missing:
         print("警告：以下模型尚未下载，用到时会报错：")
         for m in missing:
