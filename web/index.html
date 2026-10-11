@@ -1,0 +1,2613 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentForge</title>
+<style>
+  /* ============ Codex 风格设计令牌 ============ */
+  :root{
+    --bg:#ffffff;
+    --side:#f4f4f6;
+    --side-ink:#1c1b1a;
+    --panel:#ffffff;
+    --card:#f7f7f8;
+    --code:#f6f6f7;
+    --line:#e8e7e3;
+    --line2:#dcdad5;
+    --ink:#1c1b1a;
+    --ink2:#6f6d68;
+    --ink3:#a3a19b;
+    --bubble:#ececee;
+    --bubble-ink:#1c1b1a;
+    --send-bg:#191919;
+    --send-ink:#ffffff;
+    --accent:#4a55c8;
+    --accent-soft:#eef0fd;
+    --orange:#b45309;
+    --orange-soft:#fdf1e3;
+    --ok:#1a7f4e;
+    --ok-soft:#e4f4ec;
+    --err:#b3382c;
+    --err-soft:#fbeceb;
+    --pill:#ffffff;
+    --hover:rgba(128,128,128,.10);
+    --shadow:0 1px 2px rgba(20,18,12,.04),0 8px 28px rgba(20,18,12,.07);
+    --radius:20px;
+    --bar:rgba(128,128,128,.18);
+  }
+  html[data-theme="dark"]{
+    --bg:#1b1b1b;
+    --side:#141414;
+    --side-ink:#ececec;
+    --panel:#212121;
+    --card:#242424;
+    --code:#262626;
+    --line:#2c2c2c;
+    --line2:#383838;
+    --ink:#ececec;
+    --ink2:#a8a8a8;
+    --ink3:#6e6e6e;
+    --bubble:#2b2b2d;
+    --bubble-ink:#ececec;
+    --send-bg:#ececec;
+    --send-ink:#141414;
+    --accent:#8b93f0;
+    --accent-soft:#232434;
+    --orange:#e2934a;
+    --orange-soft:#332617;
+    --ok:#4fae82;
+    --ok-soft:#16281f;
+    --err:#d9705f;
+    --err-soft:#33201d;
+    --pill:#242424;
+    --hover:rgba(255,255,255,.08);
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.35);
+    --bar:rgba(255,255,255,.14);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+    transition:background .18s ease,color .18s ease;
+  }
+  ::selection{background:rgba(74,85,200,.22)}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;padding:0}
+  input,select{font:inherit;color:var(--ink)}
+  svg{display:block;flex:none}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Courier New",monospace}
+  .muted{color:var(--ink3)}
+  .hide{display:none !important}
+  .spacer{flex:1}
+
+  /* ============ 布局 ============ */
+  .app{display:flex;height:100vh;overflow:hidden}
+
+  /* ============ 侧边栏 ============ */
+  aside{
+    width:264px;flex:none;display:flex;flex-direction:column;
+    background:var(--side);color:var(--side-ink);
+    border-right:1px solid var(--line);transition:transform .22s ease;z-index:40;
+  }
+  .side-head{padding:14px 12px 8px}
+  .brand{display:flex;align-items:center;gap:8px;padding:6px 8px 12px;font-weight:650;font-size:15px;letter-spacing:.2px}
+  .brand .mark{width:22px;height:22px;border-radius:7px;background:var(--send-bg);color:var(--send-ink);
+    display:flex;align-items:center;justify-content:center}
+  /* 新建任务：无边框，左侧图标 + 右侧文字，整行悬停微亮（对齐 WorkBuddy 侧栏样式） */
+  .new-chat{display:flex;align-items:center;gap:9px;width:100%;padding:9px 10px;border-radius:10px;
+    font-size:13.5px;font-weight:600;text-align:left;border:0;background:transparent;color:var(--ink)}
+  .new-chat:hover{background:var(--hover)}
+  .new-chat .plus{width:17px;height:17px;flex:none;display:flex;align-items:center;
+    justify-content:center;color:var(--ink2);background:transparent;transition:color .15s ease}
+  .new-chat .plus svg{width:15px;height:15px}
+  .new-chat:hover .plus{color:var(--ink)}
+  /* 切到别的栏目（记忆管理等）时，「新建任务」跟着变淡，不再像当前项 */
+  .new-chat.dim{color:var(--ink3)}
+  .new-chat.dim .plus{color:var(--ink3)}
+  .new-chat.dim:hover{color:var(--ink)}
+  .new-chat.dim:hover .plus{color:var(--ink)}
+  .side-body{flex:1;overflow-y:auto;padding:4px 12px 12px;scrollbar-width:thin}
+  /* 新建任务下方的栏目区（记忆管理等） */
+  .side-nav{display:flex;flex-direction:column;gap:2px;margin-top:4px}
+  .nav-item{display:flex;align-items:center;gap:9px;width:100%;padding:8px 10px;border-radius:10px;
+    border:0;background:transparent;font-size:13px;color:var(--ink2);text-align:left;cursor:pointer}
+  .nav-item:hover{background:var(--hover);color:var(--ink)}
+  .nav-item.on{background:var(--hover);color:var(--ink);font-weight:600}
+  .nav-item .nt{flex:1}
+  .nav-item .nc{font-size:10.5px;color:var(--ink3);font-variant-numeric:tabular-nums}
+  /* 记忆管理页 */
+  .mem-add{display:flex;gap:8px;margin:2px 0 4px}
+  .mem-add input{flex:1;min-width:0;height:32px;padding:0 11px;border:1px solid var(--line);
+    border-radius:9px;background:transparent;font-size:12.5px;color:var(--ink);outline:none}
+  .mem-add input:focus{border-color:var(--ink3)}
+  .mem-item{border:1px solid var(--line);border-radius:12px;background:var(--card);padding:10px 13px;
+    display:flex;align-items:flex-start;gap:10px}
+  .mem-item .mtxt{flex:1;min-width:0;font-size:12.5px;line-height:1.55;color:var(--ink);word-break:break-word}
+  .mem-item .mmeta{flex:none;display:flex;align-items:center;gap:8px;font-size:10.5px;color:var(--ink3)}
+  .mem-item .mtag{border:1px solid var(--line);border-radius:5px;padding:0 5px;line-height:1.7;
+    white-space:nowrap}
+  .side-sec{margin-top:14px}
+  .side-title{font-size:11px;font-weight:600;color:var(--ink3);letter-spacing:.6px;padding:0 8px 6px;text-transform:uppercase}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;padding:2px 8px}
+  .chip{font-size:12px;color:var(--ink2);background:var(--pill);border:1px solid var(--line);
+    border-radius:999px;padding:3px 10px}
+  .toolrow{display:flex;align-items:center;gap:8px;padding:4.5px 8px;border-radius:8px;font-size:12.5px;color:var(--ink2)}
+  .toolrow:hover{background:var(--hover)}
+  .toolrow .tname{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--ink)}
+  .toolrow .ttag{margin-left:auto;font-size:10.5px;color:var(--ink3);border:1px solid var(--line2);border-radius:5px;padding:0 5px;line-height:1.6}
+  /* 悬停在「模型配置」上时弹出的组合卡片（原来常驻在侧栏，太占地方） */
+  .model-pop{position:fixed;z-index:55;width:290px;padding:13px 14px;border-radius:14px;
+    border:1px solid var(--line2);background:var(--panel);box-shadow:var(--shadow);
+    display:none;font-size:12px;color:var(--ink2)}
+  .model-pop.on{display:block}
+  .model-pop .mp-head{display:flex;align-items:center;gap:8px;margin-bottom:9px}
+  .model-pop .mp-head b{font-size:12.5px;color:var(--ink)}
+  .model-pop .mp-total{margin-left:auto;font-size:11px;color:var(--ink2)}
+  .model-pop .mp-names{font-size:11.5px;color:var(--ink3);line-height:1.5;margin-bottom:9px;
+    word-break:break-all}
+  .model-pop .mp-dims{display:flex;flex-direction:column;gap:5px}
+  .model-pop .mp-dim{display:flex;align-items:center;gap:8px;font-size:11.5px}
+  .model-pop .mp-dim .k{width:42px;flex:none;color:var(--ink3)}
+  .model-pop .mp-dim .b{flex:1;height:5px;border-radius:99px;background:var(--bar);overflow:hidden}
+  .model-pop .mp-dim .b i{display:block;height:100%;border-radius:99px;background:var(--ink2)}
+  .model-pop .mp-dim .v{width:22px;text-align:right;color:var(--ink);font-variant-numeric:tabular-nums}
+  .model-pop .mp-foot{margin-top:10px;padding-top:9px;border-top:1px solid var(--line);
+    font-size:11px;color:var(--ink3);display:flex;align-items:center;gap:6px}
+
+  .side-foot{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
+  .ctx-line{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink3)}
+  .ctx-bar{flex:1;height:4px;border-radius:99px;background:var(--bar);overflow:hidden}
+  .ctx-bar i{display:block;height:100%;width:0;border-radius:99px;background:var(--ink2);transition:width .3s ease}
+  .ctx-bar i.hot{background:var(--err)}
+  .foot-btn{display:flex;align-items:center;gap:8px;padding:6px 8px;margin:0 -8px;border-radius:9px;
+    font-size:12.5px;color:var(--ink2);text-align:left}
+  .foot-btn:hover{background:var(--hover);color:var(--ink)}
+  .meta{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink3);min-width:0}
+  .meta.clickable{cursor:pointer;border-radius:7px;padding:2px 4px;margin:0 -4px;transition:color .15s ease,background .15s ease}
+  .meta.clickable:hover{color:var(--ink);background:var(--hover)}
+  .dot{width:7px;height:7px;border-radius:50%;background:#c0beba;flex:none;transition:background .3s}
+  .dot.ok{background:#2fa46a;box-shadow:0 0 0 3px rgba(47,164,106,.15)}
+  .dot.bad{background:var(--err)}
+  .meta .ws{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+  .side-scrim{display:none}
+
+  /* ============ 侧栏 · 任务管理 ============ */
+  .side-title.row{display:flex;align-items:center;gap:6px;padding-right:8px}
+  .side-title.row .grow{flex:1}
+  .side-title .tcount{font-size:10.5px;font-weight:500;color:var(--ink3);letter-spacing:0;text-transform:none}
+  /* 清空：同样是很淡描边、内部透明，与「新建任务」同一套语言 */
+  .mini-btn{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;
+    border:1px solid var(--line);border-radius:8px;background:transparent;
+    font-size:11px;font-weight:600;color:var(--ink2);letter-spacing:0;text-transform:none}
+  .mini-btn:hover{border-color:var(--ink3);color:var(--ink);background:var(--hover)}
+  .mini-btn:disabled{opacity:.45;cursor:default;border-color:var(--line2);color:var(--ink3)}
+  .task-list{display:flex;flex-direction:column;gap:6px;max-height:46vh;overflow-y:auto;
+    scrollbar-width:thin;padding:0 2px 4px}
+  .task-empty{font-size:12px;color:var(--ink3);padding:8px;line-height:1.55;
+    border:1px dashed var(--line2);border-radius:12px}
+  /* 任务条目平时不加框，仅悬停微亮、点击选中时描边高亮 */
+  .task-item{display:flex;align-items:flex-start;gap:9px;padding:9px 11px;border-radius:12px;
+    cursor:pointer;border:1px solid transparent;background:transparent;
+    transition:background .15s ease,border-color .15s ease}
+  .task-item:hover{background:var(--hover)}
+  .task-item.on{border-color:var(--ink3);background:var(--hover)}
+  .task-item.on .t-title{font-weight:600}
+  .t-dot{width:7px;height:7px;border-radius:50%;flex:none;margin-top:5px;background:var(--ink3)}
+  .t-dot.done{background:#2fa46a}
+  .t-dot.error{background:var(--err)}
+  .t-dot.stopped{background:#b9b7b0}
+  .t-dot.running{background:#d9930a;animation:tpulse 1.1s ease-in-out infinite}
+  @keyframes tpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.72)}}
+  .t-main{min-width:0;flex:1}
+  .t-title{font-size:12.5px;color:var(--ink);line-height:1.4;overflow:hidden;text-overflow:ellipsis;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .t-meta{font-size:10.5px;color:var(--ink3);margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+  .t-meta .tm-tag{border:1px solid var(--line);border-radius:5px;padding:0 4px;line-height:1.6}
+  .t-meta .tm-run{color:#a06a05}
+
+  /* 顶栏运行指示 */
+  .top-run{display:inline-flex;align-items:center;gap:6px;flex:none;font-size:11.5px;color:var(--ink2);
+    border:1px solid var(--line);border-radius:999px;padding:3px 10px;background:var(--panel)}
+  .top-run .rd{width:6px;height:6px;border-radius:50%;background:#d9930a;animation:tpulse 1.1s ease-in-out infinite}
+
+  /* ============ 执行中状态条 ============ */
+  .runbar{flex:none;margin:0 16px 8px;border:1px solid var(--line);border-radius:12px;
+    background:var(--panel);overflow:hidden;box-shadow:var(--shadow)}
+  .runbar.hide{display:none}
+  .rb-line{display:flex;align-items:center;gap:9px;padding:8px 12px;font-size:12px;color:var(--ink2)}
+  .rb-dot{width:7px;height:7px;border-radius:50%;background:#d9930a;flex:none;
+    animation:tpulse 1.1s ease-in-out infinite}
+  .rb-state{font-weight:650;color:var(--ink);flex:none}
+  .rb-timer{font-variant-numeric:tabular-nums;font-size:12.5px;color:var(--ink);
+    font-family:ui-monospace,Menlo,Consolas,monospace;flex:none}
+  .rb-sep{width:1px;height:12px;background:var(--line2);flex:none}
+  .rb-prog{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .rb-spacer{flex:1}
+  .rb-cost{flex:none;font-variant-numeric:tabular-nums;color:var(--ink3);
+    border:1px solid var(--line);border-radius:999px;padding:2px 9px;font-size:11px}
+  .rb-stop{flex:none;display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 10px;
+    border:1px solid var(--line2);border-radius:8px;font-size:11.5px;color:var(--ink)}
+  .rb-stop:hover{border-color:var(--err);color:var(--err)}
+  .rb-stop:disabled{opacity:.5;cursor:default}
+  .rb-track{height:2px;background:var(--line);position:relative;overflow:hidden}
+  .rb-track i{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--ok);
+    transition:width .35s ease}
+  /* 步数未知（单模型任务）时用滚动条表示「在动」，不假装有进度 */
+  .runbar.indet .rb-track i{width:34%;background:var(--ok);animation:rbSlide 1.25s ease-in-out infinite}
+  @keyframes rbSlide{0%{left:-34%}100%{left:100%}}
+  .runbar.done .rb-dot,.runbar.stopped .rb-dot{animation:none;background:var(--ink3)}
+  .runbar.done .rb-track i{background:var(--ok)}
+  .runbar.stopped .rb-state{color:var(--err)}
+
+  /* 设置页 · 技能/工具管理 */
+  .alist{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+  .aitem{border:1px solid var(--line);border-radius:12px;background:var(--card);padding:11px 13px}
+  .aitem .ah{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .aitem .aname{font-weight:600;font-size:13px}
+  .aitem .aname.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;color:var(--accent)}
+  .aitem .adesc{font-size:12px;color:var(--ink2);margin-top:5px;line-height:1.6;white-space:pre-wrap}
+  .aitem .apath{font-size:11px;color:var(--ink3);margin-top:7px;word-break:break-all;
+    font-family:ui-monospace,Menlo,Consolas,monospace}
+  .aitem .arow{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
+  .adim{font-size:11.5px;color:var(--ink3);padding:6px 2px 0;line-height:1.6}
+
+  /* ============ 主区 ============ */
+  main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg);position:relative}
+  .topbar{display:flex;align-items:center;gap:10px;padding:10px 16px;min-height:52px}
+  .top-title{font-size:13.5px;color:var(--ink2);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%}
+  .icon-btn{width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;color:var(--ink2)}
+  .icon-btn:hover{background:var(--hover);color:var(--ink)}
+  #btnMenu{display:none}
+
+  /* 首页 Hero */
+  .hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 24px 8px;gap:26px}
+  .hero h1{margin:0;font-size:30px;font-weight:650;letter-spacing:.2px}
+  .suggests{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;max-width:660px}
+  .sg{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink2);
+    border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:7px 14px}
+  .sg:hover{border-color:var(--ink3);color:var(--ink)}
+
+  /* 对话流 */
+  .thread{flex:1;overflow-y:auto;scrollbar-width:thin}
+  .thread-in{max-width:760px;margin:0 auto;padding:12px 24px 28px;display:flex;flex-direction:column;gap:16px}
+  .msg-user{display:flex;justify-content:flex-end}
+  .msg-user .bub{max-width:78%;background:var(--bubble);color:var(--bubble-ink);
+    border-radius:20px;padding:9px 15px;white-space:pre-wrap;word-break:break-word}
+  .msg-ai{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .msg-ai .body{white-space:pre-wrap;word-break:break-word}
+  .msg-ai .body pre{background:var(--code);border:1px solid var(--line);border-radius:12px;
+    padding:12px 14px;overflow:auto;margin:10px 0;font-size:12.5px;line-height:1.55}
+  .msg-ai .body pre code{background:none;padding:0;font-size:inherit}
+  .msg-ai .body code{background:var(--code);border:1px solid var(--line);border-radius:5px;padding:.5px 5px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.88em}
+  .msg-ai .body h2,.msg-ai .body h3{margin:12px 0 2px;font-size:1em;font-weight:650}
+
+  /* 回复底部工具条：复制 / 重新回答 / 朗读 + 右侧预估消耗与模型 */
+  .msg-foot{display:flex;align-items:center;gap:1px;margin-top:6px;flex-wrap:wrap}
+  .msg-foot .act{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 8px;
+    border:0;background:transparent;border-radius:7px;font-size:11.5px;color:var(--ink3);cursor:pointer}
+  .msg-foot .act:hover{background:var(--hover);color:var(--ink)}
+  .msg-foot .meta{margin-left:auto;display:inline-flex;align-items:center;gap:6px;
+    font-size:11px;color:var(--ink3);font-variant-numeric:tabular-nums;white-space:nowrap}
+
+  /* 思考过程 */
+  .think summary{display:inline-flex;align-items:center;gap:6px;cursor:pointer;list-style:none;
+    font-size:12px;color:var(--ink3);user-select:none;padding:2px 0}
+  .think summary::-webkit-details-marker{display:none}
+  .think summary:hover{color:var(--ink2)}
+  .think .tval{margin-top:6px;padding:8px 12px;border-left:2px solid var(--line2);
+    font-size:12.5px;color:var(--ink2);white-space:pre-wrap;max-height:260px;overflow:auto}
+  .shimmer{font-size:13px;background:linear-gradient(90deg,var(--ink3) 0%,var(--ink) 50%,var(--ink3) 100%);
+    background-size:200% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+    animation:sh 1.6s linear infinite;width:fit-content}
+  @keyframes sh{to{background-position:-200% 0}}
+
+  /* 工具卡片 */
+  .tool{border:1px solid var(--line);border-radius:12px;background:var(--card);overflow:hidden;margin:4px 0}
+  .tool-head{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;font-size:12.5px;min-width:0}
+  .tool-head:hover{background:var(--hover)}
+  .tool-name{font-weight:600;color:var(--accent);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+  .tool-arg{color:var(--ink3);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+  .tool-state{font-size:11px;color:var(--ink3);flex:none}
+  .tool-state.ok{color:var(--ok)}
+  .tool-state.deny{color:var(--err)}
+  .tool-body{display:none;padding:10px 14px;border-top:1px solid var(--line);
+    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.55;
+    color:var(--ink2);white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto;background:var(--panel)}
+  .tool.open .tool-body{display:block}
+  .tool.open .chev{transform:rotate(180deg)}
+  .chev{transition:transform .18s ease;color:var(--ink3)}
+  .tool.denied{border-color:var(--err-soft)}
+  .tool.denied .tool-head{background:var(--err-soft)}
+  .tool.denied .tool-name{color:var(--err)}
+
+  /* 提示 pill */
+  .pillnote{display:flex;justify-content:center}
+  .pillnote span{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink3);
+    border:1px solid var(--line);border-radius:999px;padding:3px 12px;background:var(--panel)}
+  .pillnote b{font-weight:600;color:var(--ink2)}
+
+  /* 任务计划卡片 */
+  .plan{border:1px solid var(--line);border-radius:14px;background:var(--card);overflow:hidden}
+  .plan-head{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
+  .plan-head b{font-weight:600}
+  .plan-head .plan-sum{margin-left:auto;font-size:11.5px;color:var(--ink3)}
+  .pstep{display:flex;align-items:flex-start;gap:10px;padding:8px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
+  .pstep:last-child{border-bottom:none}
+  .pstep .pidx{width:18px;height:18px;border-radius:50%;background:var(--bar);color:var(--ink2);
+    font-size:10.5px;display:flex;align-items:center;justify-content:center;flex:none;margin-top:1px}
+  .pstep .pbody{min-width:0;flex:1}
+  .pstep .ptitle{color:var(--ink)}
+  .pstep .pmeta{font-size:11.5px;color:var(--ink3);margin-top:1px}
+  .pstep .pmodel{color:var(--ink2);font-weight:550}
+  .pstep.running .pidx{background:var(--accent);color:#fff}
+  .pstep.done .pidx{background:var(--ok);color:#fff}
+
+  /* 执行分隔（子任务接力） */
+  .divider{display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--ink3);padding:2px 0}
+  .divider:before,.divider:after{content:"";height:1px;background:var(--line);flex:1}
+  .assign-pill{display:flex;justify-content:center}
+  .assign-pill span{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink2);
+    border:1px solid var(--line);border-radius:999px;padding:4px 13px;background:var(--panel)}
+  .assign-pill b{font-weight:600;color:var(--ink)}
+  .model-tag{font-size:10.5px;padding:1px 7px;border-radius:999px;background:var(--accent-soft);color:var(--accent);font-weight:600}
+
+  .stats{text-align:right;font-size:11px;color:var(--ink3);padding-right:2px}
+  .errbox{border:1px solid var(--err-soft);background:var(--err-soft);color:var(--err);
+    border-radius:12px;padding:9px 14px;font-size:13px;white-space:pre-wrap;word-break:break-word}
+
+  /* ============ 输入区 ============ */
+  .composer-wrap{padding:6px 24px 12px;flex:none}
+  .composer{max-width:760px;margin:0 auto;position:relative}
+  .c-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:12px 14px 10px}
+  .c-card:focus-within{border-color:var(--line2)}
+  textarea{display:block;width:100%;resize:none;border:none;outline:none;background:none;
+    font:inherit;color:var(--ink);min-height:26px;max-height:200px;padding:0 2px 8px}
+  textarea::placeholder{color:var(--ink3)}
+  .c-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .cbtn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border-radius:999px;
+    font-size:12.5px;color:var(--ink2);border:1px solid transparent}
+  .cbtn:hover{background:var(--hover);color:var(--ink)}
+  .cbtn.warn{color:var(--orange);background:var(--orange-soft)}
+  .cbtn.on{color:var(--accent);background:var(--accent-soft)}
+  .cbtn .chev{color:currentColor;opacity:.6}
+  .send{width:32px;height:32px;border-radius:50%;background:var(--send-bg);color:var(--send-ink);
+    display:flex;align-items:center;justify-content:center;flex:none;margin-left:auto}
+  .send:hover{opacity:.85}
+  .send:disabled{opacity:.4;cursor:default}
+  .send .spin{animation:rot 1s linear infinite}
+  /* 任务执行中：发送键变成停止键 */
+  .send.stopping{background:var(--err);color:#fff;box-shadow:0 0 0 3px var(--err-soft)}
+  .send.stopping:hover{opacity:1}
+  .send.stopping svg{animation:none}
+  @keyframes rot{to{transform:rotate(360deg)}}
+  .hint{max-width:760px;margin:7px auto 0;text-align:center;font-size:11.5px;color:var(--ink3)}
+  .pool-hint{max-width:760px;margin:6px auto 0;text-align:center;font-size:11.5px;color:var(--ink3);opacity:.85}
+
+  /* ============ 设置页 ============ */
+  .settings{flex:1;display:flex;flex-direction:column;min-height:0}
+  .set-body{flex:1;display:flex;min-height:0}
+  .set-nav{width:190px;flex:none;border-right:1px solid var(--line);padding:12px 10px;display:flex;flex-direction:column;gap:2px}
+  .set-nav button{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:9px;
+    font-size:13px;color:var(--ink2);text-align:left}
+  .set-nav button:hover{background:var(--hover);color:var(--ink)}
+  .set-nav button.on{background:var(--hover);color:var(--ink);font-weight:550}
+  .set-pane{flex:1;overflow-y:auto;padding:20px 26px 60px;min-width:0}
+  .pane-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+  .pane-head h3{margin:0 0 4px;font-size:17px;font-weight:650}
+  .pane-head p{margin:0;font-size:12.5px;color:var(--ink3);max-width:520px}
+  .pane-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .btn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 14px;border-radius:9px;
+    border:1px solid var(--line2);font-size:12.5px;color:var(--ink);background:var(--panel)}
+  .btn:hover{border-color:var(--ink3)}
+  .btn.primary{background:var(--send-bg);color:var(--send-ink);border-color:var(--send-bg)}
+  .btn.primary:hover{opacity:.88}
+  .btn:disabled{opacity:.5;cursor:default}
+  /* 「生效中」小标：只在当前实际生效的那套配置按钮上出现 */
+  .btn .onnow{margin-left:1px;padding:1px 6px;border-radius:20px;font-size:10.5px;font-weight:600;
+    letter-spacing:.2px;background:var(--hover);color:var(--ink2);white-space:nowrap}
+  .btn.primary .onnow{background:rgba(128,128,128,.34);color:inherit}
+
+  /* 组合得分卡 */
+  .combo-card{border:1px solid var(--line);border-radius:14px;background:var(--card);padding:14px 16px;margin-bottom:18px}
+  .combo-top{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .combo-top b{font-size:13px}
+  .combo-total{margin-left:auto;font-size:20px;font-weight:700;line-height:1}
+  .combo-total small{font-size:11px;font-weight:400;color:var(--ink3);margin-left:4px}
+  .dims{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:8px 18px}
+  .dim{display:flex;align-items:center;gap:8px;font-size:11.5px}
+  .dim .dlabel{width:44px;color:var(--ink2);flex:none}
+  .dim .dbar{flex:1;height:5px;border-radius:99px;background:var(--bar);overflow:hidden;min-width:36px}
+  .dim .dbar i{display:block;height:100%;border-radius:99px;background:var(--ink2);transition:width .25s ease}
+  .dim .dval{width:22px;text-align:right;color:var(--ink);font-variant-numeric:tabular-nums}
+  .combo-note{margin-top:10px;font-size:11.5px;color:var(--ink3)}
+
+  /* 模型列表 */
+  .mlist{display:flex;flex-direction:column;gap:8px}
+  .mrow{display:flex;gap:12px;border:1px solid var(--line);border-radius:13px;background:var(--panel);
+    padding:12px 14px;transition:border-color .15s}
+  .mrow:hover{border-color:var(--line2)}
+  .mrow.on{border-color:var(--accent);background:var(--panel)}
+  .mrow input[type=checkbox]{width:16px;height:16px;margin:3px 0 0;accent-color:var(--accent);flex:none;cursor:pointer}
+  .mrow .mmain{flex:1;min-width:0}
+  .mrow .mline1{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .mrow .mname{font-size:13.5px;font-weight:600}
+  .badge{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--line2);color:var(--ink3);font-weight:500}
+  .badge.local{color:var(--ok);border-color:var(--ok-soft);background:var(--ok-soft)}
+  .badge.paid{color:var(--accent);border-color:var(--accent-soft);background:var(--accent-soft)}
+  .badge.warn{color:var(--orange);border-color:var(--orange-soft);background:var(--orange-soft)}
+  .mrow .mtotal{margin-left:auto;font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums}
+  .mrow .mtotal b{font-size:15px;color:var(--ink)}
+  .mrow .mdesc{font-size:12px;color:var(--ink3);margin-top:2px}
+  .dchip{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--ink2);
+    background:var(--card);border:1px solid var(--line);border-radius:7px;padding:2px 7px;margin:6px 5px 0 0}
+  .dchip b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+  .dchip.top{border-color:var(--ok);color:var(--ok)}
+  .dchip.top b{color:var(--ok)}
+  .evi{margin-top:8px;font-size:11.5px;color:var(--ink3);line-height:1.6}
+  .evi summary{cursor:pointer;list-style:none;color:var(--ink3);font-size:11.5px}
+  .evi summary::-webkit-details-marker{display:none}
+  .evi summary:hover{color:var(--ink2)}
+  .evi .evi-body{margin-top:5px;padding:8px 10px;border-left:2px solid var(--line2);background:var(--card);border-radius:0 8px 8px 0}
+  .mactions{display:flex;flex-direction:column;gap:6px;flex:none}
+  .minibtn{font-size:11.5px;color:var(--ink2);border:1px solid var(--line2);border-radius:7px;padding:4px 10px;white-space:nowrap}
+  .minibtn:hover{border-color:var(--ink3);color:var(--ink)}
+  .minibtn.danger:hover{border-color:var(--err);color:var(--err)}
+
+  /* 添加付费模型 */
+  .addpaid{margin-top:22px;border:1px dashed var(--line2);border-radius:14px;padding:16px}
+  .addpaid h4{margin:0 0 4px;font-size:13.5px;font-weight:650}
+  .addpaid .sub{margin:0 0 14px;font-size:12px;color:var(--ink3)}
+  .fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{font-size:11.5px;color:var(--ink3)}
+  .field input,.field select{height:34px;padding:0 10px;border:1px solid var(--line2);border-radius:9px;
+    background:var(--panel);outline:none;font-size:12.5px;width:100%}
+  .field input:focus,.field select:focus{border-color:var(--accent)}
+  .field .fhint{font-size:11px;color:var(--ink3)}
+  .form-foot{display:flex;align-items:center;gap:12px;margin-top:14px}
+  .form-msg{font-size:12px;color:var(--ink3)}
+  .form-msg.ok{color:var(--ok)}
+  .form-msg.bad{color:var(--err)}
+
+  /* ============ 浮动提示（点一键应用后上浮渐隐） ============ */
+  .toast{
+    position:fixed;z-index:60;pointer-events:none;
+    display:inline-flex;align-items:center;gap:7px;
+    max-width:min(420px,80vw);
+    padding:8px 14px;border-radius:11px;
+    font-size:12.5px;font-weight:600;line-height:1.4;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    box-shadow:0 6px 16px rgba(20,18,12,.14),0 14px 34px rgba(20,18,12,.10);
+    animation:toastFloat 2000ms cubic-bezier(.22,.85,.3,1) forwards;
+  }
+  .toast .tk{font-size:13px;line-height:1}
+  .toast.ok{background:var(--ok);color:#fff}
+  .toast.bad{background:var(--err);color:#fff}
+  .toast.mute{background:var(--ink2);color:var(--bg)}
+  html[data-theme="dark"] .toast{box-shadow:0 6px 16px rgba(0,0,0,.4),0 14px 34px rgba(0,0,0,.35)}
+  @keyframes toastFloat{
+    0%  {transform:translateY(4px) scale(.97);opacity:0}
+    10% {transform:translateY(0) scale(1);opacity:1}
+    62% {transform:translateY(-16px);opacity:1}
+    100%{transform:translateY(-40px);opacity:0}
+  }
+
+  /* 通用设置 */
+  .kv{display:flex;gap:14px;font-size:12.5px;padding:10px 0;border-bottom:1px solid var(--line)}
+  .kv .k{width:120px;color:var(--ink3);flex:none}
+  .kv .v{color:var(--ink);word-break:break-all}
+  .segbtns{display:flex;gap:8px}
+
+  /* ============ 模态弹窗（替换浏览器原生 confirm/alert） ============ */
+  .modal-mask{position:fixed;inset:0;z-index:70;background:rgba(18,17,15,.42);
+    display:flex;align-items:center;justify-content:center;padding:24px;
+    backdrop-filter:blur(2px);animation:maskIn .14s ease}
+  html[data-theme="dark"] .modal-mask{background:rgba(0,0,0,.58)}
+  @keyframes maskIn{from{opacity:0}to{opacity:1}}
+  .modal{width:min(520px,100%);max-height:82vh;display:flex;flex-direction:column;
+    border:1px solid var(--line2);border-radius:16px;background:var(--panel);
+    box-shadow:0 10px 30px rgba(20,18,12,.16),0 30px 70px rgba(20,18,12,.18);
+    animation:modalIn .18s cubic-bezier(.22,.85,.3,1)}
+  html[data-theme="dark"] .modal{box-shadow:0 10px 30px rgba(0,0,0,.5),0 30px 80px rgba(0,0,0,.5)}
+  @keyframes modalIn{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:none}}
+  .modal-head{padding:18px 20px 0}
+  .modal-head h3{margin:0 0 5px;font-size:15.5px;font-weight:650;color:var(--ink)}
+  .modal-head p{margin:0;font-size:12.5px;color:var(--ink3);line-height:1.6}
+  .modal-body{padding:15px 20px 4px;overflow-y:auto;scrollbar-width:thin}
+  .modal-foot{display:flex;align-items:center;gap:10px;padding:14px 20px 18px;
+    border-top:1px solid var(--line);margin-top:12px}
+  .modal-foot .spacer{flex:1}
+  .modal-foot .note{font-size:11.5px;color:var(--ink3)}
+  /* 勾选项：整行可点，选中态用左侧高亮表示 */
+  .mopt{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;margin-bottom:7px;
+    border:1px solid var(--line);border-radius:12px;background:var(--card);cursor:pointer}
+  .mopt:hover{border-color:var(--line2)}
+  .mopt.on{border-color:var(--ink3);background:var(--panel)}
+  .mopt.off{opacity:.55;cursor:default}
+  .mopt input{width:15px;height:15px;margin:2px 0 0;flex:none;accent-color:var(--send-bg);cursor:inherit}
+  .mopt .mt{flex:1;min-width:0}
+  .mopt .mt b{display:block;font-size:13px;font-weight:600;color:var(--ink)}
+  .mopt .mt span{display:block;font-size:11.5px;color:var(--ink3);margin-top:3px;line-height:1.55}
+  .mopt .mc{flex:none;font-size:11.5px;color:var(--ink2);border:1px solid var(--line2);
+    border-radius:7px;padding:1px 7px;line-height:1.7}
+  /* 待删除文件清单 */
+  .mfile{margin:2px 0 10px;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .mfile .mf-head{display:flex;align-items:center;gap:8px;padding:8px 11px;
+    background:var(--card);font-size:11.5px;color:var(--ink2);border-bottom:1px solid var(--line)}
+  .mfile .mf-body{max-height:172px;overflow-y:auto;scrollbar-width:thin}
+  .mfile .mf-row{display:flex;align-items:center;gap:8px;padding:6px 11px;font-size:11.5px;
+    border-bottom:1px solid var(--line)}
+  .mfile .mf-row:last-child{border-bottom:none}
+  .mfile .mf-row .p{flex:1;min-width:0;color:var(--ink);overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;direction:rtl;text-align:left;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .mfile .mf-row .tag{flex:none;font-size:10.5px;color:var(--ink3);border:1px solid var(--line2);
+    border-radius:6px;padding:0 5px;line-height:1.7}
+  .mfile .mf-row .tag.scan{color:var(--orange);border-color:var(--orange)}
+  .mfile .mf-row .tag.out{color:var(--err);border-color:var(--err)}
+  .btn.danger{background:var(--err);color:#fff;border-color:var(--err)}
+  .btn.danger:hover{opacity:.9}
+  .btn.ghost{background:transparent}
+
+  /* ============ 响应式 ============ */
+  @media (max-width:860px){
+    aside{position:fixed;top:0;bottom:0;left:0;transform:translateX(-100%);box-shadow:var(--shadow)}
+    aside.open{transform:none}
+    .side-scrim{display:block;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:30;opacity:0;pointer-events:none;transition:opacity .2s}
+    .side-scrim.on{opacity:1;pointer-events:auto}
+    #btnMenu{display:flex}
+    .composer-wrap{padding:6px 12px 10px}
+    .thread-in{padding:12px 14px 24px}
+    .hero h1{font-size:24px}
+    .set-nav{width:132px;padding:10px 6px}
+    .set-nav button{font-size:12px;padding:7px 8px}
+    .set-pane{padding:14px 14px 60px}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside id="sidebar">
+    <div class="side-head">
+      <div class="brand">
+        <span class="mark"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg></span>
+        AgentForge
+      </div>
+      <button class="new-chat" id="btnNew" title="开始一条全新的任务">
+        <span class="plus">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.5 0-2.9-.4-4.1-1.1L3 21l2.1-5.4a8.5 8.5 0 1 1 15.9-4.1z"/><path d="M12 8.2v6.6M8.7 11.5h6.6"/></svg>
+        </span>
+        新建任务
+      </button>
+      <!-- 新建任务下方的栏目：目前是记忆管理，后续新栏目继续往下排 -->
+      <div class="side-nav">
+        <button class="nav-item" id="navMemory" title="查看与管理任务自动沉淀的记忆">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3L2.5 8 12 13l9.5-5z"/><path d="M2.5 12.5L12 17.5l9.5-5"/><path d="M2.5 17L12 22l9.5-5"/></svg>
+          <span class="nt" id="memNavLabel">记忆管理</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="side-body">
+      <div class="side-sec">
+        <div class="side-title row">
+          <span class="grow" id="taskSecTitle">任务</span>
+          <button class="mini-btn" id="btnClearTasks" title="清理任务记录、任务产生的文件与记忆">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+            清空
+          </button>
+        </div>
+        <div class="task-list" id="taskList"></div>
+      </div>
+    </div>
+
+    <div class="side-foot">
+      <div class="ctx-line">
+        <span id="ctxPct">上下文 0%</span>
+        <div class="ctx-bar"><i id="ctxFill"></i></div>
+      </div>
+      <button class="foot-btn" id="btnCompact" title="把较早的对话重写成摘要，节省上下文">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6M4 10h10M4 18h4M20 4l-4 4m0-4l4 4M14 20l6-6"/></svg>
+        压缩上下文
+      </button>
+      <button class="foot-btn" id="btnSettings" title="打开设置（可用模型管理）">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 2.6 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 9.5 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21.4 11a2 2 0 1 1 0 4 1.7 1.7 0 0 0-1.2 1.2z"/></svg>
+        设置
+      </button>
+      <div class="meta clickable" id="ollamaMeta" title="点击打开 Ollama 服务页">
+        <span class="dot" id="ollamaDot"></span>
+        <span id="ollamaTxt">Ollama 检测中…</span>
+      </div>
+      <div class="meta clickable" id="wsMeta" title="点击在工作区的资源管理器中打开">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        <span class="ws" id="ws" title=""></span>
+      </div>
+    </div>
+  </aside>
+  <div class="side-scrim" id="scrim"></div>
+
+  <!-- 悬停「模型配置」时弹出的当前组合信息（原来常驻侧栏） -->
+  <div class="model-pop" id="modelPop"></div>
+
+  <main>
+    <div class="topbar">
+      <button class="icon-btn" id="btnMenu" title="菜单">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <button class="icon-btn hide" id="btnBack" title="返回对话">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <div class="top-title" id="topTitle"></div>
+      <span class="top-run hide" id="topRun"><span class="rd"></span><span id="topRunTxt">任务执行中</span></span>
+      <div class="spacer"></div>
+    </div>
+
+    <!-- ============ 执行中状态条：计时 / 进度 / 预估费用 ============ -->
+    <div class="runbar hide" id="runBar">
+      <div class="rb-line">
+        <span class="rb-dot"></span>
+        <span class="rb-state" id="rbState">执行中</span>
+        <span class="rb-timer" id="rbTimer">00:00</span>
+        <span class="rb-sep"></span>
+        <span class="rb-prog" id="rbProg">准备中…</span>
+        <span class="rb-spacer"></span>
+        <span class="rb-cost" id="rbCost">预估费用 ¥0</span>
+        <button class="rb-stop" id="rbStop">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          停止
+        </button>
+      </div>
+      <div class="rb-track"><i id="rbFill"></i></div>
+    </div>
+
+    <!-- ============ 对话视图 ============ -->    <div class="hero" id="hero">
+      <h1>我们该做什么？</h1>
+      <div class="suggests" id="suggests"></div>
+    </div>
+
+    <div class="thread hide" id="thread">
+      <div class="thread-in" id="log"></div>
+    </div>
+
+    <div class="composer-wrap" id="composerWrap">
+      <div class="composer">
+        <div class="c-card">
+          <textarea id="input" rows="1" placeholder="向 AgentForge 描述任何事，回车发送，Shift+回车换行"></textarea>
+          <div class="c-row">
+            <button class="cbtn" id="permBtn" title="切换权限：默认权限下写文件与执行命令需人工确认">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/></svg>
+              <span id="permTxt">默认权限</span>
+            </button>
+            <button class="cbtn" id="btnModelConfig" title="打开设置 → 可用模型管理">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+              <span id="modelCfgTxt">模型配置</span>
+            </button>
+            <button class="cbtn on" id="planBtn" title="开启后会把复合任务拆解并分配给不同模型">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3v4M3 5h4M6 17v4m-2-2h4M13 3l2.5 6.5L22 12l-6.5 2.5L13 21l-2.5-6.5L4 12l6.5-2.5z"/></svg>
+              <span>自动拆解</span>
+            </button>
+            <button class="send" id="send" title="发送">
+              <svg id="sendIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="pool-hint hide" id="poolHint"></div>
+      <div class="hint">越出工作区的路径与黑名单命令仍会被拦截；在「完全访问权限」下写文件与命令直接执行，切到「默认权限」则需要人工确认</div>
+    </div>
+
+    <!-- ============ 设置视图 ============ -->
+    <section class="settings hide" id="viewSettings">
+      <div class="set-body">
+        <nav class="set-nav">
+          <button class="on" data-tab="models">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/></svg>
+            可用模型管理
+          </button>
+          <button data-tab="skills">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 5.3L20 9.5l-4 3.9.9 5.6L12 16.3 7.1 19l.9-5.6-4-3.9 5.8-1.2z"/></svg>
+            技能管理
+          </button>
+          <button data-tab="tools">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0 5.4 5.4l-8 8a2.8 2.8 0 0 1-4-4z"/><path d="M5 5l4 4"/></svg>
+            工具管理
+          </button>
+          <button data-tab="general">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9L7 7m10 10l2.1 2.1M4.9 19.1L7 17m10-10l2.1-2.1"/></svg>
+            通用
+          </button>
+        </nav>
+
+        <div class="set-pane" id="paneModels">
+          <div class="pane-head">
+            <div>
+              <h3>可用模型管理</h3>
+              <p>勾选要参与任务的模型，AgentForge 会把每个子任务分给该维度得分最高的那个。本地模型自动进入列表，付费模型填好厂商与 API Key 即可使用。</p>
+            </div>
+            <div class="pane-actions">
+              <button class="btn" id="btnBest" title="自动挑选覆盖最全、总分最高的组合">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 13H11l-1 9 8.5-11H12z"/></svg>
+                一键应用最优配置
+              </button>
+              <button class="btn" id="btnBestLocal" title="只在本地模型里挑选覆盖最全、总分最高的一组，付费模型全部取消勾选">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+                一键应用本地最佳配置
+              </button>
+              <button class="btn" id="btnAll">全选</button>
+              <button class="btn" id="btnNone">清空</button>
+            </div>
+          </div>
+
+          <div class="combo-card" id="comboCard"></div>
+          <div class="mlist" id="modelList"></div>
+
+          <div class="addpaid">
+            <h4>添加付费模型</h4>
+            <p class="sub">填入厂商与 API Key 后，该模型立即成为「可用模型」并参与评分、路由与任务分配。密钥保存在本机 <span class="mono">models.json</span>（已加入 .gitignore）。</p>
+            <div class="fgrid">
+              <div class="field">
+                <label>厂商</label>
+                <select id="paidProvider"></select>
+                <span class="fhint" id="paidHint"></span>
+              </div>
+              <div class="field">
+                <label>模型号</label>
+                <input id="paidModel" placeholder="例如 deepseek-chat / gpt-5.5">
+              </div>
+              <div class="field">
+                <label>API Key</label>
+                <input id="paidKey" type="password" placeholder="sk-...">
+              </div>
+              <div class="field">
+                <label>显示名称（可选）</label>
+                <input id="paidLabel" placeholder="留空则用模型号">
+              </div>
+              <div class="field" style="grid-column:1/-1">
+                <label>接口地址（选填，留空用厂商默认）</label>
+                <input id="paidBase" placeholder="https://...">
+                <span class="fhint">中转站或私有部署填这里，需为 OpenAI 兼容接口</span>
+              </div>
+            </div>
+            <div class="form-foot">
+              <button class="btn primary" id="btnAddPaid">测试并保存</button>
+              <span class="form-msg" id="paidMsg"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="set-pane hide" id="paneSkills">
+          <div class="pane-head">
+            <div>
+              <h3>Skill 管理</h3>
+              <p>已安装的技能（Agent Skills 开放标准）。任务命中技能描述时，正文会自动注入本轮上下文；也可以让模型主动用 use_skill 加载。</p>
+            </div>
+            <div class="pane-actions">
+              <button class="btn" id="btnReloadSkills">刷新</button>
+            </div>
+          </div>
+          <div class="alist" id="skillAdminList"></div>
+          <div class="adim" id="skillDirs"></div>
+        </div>
+
+        <div class="set-pane hide" id="paneTools">
+          <div class="pane-head">
+            <div>
+              <h3>工具管理</h3>
+              <p>模型可调用的全部工具，含运行时热加载的插件工具。标「需审批」的在默认权限下执行前会请求确认；切到「完全访问权限」后直接执行。</p>
+            </div>
+            <div class="pane-actions">
+              <button class="btn" id="btnReloadTools">刷新</button>
+            </div>
+          </div>
+          <div class="alist" id="toolAdminList"></div>
+        </div>
+
+        <div class="set-pane hide" id="paneGeneral">
+          <div class="pane-head"><div><h3>通用</h3><p>界面主题与运行环境信息。</p></div></div>
+          <div class="kv"><span class="k">界面主题</span><span class="v segbtns">
+            <button class="btn" data-theme-set="light">浅色</button>
+            <button class="btn" data-theme-set="dark">深色</button>
+            <button class="btn" data-theme-set="auto">跟随系统</button>
+          </span></div>
+          <div class="kv"><span class="k">工作区</span><span class="v mono" id="genWs"></span></div>
+          <div class="kv"><span class="k">Ollama 地址</span><span class="v mono" id="genOllama"></span></div>
+          <div class="kv"><span class="k">上下文阈值</span><span class="v" id="genThreshold"></span></div>
+          <div class="kv"><span class="k">新任务默认权限</span><span class="v" id="genPerm"></span></div>
+          <div class="kv"><span class="k">工作区记忆</span><span class="v" id="genMemory"></span></div>
+          <div class="kv"><span class="k">最优组合上限</span><span class="v">3 个模型（贪心覆盖各维度）</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 记忆管理 ============ -->
+    <section class="settings hide" id="viewMemory">
+      <div class="set-body">
+        <div class="set-pane">
+          <div class="pane-head">
+            <div>
+              <h3>记忆管理</h3>
+              <p>
+                这里存放任务跑出来的长期记忆：你在对话里明说「记住 / 以后 / 每次都…」的内容由规则直接收录；
+                任务收尾时还会用最便宜的本地模型再提炼一两条结论。
+                记忆会注入后续任务的系统提示，直接改变 Agent 的行为，所以只留结论、不留过程。
+              </p>
+            </div>
+            <div class="pane-actions">
+              <button class="btn" id="btnMemRefresh">刷新</button>
+              <button class="btn" id="btnMemClear">全部清空</button>
+            </div>
+          </div>
+          <div class="mem-add">
+            <input id="memAddInput" placeholder="手动添加一条记忆，例如：项目约定：前端文案一律用中文" />
+            <button class="btn" id="btnMemAdd">添加</button>
+          </div>
+          <div class="alist" id="memList"></div>
+          <div class="kv" style="margin-top:18px;border-bottom:0">
+            <span class="k">记忆文件</span><span class="v mono" id="memPath"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+/* ================= 元素 ================= */
+const $ = id => document.getElementById(id);
+const log = $('log'), thread = $('thread'), hero = $('hero'), input = $('input'),
+      sendBtn = $('send'), permTxt = $('permTxt'), permBtn = $('permBtn');
+
+let history = [];
+let busy = false;
+let viewingHistory = false;   // 当前画面是不是「回看某条历史任务」
+let threshold = 60000;
+let autoPlan = true;
+let catalog = null;        // /api/models 的完整快照
+let view = 'chat';
+let workspaceRoot = '';    // 工作区根目录，用来把产出文件的绝对路径显示成相对路径
+// 权限默认「完全访问」，且记住上一次的选择：这里只是首屏占位，真正的值
+// 从服务端偏好 /api/prefs 读（换标签页、刷新、后台发起的任务都沿用同一份）
+let allowWrite = true;
+
+/* ================= 主题 =================
+   顶栏的快捷切换按钮已移除，入口统一收进 设置 → 通用 → 界面主题 */
+const THEME_KEY = 'af-theme';
+function applyTheme(t, persist = true){
+  const real = t === 'auto'
+    ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+    : t;
+  document.documentElement.dataset.theme = real;
+  if(persist){ try{ localStorage.setItem(THEME_KEY, t); }catch(e){} }
+}
+applyTheme((()=>{ try{ return localStorage.getItem(THEME_KEY) || 'auto'; }catch(e){ return 'auto'; } })(), false);
+document.querySelectorAll('[data-theme-set]').forEach(b=>{
+  b.onclick = ()=> applyTheme(b.dataset.themeSet);
+});
+
+const SVG = {
+  chev : '<svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+  gear : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10l2.1 2.1M4.9 19.1L7 17m10-10l2.1-2.1"/><circle cx="12" cy="12" r="3.2"/></svg>',
+  spark: '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg>'
+};
+function el(tag, cls, text){
+  const n = document.createElement(tag);
+  if(cls) n.className = cls;
+  if(text !== undefined) n.textContent = text;
+  return n;
+}
+function scrollBottom(){
+  const near = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 140;
+  if(near || !busy) thread.scrollTop = thread.scrollHeight;
+}
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ================= 视图切换 ================= */
+function showView(v){
+  view = v;
+  const isSet = v === 'settings';
+  const isMem = v === 'memory';
+  $('viewSettings').classList.toggle('hide', !isSet);
+  $('viewMemory').classList.toggle('hide', !isMem);
+  $('composerWrap').classList.toggle('hide', isSet || isMem);
+  hero.classList.toggle('hide', isSet || isMem || history.length > 0);
+  thread.classList.toggle('hide', isSet || isMem || history.length === 0);
+  $('btnBack').classList.toggle('hide', !(isSet || isMem));
+  $('btnMenu').classList.toggle('hide', isSet || isMem);
+  if(isSet) $('topTitle').textContent = '设置';
+  else if(isMem) $('topTitle').textContent = '记忆管理';
+  else $('topTitle').textContent = chatTitle;
+  $('navMemory').classList.toggle('on', isMem);
+  // 栏目互斥高亮：进设置/记忆管理时，「新建任务」也跟着变淡
+  $('btnNew').classList.toggle('dim', isMem || isSet);
+  closeSidebar();
+}
+let chatTitle = '';
+$('btnSettings').onclick = () => openSettings('models');
+$('btnModelConfig').onclick = () => openSettings('models');
+/* 悬停「模型配置」看当前组合明细：不再常驻侧栏，鼠标离开或点开设置就收起 */
+(function bindModelPop(){
+  const btn = $('btnModelConfig');
+  let timer = null;
+  btn.addEventListener('mouseenter', ()=>{ clearTimeout(timer); showModelPop(); });
+  btn.addEventListener('mouseleave', ()=>{ timer = setTimeout(hideModelPop, 160); });
+  $('modelPop').addEventListener('mouseenter', ()=> clearTimeout(timer));
+  $('modelPop').addEventListener('mouseleave', ()=>{ timer = setTimeout(hideModelPop, 160); });
+  window.addEventListener('scroll', hideModelPop, true);
+  window.addEventListener('resize', hideModelPop);
+})();
+$('btnBack').onclick = () => showView('chat');
+
+/* ================= 记忆管理 =================
+   任务跑完会自动往工作区记忆里沉淀条目（规则 + 本地模型提炼），
+   这个页面负责查看、手动补充、逐条删除与整体清空。 */
+function memBadge(n){
+  const b = $('memNavLabel');
+  if(b) b.textContent = n ? '记忆管理(' + n + ')' : '记忆管理';
+}
+async function memPost(body){
+  try{
+    const r = await fetch('/api/memory',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    return await r.json();
+  }catch(e){ return null; }
+}
+function renderMemory(d){
+  const box = $('memList');
+  if(!box) return;
+  box.innerHTML = '';
+  const items = (d && d.entries) || [];
+  memBadge(items.length);
+  if(d && d.path) $('memPath').textContent = d.path;
+  if(!items.length){
+    box.appendChild(el('div','task-empty',
+      '还没有记忆。任务跑完会自动沉淀（你明说「记住 / 以后 / 每次」的内容一定会被收到）；也可以在上面手动添加。'));
+    return;
+  }
+  for(const e of items){
+    const row = el('div','mem-item');
+    row.appendChild(el('div','mtxt', e.text || ''));
+    const meta = el('div','mmeta');
+    if(e.ts) meta.appendChild(el('span','', e.ts));
+    if(e.task) meta.appendChild(el('span','mtag', '任务 ' + e.task));
+    const del = el('button','mini-btn','删除');
+    del.title = '只删这一条';
+    del.onclick = async ()=>{
+      const r = await memPost({action:'delete', index:e.index});
+      if(r && r.ok){ renderMemory(r); toast(del, '已删除该条记忆', 'mute'); }
+      else toast(del, (r && r.error) || '删除失败', 'bad');
+    };
+    meta.appendChild(del);
+    row.appendChild(meta);
+    box.appendChild(row);
+  }
+}
+async function loadMemory(){
+  try{
+    const d = await (await fetch('/api/memory')).json();
+    renderMemory(d);
+  }catch(e){}
+}
+function refreshMemCount(){
+  fetch('/api/memory').then(r=>r.json()).then(d=>memBadge(d.count || 0)).catch(()=>{});
+}
+$('navMemory').onclick = ()=>{ showView('memory'); loadMemory(); };
+$('btnMemRefresh').onclick = ()=> loadMemory();
+$('btnMemAdd').onclick = async ()=>{
+  const inp = $('memAddInput');
+  const text = (inp.value || '').trim();
+  if(!text){ toast($('btnMemAdd'), '先写点内容再添加', 'mute'); return; }
+  const r = await memPost({action:'add', text});
+  if(r && r.ok){ inp.value = ''; renderMemory(r); toast($('btnMemAdd'), '已加入记忆', 'ok'); }
+  else toast($('btnMemAdd'), (r && r.error) || '添加失败', 'bad');
+};
+$('memAddInput').onkeydown = e => { if(e.key === 'Enter'){ e.preventDefault(); $('btnMemAdd').click(); } };
+$('btnMemClear').onclick = async ()=>{
+  const ok = await confirmModal({
+    title: '清空全部记忆？',
+    sub: '后续任务将不再读到这些结论与偏好，此操作不可撤销。',
+    danger: true, okText: '全部清空'
+  });
+  if(!ok) return;
+  const r = await memPost({action:'clear'});
+  if(r && r.ok){ renderMemory(r); toast($('btnMemClear'), '记忆已清空', 'mute'); }
+};
+refreshMemCount();
+const PANES = {models:'paneModels', skills:'paneSkills', tools:'paneTools', general:'paneGeneral'};
+function openSettings(tab){
+  hideModelPop();
+  showView('settings');
+  const t = tab || 'models';
+  switchTab(t);
+  onTabShown(t);
+}
+function switchTab(tab){
+  document.querySelectorAll('.set-nav button').forEach(b =>
+    b.classList.toggle('on', b.dataset.tab === tab));
+  for(const k in PANES) $(PANES[k]).classList.toggle('hide', k !== tab);
+}
+function onTabShown(tab){
+  if(tab === 'models') refreshModels();
+  else if(tab === 'skills') refreshSkills();
+  else if(tab === 'tools') refreshTools();
+}
+document.querySelectorAll('.set-nav button').forEach(b =>
+  b.onclick = () => { switchTab(b.dataset.tab); onTabShown(b.dataset.tab); });
+
+/* ================= 模型池 ================= */
+const DIM_ORDER = ['coding','reasoning','writing','chinese','math','speed','cost','context'];
+
+const ICON_BEST = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 13H11l-1 9 8.5-11H12z"/></svg>';
+const ICON_LOCAL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
+
+/* 两个「一键应用」按钮的样式跟着**当前实际生效的那套配置**走：
+   哪套配置正生效，哪个按钮就是黑底白字（primary）并标出「生效中」，另一颗回落成普通样式。
+   否则用户会误以为黑底那颗才是当前在用的配置。 */
+function updateApplyButtons(){
+  const bAll = $('btnBest'), bLocal = $('btnBestLocal');
+  if(!bAll || !bLocal) return;
+  const on = (catalog && catalog.models ? catalog.models : []).filter(m=>m.enabled).map(m=>m.id);
+  const same = (ids)=>{
+    if(!Array.isArray(ids) || !ids.length || ids.length !== on.length) return false;
+    const s = new Set(on);
+    return ids.every(i=>s.has(i));
+  };
+  const allOn = same(catalog && catalog.best);
+  const localOn = same(catalog && catalog.best_local);
+  bAll.classList.toggle('primary', allOn);
+  bLocal.classList.toggle('primary', localOn);
+  bAll.innerHTML = ICON_BEST + ' 一键应用最优配置' + (allOn ? '<span class="onnow">生效中</span>' : '');
+  bLocal.innerHTML = ICON_LOCAL + ' 一键应用本地最佳配置' + (localOn ? '<span class="onnow">生效中</span>' : '');
+  bAll.title = allOn ? '这一套正在生效中' : '自动挑选覆盖最全、总分最高的组合（含付费模型）';
+  bLocal.title = localOn ? '这一套正在生效中' : '只在本地模型里挑选覆盖最全、总分最高的一组，付费模型全部取消勾选';
+}
+
+function refreshModels(){
+  fetch('/api/models').then(r=>r.json()).then(data=>{
+    if(data.error){ return; }
+    catalog = data;
+    renderCombo();
+    renderModelList();
+    renderProviders();
+    updatePoolHint();
+    updateApplyButtons();
+  }).catch(()=>{});
+}
+
+function comboOf(models){
+  const on = models.filter(m=>m.enabled);
+  const best = {};
+  for(const d of DIM_ORDER){
+    let top = null;
+    for(const m of on) if(!top || m.scores[d] > top.scores[d]) top = m;
+    best[d] = top ? {value: top.scores[d], model: top.name} : {value:0, model:''};
+  }
+  const W = {coding:.22, reasoning:.22, writing:.13, chinese:.10, math:.10, speed:.09, cost:.07, context:.07};
+  let total = 0;
+  for(const d of DIM_ORDER) total += best[d].value * W[d];
+  return {count: on.length, best, total: Math.round(total), models: on};
+}
+
+function labelOf(dim){
+  if(!catalog) return dim;
+  const d = catalog.dimensions.find(x=>x.key===dim);
+  return d ? d.label : dim;
+}
+
+function renderCombo(){
+  if(!catalog) return;
+  const c = comboOf(catalog.models);
+  const box = $('comboCard');
+  box.innerHTML = '';
+  const top = el('div','combo-top');
+  top.appendChild(el('b','', '当前组合各维度得分'));
+  if(c.count) top.appendChild(el('span','muted','（' + c.count + ' 个模型，各维度取组合内最高分）'));
+  const tt = el('div','combo-total');
+  tt.innerHTML = c.total + '<small>总分</small>';
+  top.appendChild(tt);
+  box.appendChild(top);
+
+  const dims = el('div','dims');
+  for(const d of DIM_ORDER){
+    const b = c.best[d] || {value:0, model:''};
+    const row = el('div','dim');
+    row.appendChild(el('span','dlabel', labelOf(d)));
+    const bar = el('div','dbar');
+    const fill = el('i');
+    fill.style.width = b.value + '%';
+    bar.appendChild(fill);
+    row.appendChild(bar);
+    row.appendChild(el('span','dval', String(b.value)));
+    row.title = b.model ? `${labelOf(d)}：${b.value} 分，由 ${b.model} 提供` : `${labelOf(d)}：暂无`;
+    dims.appendChild(row);
+  }
+  box.appendChild(dims);
+
+  const note = el('div','combo-note');
+  if(!c.count){
+    note.textContent = '还没有勾选任何模型，任务无法执行。点「一键应用最优配置」自动选一组。';
+  }else{
+    const strong = DIM_ORDER.map(d=>({d, v:c.best[d].value})).sort((a,b)=>b.v-a.v).slice(0,3)
+      .map(x=>`${labelOf(x.d)} ${x.v}（${c.best[x.d].model}）`).join(' · ');
+    const weak = DIM_ORDER.map(d=>({d, v:c.best[d].value})).sort((a,b)=>a.v-b.v).slice(0,2)
+      .map(x=>labelOf(x.d)).join('、');
+    note.textContent = `组合强项：${strong}。相对薄弱：${weak} —— 想补强可以再勾一个该维度更高的模型。`;
+  }
+  box.appendChild(note);
+}
+
+function renderModelList(){
+  if(!catalog) return;
+  const list = $('modelList');
+  list.innerHTML = '';
+  const c = comboOf(catalog.models);
+  for(const m of catalog.models){
+    const row = el('div','mrow' + (m.enabled ? ' on' : ''));
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!m.enabled;
+    cb.onchange = () => toggleModel(m.id, cb.checked, cb);
+    row.appendChild(cb);
+
+    const main = el('div','mmain');
+    const l1 = el('div','mline1');
+    l1.appendChild(el('span','mname', m.name));
+    l1.appendChild(el('span','badge ' + (m.kind === 'local' ? 'local' : 'paid'),
+      m.kind === 'local' ? '本地' : '付费'));
+    if(m.provider_label) l1.appendChild(el('span','badge', m.provider_label));
+    if(m.discovered) l1.appendChild(el('span','badge warn','自动发现'));
+    if(m.source === '估算') l1.appendChild(el('span','badge','估算分'));
+    const tot = el('span','mtotal');
+    tot.innerHTML = '<b>' + m.total + '</b> 总分';
+    l1.appendChild(tot);
+    main.appendChild(l1);
+
+    if(m.desc) main.appendChild(el('div','mdesc', m.desc));
+
+    const sc = el('div');
+    for(const d of DIM_ORDER){
+      const isTop = c.models.length > 1 && c.best[d] && c.best[d].model === m.name
+        && m.enabled && m.scores[d] === c.best[d].value;
+      const chip = el('span','dchip' + (isTop ? ' top' : ''));
+      chip.innerHTML = labelOf(d) + ' <b>' + m.scores[d] + '</b>';
+      chip.title = `${labelOf(d)} ${m.scores[d]} 分` + (isTop ? '（当前组合该维度最强）' : '');
+      sc.appendChild(chip);
+    }
+    main.appendChild(sc);
+
+    if(m.evidence){
+      const d = el('details','evi');
+      const s = el('summary','','得分依据（' + m.source + (m.version ? ' · ' + m.version : '') + '）');
+      d.appendChild(s);
+      d.appendChild(el('div','evi-body', m.evidence));
+      main.appendChild(d);
+    }
+    row.appendChild(main);
+
+    const acts = el('div','mactions');
+    const tb = el('button','minibtn','测试连接');
+    tb.onclick = async ()=>{
+      tb.textContent = '测试中…'; tb.disabled = true;
+      try{
+        const r = await fetch('/api/models',{
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({action:'test', id:m.id})
+        }).then(x=>x.json());
+        tb.textContent = r.ok ? '可用 ✓' : '不可用';
+        tb.title = r.message || '';
+        if(r.snapshot){ catalog = r.snapshot; renderCombo(); updatePoolHint(); updateApplyButtons(); }
+        setTimeout(()=>{ tb.textContent = '测试连接'; tb.disabled = false; }, 2600);
+      }catch(e){ tb.textContent = '测试失败'; tb.disabled = false; }
+    };
+    acts.appendChild(tb);
+    if(m.kind === 'paid'){
+      const del = el('button','minibtn danger','删除');
+      del.onclick = async ()=>{
+        const yes = await confirmModal({
+          title: '删除付费模型',
+          sub: `确定删除「${m.name}」吗？它的 API Key 会一并从本地配置里移除，之后不会再参与自动分配。`,
+          okText: '删除', danger: true
+        });
+        if(!yes) return;
+        await postModels({action:'remove_paid', id:m.id});
+      };
+      acts.appendChild(del);
+    }
+    row.appendChild(acts);
+    list.appendChild(row);
+  }
+}
+
+async function postModels(payload){
+  const r = await fetch('/api/models',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  }).then(x=>x.json()).catch(e=>({error:String(e)}));
+  if(r.snapshot){ catalog = r.snapshot; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons(); }
+  return r;
+}
+
+/* 浮动提示：从锚点下方冒出，向上飘移并渐隐，动画结束自动移除。
+   锚点可以是 DOM 元素，也可以是事先取好的 rect（元素会被重渲染替换掉时用后者）。 */
+function toast(anchor, text, cls){
+  const kind = cls || 'ok';
+  const mark = kind === 'bad' ? '!' : (kind === 'mute' ? '−' : '✓');
+  const node = el('div', 'toast ' + kind);
+  node.innerHTML = '<span class="tk"></span><span></span>';
+  node.firstChild.textContent = mark;
+  node.lastChild.textContent = text;
+  document.body.appendChild(node);
+
+  const w = node.offsetWidth, h = node.offsetHeight;
+  let r = null;
+  if(anchor) r = anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : anchor;
+  let left, top;
+  if(r && (r.width || r.height)){
+    left = r.left + r.width / 2 - w / 2;
+    top = r.bottom + 10;
+    if(top + h > innerHeight - 8) top = Math.max(8, r.top - h - 10);  // 下方放不下就翻到上方
+  }else{
+    left = innerWidth / 2 - w / 2;
+    top = innerHeight - 96;
+  }
+  node.style.left = Math.max(10, Math.min(left, innerWidth - w - 10)) + 'px';
+  node.style.top = top + 'px';
+  node.addEventListener('animationend', ()=> node.remove());
+  return node;
+}
+
+/* ================= 模态弹窗 =================
+   原生 confirm/alert 在深色主题下非常突兀，风格也和项目对不上。这里做一个
+   统一的弹窗：标题 + 说明 + 可选勾选项 + 可选清单 + 取消/确定。
+   返回 { close, values }；配置里可给 onOk(values) / onClose()。
+   onOk 返回 false 表示不关闭（用于校验失败的情况）。 */
+function openModal(cfg){
+  const mask = el('div','modal-mask');
+  const box  = el('div','modal');
+  const head = el('div','modal-head');
+  head.appendChild(el('h3','', cfg.title || '确认'));
+  if(cfg.sub) head.appendChild(el('p','', cfg.sub));
+  box.appendChild(head);
+
+  const body = el('div','modal-body');
+  const inputs = {};
+  for(const opt of (cfg.options || [])){
+    const row = el('label','mopt' + (opt.checked ? ' on' : ''));
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!opt.checked;
+    cb.disabled = !!opt.disabled;
+    cb.onchange = ()=> row.classList.toggle('on', cb.checked);
+    inputs[opt.key] = cb;
+    const mt = el('div','mt');
+    mt.appendChild(el('b','', opt.label));
+    if(opt.desc) mt.appendChild(el('span','', opt.desc));
+    row.appendChild(cb);
+    row.appendChild(mt);
+    if(opt.count !== undefined) row.appendChild(el('span','mc', String(opt.count)));
+    body.appendChild(row);
+  }
+  for(const sec of (cfg.sections || [])){
+    const items = sec.items || [];
+    if(!items.length) continue;
+    const wrap = el('div','mfile');
+    const h = el('div','mf-head');
+    h.appendChild(el('span','', sec.title || ''));
+    h.appendChild(el('span','', items.length + ' 项' + (sec.more > items.length ? ` / 共 ${sec.more}` : '')));
+    wrap.appendChild(h);
+    const bd = el('div','mf-body');
+    for(const it of items){
+      const r = el('div','mf-row');
+      r.appendChild(el('span','p', it.text));
+      if(it.tag) r.appendChild(el('span','tag ' + (it.cls || ''), it.tag));
+      bd.appendChild(r);
+    }
+    wrap.appendChild(bd);
+    body.appendChild(wrap);
+  }
+  box.appendChild(body);
+
+  const foot = el('div','modal-foot');
+  if(cfg.note) foot.appendChild(el('span','note', cfg.note));
+  foot.appendChild(el('span','spacer'));
+  const cancel = el('button','btn ghost', cfg.cancelText || '取消');
+  const ok = el('button','btn ' + (cfg.danger ? 'danger' : 'primary'), cfg.okText || '确定');
+  foot.appendChild(cancel);
+  foot.appendChild(ok);
+  box.appendChild(foot);
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+
+  const values = ()=>{ const v = {}; for(const k in inputs) v[k] = inputs[k].checked; return v; };
+  let closed = false;
+  const close = ()=>{
+    if(closed) return;
+    closed = true;
+    mask.remove();
+    document.removeEventListener('keydown', onKey);
+    if(cfg.onClose) cfg.onClose();
+  };
+  const onKey = e => { if(e.key === 'Escape'){ e.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey);
+  mask.onclick = e => { if(e.target === mask) close(); };
+  cancel.onclick = close;
+  ok.onclick = async ()=>{
+    ok.disabled = true; cancel.disabled = true;
+    let keep = true;
+    try{ keep = await (cfg.onOk ? cfg.onOk(values()) : true); }
+    catch(e){ keep = true; }
+    if(keep === false){ ok.disabled = false; cancel.disabled = false; return; }
+    close();
+  };
+  ok.focus();
+  return { close, values };
+}
+
+/* 只需要一句话确认的场景（替代原生 confirm） */
+function confirmModal(cfg){
+  return new Promise(resolve=>{
+    let answered = false;
+    openModal({
+      title: cfg.title,
+      sub: cfg.sub,
+      note: cfg.note,
+      danger: cfg.danger,
+      okText: cfg.okText || '确定',
+      cancelText: cfg.cancelText || '取消',
+      onOk: ()=>{ answered = true; resolve(true); return true; },
+      onClose: ()=>{ if(!answered) resolve(false); }
+    });
+  });
+}
+
+async function toggleModel(id, on, anchor){
+  if(!catalog) return;
+  const target = catalog.models.find(m=>m.id === id);
+  const rect = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+  const ids = catalog.models.filter(m=>m.enabled).map(m=>m.id);
+  const next = on ? Array.from(new Set([...ids, id])) : ids.filter(x=>x !== id);
+  if(!next.length){ toast(rect, '至少要保留一个可用模型', 'bad'); refreshModels(); return; }
+  // 先本地更新，让得分提示即时响应
+  catalog.models.forEach(m=>{ if(m.id === id) m.enabled = on; });
+  renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons();
+  toast(rect, (target ? target.name : id) + (on ? ' 已启用' : ' 已取消'), on ? 'ok' : 'mute');
+  await postModels({action:'enable', ids:next});
+}
+
+$('btnBest').onclick = async ()=>{
+  const b = $('btnBest');
+  b.disabled = true; b.textContent = '计算中…';
+  const r = await postModels({action:'apply_best'});
+  b.disabled = false;
+  updateApplyButtons();          // 应用成功后高亮迁移到这颗按钮上
+  if(r.error){ toast(b, r.error, 'bad'); return; }
+  toast(b, `已应用最优配置 · 共 ${(r.enabled || []).length} 个模型`, 'ok');
+};
+
+$('btnBestLocal').onclick = async ()=>{
+  const b = $('btnBestLocal');
+  b.disabled = true; b.textContent = '计算中…';
+  const r = await postModels({action:'apply_best_local'});
+  b.disabled = false;
+  updateApplyButtons();          // 应用成功后高亮迁移到这颗按钮上
+  if(r.error){ toast(b, r.error, 'bad'); return; }
+  toast(b, `已应用本地最佳配置 · 仅本地模型 ${(r.enabled || []).length} 个`, 'ok');
+};
+$('btnAll').onclick = async ()=>{
+  const b = $('btnAll');
+  const r = await postModels({action:'enable', ids: catalog.models.map(m=>m.id)});
+  toast(b, r.error ? r.error : `已启用全部 ${(r.enabled || []).length} 个模型`, r.error ? 'bad' : 'ok');
+};
+$('btnNone').onclick = async ()=>{
+  const b = $('btnNone');
+  const keep = catalog.models[0];
+  const r = await postModels({action:'enable', ids: [keep.id]});
+  toast(b, r.error ? r.error : `已清空勾选 · 保留 ${keep.name}`, r.error ? 'bad' : 'mute');
+};
+
+function renderProviders(){
+  if(!catalog || !catalog.providers) return;
+  const sel = $('paidProvider');
+  if(sel.options.length) return;
+  for(const p of catalog.providers){
+    const o = document.createElement('option');
+    o.value = p.id; o.textContent = p.label;
+    sel.appendChild(o);
+  }
+  sel.value = 'deepseek';
+  sel.onchange = () => {
+    const p = catalog.providers.find(x=>x.id === sel.value);
+    $('paidHint').textContent = p ? (p.hint || '') : '';
+    $('paidBase').placeholder = p && p.base_url ? p.base_url : 'https://...';
+  };
+  sel.onchange();
+}
+
+function flashPaidMsg(text, cls){
+  const m = $('paidMsg');
+  m.textContent = text; m.className = 'form-msg ' + (cls || '');
+  setTimeout(()=>{ if(m.textContent === text) m.textContent = ''; }, 5000);
+}
+
+$('btnAddPaid').onclick = async ()=>{
+  const provider = $('paidProvider').value;
+  const model_id = $('paidModel').value.trim();
+  const api_key = $('paidKey').value.trim();
+  const base_url = $('paidBase').value.trim();
+  const label = $('paidLabel').value.trim();
+  if(!model_id){ flashPaidMsg('请填写模型号', 'bad'); return; }
+  if(!api_key){ flashPaidMsg('请填写 API Key', 'bad'); return; }
+  const b = $('btnAddPaid');
+  b.disabled = true; b.textContent = '测试中…';
+  const r = await postModels({action:'add_paid', provider, model_id, api_key, base_url, label});
+  b.disabled = false; b.textContent = '测试并保存';
+  if(r.error){ flashPaidMsg(r.error, 'bad'); return; }
+  const entry = (r.models || []).find(m=>m.name === model_id);
+  if(entry){
+    const t = await fetch('/api/models',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'test', id:entry.id})
+    }).then(x=>x.json()).catch(()=>({}));
+    flashPaidMsg((t.message || '已保存') + (t.ok ? '' : '（已保存，但连接失败，请检查密钥）'), t.ok ? 'ok' : 'bad');
+  }
+  $('paidModel').value = ''; $('paidKey').value = ''; $('paidLabel').value = '';
+};
+
+/* 输入框下的提示只保留「没配模型」这种需要行动的警告；
+   组合明细改到「模型配置」按钮的悬停卡片里，不再常驻占地方 */
+function updatePoolHint(){
+  if(!catalog) return;
+  const c = comboOf(catalog.models);
+  if(c.count){
+    $('poolHint').textContent = '';
+    $('poolHint').classList.add('hide');
+  }else{
+    $('poolHint').textContent = '当前没有启用任何模型 —— 点左侧「模型配置」去勾选';
+    $('poolHint').classList.remove('hide');
+  }
+  $('modelCfgTxt').textContent = c.count ? `模型配置 · ${c.count}` : '模型配置';
+  renderModelPop();
+}
+
+/* 悬停卡片：当前启用了哪些模型、各维度最高分是谁、总分多少 */
+function renderModelPop(){
+  const box = $('modelPop');
+  if(!box || !catalog) return;
+  if(box.matches(':hover')) return;      // 鼠标还在卡片上就别重渲染，免得抖
+  const c = comboOf(catalog.models);
+  box.innerHTML = '';
+  const head = el('div','mp-head');
+  head.appendChild(el('b','', c.count ? `${c.count} 个模型已启用` : '未配置模型'));
+  head.appendChild(el('span','mp-total','总分 ' + c.total));
+  box.appendChild(head);
+  box.appendChild(el('div','mp-names',
+    c.count ? c.models.map(m=>m.name).join('、') : '点开设置 → 可用模型管理去勾选'));
+  const dims = el('div','mp-dims');
+  for(const d of DIM_ORDER){
+    const row = el('div','mp-dim');
+    row.appendChild(el('span','k', labelOf(d)));
+    const bar = el('div','b');
+    const fill = el('i');
+    fill.style.width = Math.max(0, Math.min(100, c.best[d].value)) + '%';
+    bar.appendChild(fill);
+    row.appendChild(bar);
+    row.appendChild(el('span','v', String(c.best[d].value)));
+    dims.appendChild(row);
+  }
+  box.appendChild(dims);
+  const foot = el('div','mp-foot');
+  foot.appendChild(el('span','', '点一下进入设置管理'));
+  box.appendChild(foot);
+}
+
+function showModelPop(){
+  const btn = $('btnModelConfig');
+  if(!btn || !catalog) return;
+  renderModelPop();
+  const pop = $('modelPop');
+  const r = btn.getBoundingClientRect();
+  pop.classList.add('on');
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  let left = r.left;
+  let top = r.top - h - 10;                       // 默认浮在按钮上方（输入框在页面底部）
+  if(top < 8) top = Math.min(innerHeight - h - 8, r.bottom + 10);
+  pop.style.left = Math.max(10, Math.min(left, innerWidth - w - 10)) + 'px';
+  pop.style.top = top + 'px';
+}
+function hideModelPop(){ $('modelPop').classList.remove('on'); }
+
+
+/* ================= 技能管理 / 工具管理 ================= */
+const RISK_LABEL = {safe:'只读', write:'写文件', exec:'执行命令'};
+
+function refreshSkills(){
+  fetch('/api/skills').then(r=>r.json()).then(d=>{
+    const box = $('skillAdminList');
+    box.innerHTML = '';
+    const list = d.skills || [];
+    if(!list.length){
+      box.appendChild(el('div','task-empty','尚未安装技能。把含 SKILL.md 的目录放进 skills/ 即可。'));
+    }
+    for(const s of list){
+      const it = el('div','aitem');
+      const h = el('div','ah');
+      h.appendChild(el('span','aname', s.name));
+      h.appendChild(el('span','badge local','自动匹配'));
+      const n = (s.resources || []).length;
+      if(n) h.appendChild(el('span','badge', n + ' 个资源'));
+      it.appendChild(h);
+      it.appendChild(el('div','adesc', s.description || '（无描述）'));
+      if(s.path) it.appendChild(el('div','apath', s.path));
+      box.appendChild(it);
+    }
+    $('skillDirs').textContent = '检索目录：' + ((d.dirs || []).join('   |   ') || '—')
+      + (d.auto_load ? `。自动加载已开启，关键词命中阈值 ${d.min_score}。` : '。自动加载已关闭。');
+  }).catch(()=>{});
+}
+
+function refreshTools(){
+  fetch('/api/tools').then(r=>r.json()).then(d=>{
+    const box = $('toolAdminList');
+    box.innerHTML = '';
+    const list = d.tools || [];
+    if(!list.length) box.appendChild(el('div','task-empty','没有可用工具。'));
+    for(const t of list){
+      const it = el('div','aitem');
+      const h = el('div','ah');
+      h.appendChild(el('span','aname mono', t.name));
+      h.appendChild(el('span','badge', RISK_LABEL[t.risk] || t.risk));
+      if(t.approval) h.appendChild(el('span','badge warn','需审批'));
+      it.appendChild(h);
+      const desc = String(t.description || '').split('\n')[0];
+      it.appendChild(el('div','adesc', desc || '（无描述）'));
+      if((t.params || []).length){
+        const r = el('div','arow');
+        for(const p of t.params.slice(0, 12)) r.appendChild(el('span','chip', p));
+        it.appendChild(r);
+      }
+      box.appendChild(it);
+    }
+  }).catch(()=>{});
+}
+$('btnReloadSkills').onclick = refreshSkills;
+$('btnReloadTools').onclick = refreshTools;
+
+/* ================= 任务管理 ================= */
+let taskData = [];
+let openTaskId = '';
+
+function fmtClock(ts){
+  const d = new Date(ts * 1000);
+  const p = n => String(n).padStart(2,'0');
+  return `${p(d.getMonth()+1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function fmtDur(sec){
+  if(sec == null) return '';
+  return sec < 60 ? Math.round(sec) + 's' : (sec/60).toFixed(1) + 'm';
+}
+function fmtClockDur(sec){
+  const s = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s%60;
+  const p = n => String(n).padStart(2,'0');
+  return h ? `${h}:${p(m)}:${p(ss)}` : `${p(m)}:${p(ss)}`;
+}
+function fmtMoney(v){
+  const c = Number(v) || 0;
+  if(c <= 0) return '¥0';
+  if(c < 0.01) return '¥' + c.toFixed(4);
+  if(c < 1) return '¥' + c.toFixed(3);
+  return '¥' + c.toFixed(2);
+}
+function statusLabel(t){
+  if(t.status === 'running') return '执行中';
+  if(t.status === 'error') return '失败';
+  if(t.status === 'stopped') return '已停止';
+  return '完成';
+}
+
+function renderTasks(){
+  const running = taskData.filter(t => t.status === 'running').length;
+  $('taskSecTitle').textContent = '任务(' + taskData.length + ')';
+  $('topRun').classList.toggle('hide', !running);
+  if(running) $('topRunTxt').textContent = running > 1 ? `${running} 个任务执行中` : '任务执行中';
+
+  const box = $('taskList');
+  box.innerHTML = '';
+  if(!taskData.length){
+    box.appendChild(el('div','task-empty','还没有任务。在下方输入框发一句话，就会自动登记成一条任务。'));
+    return;
+  }
+  for(const t of taskData){
+    const it = el('div','task-item' + (t.id === openTaskId ? ' on' : ''));
+    it.appendChild(el('span','t-dot ' + t.status));
+    const main = el('div','t-main');
+    main.appendChild(el('div','t-title', t.title || '未命名任务'));
+    const meta = el('div','t-meta');
+    if(t.status === 'running'){
+      // data-since 让 1 秒一次的 tick 只改文本，不用整列表重渲染
+      const run = el('span','tm-run','运行中 · ' + fmtClockDur(t.duration));
+      run.dataset.since = String(t.created_at);
+      meta.appendChild(run);
+    }else{
+      meta.appendChild(el('span','', fmtClock(t.created_at)));
+      if(t.duration) meta.appendChild(el('span','tm-tag', fmtDur(t.duration)));
+      if(t.status === 'stopped') meta.appendChild(el('span','tm-tag','已停止'));
+    }
+    const ms = t.models || [];
+    if(ms.length) meta.appendChild(el('span','tm-tag', ms[0] + (ms.length > 1 ? ` +${ms.length - 1}` : '')));
+    if(t.tools) meta.appendChild(el('span','tm-tag', t.tools + ' 次工具'));
+    const nf = (t.files || []).length;
+    if(nf) meta.appendChild(el('span','tm-tag', nf + ' 个文件'));
+    if(t.cost > 0) meta.appendChild(el('span','tm-tag', '预估 ' + fmtMoney(t.cost)));
+    main.appendChild(meta);
+    it.appendChild(main);
+    it.title = t.title || '';
+    it.onclick = () => openTask(t.id);
+    box.appendChild(it);
+  }
+}
+
+/* 正在执行的任务逐秒刷新计时（侧栏 + 状态条共用） */
+function tickLive(){
+  for(const n of document.querySelectorAll('[data-since]')){
+    const since = parseFloat(n.dataset.since) || 0;
+    if(since) n.textContent = '运行中 · ' + fmtClockDur(Date.now()/1000 - since);
+  }
+  if(liveTask && liveTask.status === 'running'){
+    const t = Date.now()/1000 - liveTask.startedAt;
+    const box = $('rbTimer');
+    if(box) box.textContent = fmtClockDur(t);
+  }
+}
+setInterval(tickLive, 1000);
+
+function loadTasks(){
+  fetch('/api/tasks').then(r=>r.json()).then(d=>{
+    if(!Array.isArray(d.tasks)) return;
+    taskData = d.tasks;
+    renderTasks();
+    adoptRunning();
+  }).catch(()=>{});
+}
+
+/* ================= 执行中状态条（计时 / 进度 / 预估费用） =================
+   liveTask 是状态条的唯一数据源：
+   - 本标签页发起的任务，由 SSE 事件实时喂它
+   - 别的标签页 / CLI 发起的任务，靠 5 秒一次的任务轮询「接管」过来
+   这样不管任务从哪来，界面上的进度、计时、费用都是对的。 */
+let liveTask = null;
+
+function adoptRunning(){
+  const running = (taskData || []).find(t => t.status === 'running');
+  if(running){
+    if(!liveTask || liveTask.id !== running.id){
+      liveTask = {
+        id: running.id, startedAt: running.created_at, status: 'running',
+        tools: running.tools || 0, cost: running.cost || 0,
+        localOnly: running.local_only !== false,
+        progress: running.progress || '', models: running.models || [],
+        followed: true, stopping: false
+      };
+    }else{
+      liveTask.tools = Math.max(liveTask.tools || 0, running.tools || 0);
+      liveTask.cost = Math.max(liveTask.cost || 0, running.cost || 0);
+      if(running.progress) liveTask.progress = running.progress;
+      if(running.local_only === false) liveTask.localOnly = false;
+    }
+    renderRunBar();
+  }else if(liveTask && liveTask.status === 'running' && !busy){
+    // 服务端已经没有在跑的任务了，但界面还停在执行中：按台账里的真实结局收尾
+    // （可能是被停止的，别一律当成「已完成」）
+    const rec = (taskData || []).find(x => x.id === liveTask.id);
+    const st = rec && rec.status && rec.status !== 'running' ? rec.status : 'done';
+    if(rec){
+      if(rec.duration) liveTask.endedAt = liveTask.startedAt + rec.duration;
+      if(rec.tools) liveTask.tools = rec.tools;
+      if(rec.cost) liveTask.cost = rec.cost;
+    }
+    endLiveTask(st === 'stopped' ? 'stopped' : (st === 'error' ? 'error' : 'done'));
+    return;
+  }
+  syncComposer();
+}
+
+function beginLiveTask(info){
+  liveTask = {
+    id: info.id || '', startedAt: info.created_at || (Date.now()/1000),
+    status: 'running', tools: 0, cost: 0, localOnly: true,
+    progress: '准备中…', models: [], stopping: false,
+    round: 0, stepIndex: 0, stepTotal: 0
+  };
+  renderRunBar();
+  syncComposer();
+}
+
+function endLiveTask(status){
+  if(!liveTask) return;
+  liveTask.status = status || 'done';
+  liveTask.endedAt = Date.now()/1000;
+  renderRunBar();
+  syncComposer();
+  const id = liveTask.id;
+  setTimeout(()=>{ if(liveTask && liveTask.id === id && liveTask.status !== 'running'){ liveTask = null; renderRunBar(); } }, 6000);
+}
+
+function renderRunBar(){
+  // 状态条按用户要求不再展示：回答过程保持干净。
+  // 执行状态仍可见——顶栏有「任务执行中」红点提示，发送键会变成停止键。
+  const bar = $('runBar');
+  if(bar) bar.classList.add('hide');
+}
+
+async function stopTask(){
+  const id = (liveTask && liveTask.id) || '';
+  if(liveTask) liveTask.stopping = true;
+  renderRunBar();
+  const r = await fetch('/api/tasks',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action:'stop', id})
+  }).then(x=>x.json()).catch(e=>({error:String(e)}));
+  if(r && r.note) addPillNote(r.note);
+  if(!r || !r.ok){
+    if(liveTask) liveTask.stopping = false;
+    renderRunBar();
+  }
+  loadTasks();
+}
+$('rbStop').onclick = stopTask;
+
+function prependNote(html){
+  const n = el('div','pillnote');
+  const s = el('span');
+  s.innerHTML = html;
+  n.appendChild(s);
+  log.insertBefore(n, log.firstChild);
+}
+
+function renderHistory(hist){
+  log.innerHTML = '';
+  history = hist || [];
+  let pending = [];
+  for(const m of history){
+    if(m.role === 'user'){ addUser(m.content || ''); pending = []; }
+    else if(m.role === 'assistant'){
+      if(m.tool_calls && m.tool_calls.length){
+        pending = m.tool_calls.map(tc=>{
+          const fn = tc.function || {};
+          let args = fn.arguments;
+          if(typeof args === 'string'){ try{ args = JSON.parse(args); }catch(e){ args = {}; } }
+          return addTool(fn.name || 'tool', args || {});
+        });
+      }
+      if(m.content && m.content.trim()){
+        const a = addAssistant();
+        a.text = m.content;
+        a.body.innerHTML = md(m.content);
+      }
+    }else if(m.role === 'tool'){
+      const t = pending.shift();
+      if(t){
+        t.t.querySelector('.tool-body').textContent = m.content || '';
+        t.state.textContent = '完成';
+        t.state.className = 'tool-state ok';
+      }
+    }
+  }
+  // 被停止的任务会留下「声明了但没执行」的工具调用，如实标出来别装成还在跑
+  for(const t of pending){
+    t.state.textContent = '未执行';
+    t.state.className = 'tool-state deny';
+  }
+  updateContextMeter(ctxSize(history), threshold);
+}
+
+function openTask(id){
+  openTaskId = id;
+  renderTasks();
+  fetch('/api/tasks?id=' + encodeURIComponent(id)).then(r=>r.json()).then(d=>{
+    const task = d.task;
+    if(!task) return;
+    showView('chat');
+    enterChat(task.title || '历史任务');
+    log.innerHTML = '';
+    hideShimmer();
+    closeThinking();
+    if(task.status === 'running'){
+      // 关键：看正在跑的任务时不能沿用上一次的对话历史，
+      // 否则接着发消息会把旧上下文一起塞给新任务（之前就是这么串档的）。
+      history = [];
+      viewingHistory = false;
+      updateContextMeter(0, threshold);
+      showShimmer();
+      return;
+    }
+    viewingHistory = true;
+    // 不再弹方框介绍条，只在顶栏标题后补一个轻量标记说明这是回看
+    if($('topTitle')) $('topTitle').textContent += ' · 历史回看';
+    if((task.history || []).length){
+      renderHistory(task.history);
+    }else{
+      if(task.summary){ const a = addAssistant(); a.text = task.summary; a.body.innerHTML = md(task.summary); }
+    }
+    if((task.files || []).length) prependNote(filesNote(task.files));
+    if(task.error) addError(task.error);
+  }).catch(()=>{});
+}
+
+/* ================= 清空（可勾选一并清理的文件与记忆） =================
+   一条任务留下的东西其实分三类：对话记录、磁盘上的产出文件（含中间文件、
+   过渡文件、结果文件）、写进工作区记忆的条目。只清对话的话，后两类会一直
+   堆着，所以这里让用户自己勾。 */
+const ACTION_LABEL = {created:'新建', modified:'修改', deleted:'删除'};
+
+function fileRow(f){
+  const tag = f.outside ? '工作区外 · 跳过'
+    : (f.via === 'scan' ? '命令副作用 · ' + (ACTION_LABEL[f.action] || '改动')
+                        : (ACTION_LABEL[f.action] || '改动'));
+  return { text: f.rel || f.path, tag, cls: f.outside ? 'out' : (f.via === 'scan' ? 'scan' : '') };
+}
+
+/* 回看历史任务时，把它在磁盘上留下的文件也列出来（一句话形态） */
+function stripRoot(p){
+  const r = workspaceRoot || '';
+  let s = String(p || '');
+  if(r && s.toLowerCase().startsWith(r.toLowerCase())) s = s.slice(r.length);
+  return s.replace(/^[\\/]+/, '') || s;
+}
+function filesNote(files){
+  const shown = files.slice(0, 8).map(f=>{
+    const rel = f.rel || stripRoot(f.path);
+    return `${esc(rel)} <span style="color:var(--ink3)">(${ACTION_LABEL[f.action] || '改动'})</span>`;
+  });
+  return `本次任务产出 ${files.length} 个文件：` + shown.join('、')
+    + (files.length > shown.length ? ` 等 ${files.length} 个` : '')
+    + '　<span style="color:var(--ink3)">（点侧栏「清空」可勾选一并清理）</span>';
+}
+
+async function openClearDialog(){
+  const btn = $('btnClearTasks');
+  const rect = btn ? btn.getBoundingClientRect() : null;
+  const r = await fetch('/api/tasks?cleanup=1').then(x=>x.json()).catch(()=>({}));
+  const c = r.cleanup || {};
+  const created = c.created || {count:0, items:[]};
+  const modified = c.modified || {count:0, items:[]};
+  const mem = c.memory || {count:0, items:[]};
+
+  if(!c.tasks){
+    toast(rect, '还没有可清理的任务', 'mute');
+    return;
+  }
+
+  const total = (c.tasks || 0) + created.count + modified.count + mem.count;
+
+  // 记忆清单只给一行行文字（它们是结论，不是文件）
+  const memRows = (mem.items || []).map(e=>({
+    text: e.text, tag: e.ts || '', cls: ''
+  }));
+
+  const sections = [];
+  if(created.items.length){
+    sections.push({title:'将删除 · 任务新建的文件', items: created.items.map(fileRow), more: created.count});
+  }
+  if(modified.items.length){
+    sections.push({title:'将删除 · 任务修改过的文件', items: modified.items.map(fileRow), more: modified.count});
+  }
+  if(memRows.length){
+    sections.push({title:'将删除 · 任务写入的记忆', items: memRows, more: mem.count});
+  }
+
+  let result = null;
+  openModal({
+    title: '清空任务',
+    sub: `将清理 ${c.tasks} 条已结束的任务。一条任务除了对话记录，还会留下磁盘文件和记忆条目，`
+       + `勾选后一并清理（正在执行的任务不受影响）。`,
+    options: [
+      {
+        key:'history', checked:true, label:'对话记录', count: c.tasks + ' 条',
+        desc:'任务列表与可回看的对话内容。清掉后侧栏不再有这条任务。'
+      },
+      {
+        key:'created', checked:created.count > 0, disabled: !created.count,
+        label:'任务新建的文件', count: created.count + ' 个',
+        desc: created.count
+          ? '这些文件在任务开始前并不存在，是任务产出的结果/中间文件。'
+          : '没有记录到任务新建的文件。'
+      },
+      {
+        key:'modified', checked:false, disabled: !modified.count,
+        label:'任务修改过的文件', count: modified.count + ' 个',
+        desc: modified.count
+          ? '任务动过的既有文件（默认不勾：它们可能是你原本就有的东西）。'
+          : '没有记录到被任务改动的文件。'
+      },
+      {
+        key:'memory', checked:false, disabled: !mem.count,
+        label:'任务留下的记忆', count: mem.count + ' 条',
+        desc: mem.count
+          ? '写入工作区记忆的条目，它们会影响后续任务的判断（默认不勾，保留更稳）。'
+          : '这些任务没有写入记忆。'
+      }
+    ],
+    sections,
+    okText: '确认清理',
+    danger: true,
+    note: total ? '' : '没有可清理的内容',
+    onOk: async (v)=>{
+      const res = await fetch('/api/tasks',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          action:'clear',
+          history: v.history, created: v.created, modified: v.modified, memory: v.memory
+        })
+      }).then(x=>x.json()).catch(e=>({error:String(e)}));
+      if(res.error){ toast(rect, res.error, 'bad'); return false; }
+      result = res;
+      return true;
+    },
+    onClose: ()=>{
+      if(!result) return;
+      if(Array.isArray(result.tasks)){ taskData = result.tasks; renderTasks(); }
+      if(result.removed) openTaskId = '';
+      toast(rect, result.note || '已清理', 'ok');
+      loadTasks();
+      // 记忆/文件被清掉后，设置页里的统计也要跟着刷新
+      fetch('/api/state').then(x=>x.json()).then(s=>{
+        if(s.memory && $('genMemory')){
+          $('genMemory').textContent = s.memory.count
+            ? `${s.memory.count} 条（新任务会自动读取）` : '还没有记忆';
+        }
+      }).catch(()=>{});
+    }
+  });
+}
+$('btnClearTasks').onclick = openClearDialog;
+setInterval(loadTasks, 5000);
+
+/* ================= 基础状态 ================= */
+let ollamaUrl = 'http://127.0.0.1:11434';
+fetch('/api/state').then(r=>r.json()).then(s=>{
+  $('ws').textContent = s.workspace || '';
+  $('ws').title = '点击在工作区的资源管理器中打开';
+  $('genWs').textContent = s.workspace || '';
+  $('genOllama').textContent = s.ollama || '';
+  if(s.ollama) ollamaUrl = s.ollama;
+  if(s.compact_threshold){
+    threshold = s.compact_threshold;
+    $('genThreshold').textContent = s.compact_threshold + ' 字符';
+  }
+  // 新建任务的默认权限跟着上一次的选择走
+  if(s.prefs && s.prefs.permission){
+    allowWrite = s.prefs.permission === 'full';
+    renderPerm();
+  }
+  if(s.memory){
+    $('genMemory').textContent = s.memory.count
+      ? `${s.memory.count} 条（新任务会自动读取）`
+      : '还没有记忆';
+    $('genMemory').title = s.memory.path || '';
+  }
+}).catch(()=>{});
+refreshModels();
+loadTasks();
+
+function checkHealth(){
+  const dot = $('ollamaDot'), txt = $('ollamaTxt');
+  fetch('/api/health').then(r=>r.json()).then(h=>{
+    const ok = !!h.ollama;
+    dot.className = 'dot ' + (ok ? 'ok' : 'bad');
+    txt.textContent = ok ? 'Ollama 已连接' : 'Ollama 无响应';
+  }).catch(()=>{ dot.className = 'dot bad'; txt.textContent = 'Ollama 无响应'; });
+}
+checkHealth();
+setInterval(checkHealth, 30000);
+
+/* 左下角两个可点击入口：Ollama 服务页 / 工作区文件夹 */
+$('ollamaMeta').onclick = () => window.open(ollamaUrl, '_blank');
+$('wsMeta').onclick = async () => {
+  const r = await fetch('/api/open-folder',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({path: $('ws').textContent})
+  }).then(x=>x.json()).catch(e=>({ok:false,error:String(e)}));
+  if(r && !r.ok) console.warn('打开文件夹失败：', r.error);
+};
+
+/* ================= 建议入口 ================= */
+const SUGGESTS = [
+  '列出工作区根目录的文件',
+  '分析这个项目的目录结构，然后写一份 README',
+  '看看 config.yaml 配置了什么，并总结成一段说明',
+  '用 git log 看看最近的提交记录'
+];
+for(const s of SUGGESTS){
+  const b = el('button','sg');
+  b.innerHTML = SVG.spark;
+  b.appendChild(el('span','', s));
+  b.onclick = ()=>{ input.value = s; input.focus(); autoGrow(); };
+  $('suggests').appendChild(b);
+}
+
+/* ================= 消息渲染 ================= */
+function enterChat(title){
+  hero.classList.add('hide');
+  thread.classList.remove('hide');
+  if(title){
+    chatTitle = title.length > 24 ? title.slice(0,24) + '…' : title;
+    if(view === 'chat') $('topTitle').textContent = chatTitle;
+  }
+  closeSidebar();
+}
+function resetChat(){
+  log.innerHTML = '';
+  history = [];
+  chatTitle = '';
+  openTaskId = '';
+  viewingHistory = false;
+  renderTasks();
+  hero.classList.remove('hide');
+  thread.classList.add('hide');
+  $('topTitle').textContent = '';
+  showView('chat');
+}
+$('btnNew').onclick = resetChat;
+
+function addUser(text){
+  const m = el('div','msg-user');
+  m.appendChild(el('div','bub', text));
+  log.appendChild(m);
+  scrollBottom();
+}
+function addAssistant(){
+  const m = el('div','msg-ai');
+  const body = el('div','body');
+  m.appendChild(body);
+  log.appendChild(m);
+  scrollBottom();
+  return { m, body, text:'' };
+}
+
+/* 当前正在流式输出的回复与工具卡；lastStats/lastAssign 汇总本条回复的消耗与模型 */
+let cur = null, curTool = null, lastStats = null, lastAssign = null;
+
+let thinkBox = null;
+function addThinking(){
+  if(thinkBox) return thinkBox;
+  const d = el('details','think');
+  const s = el('summary');
+  s.appendChild(el('span','','思考过程'));
+  s.appendChild(el('span','','· 展开中'));
+  d.appendChild(s);
+  const v = el('div','tval');
+  d.appendChild(v);
+  d.open = true;   // 思考流式输出时自动展开，正文开始后收起成一行
+  log.appendChild(d);
+  thinkBox = { d, s, v, text:'' };
+  scrollBottom();
+  return thinkBox;
+}
+function closeThinking(){
+  if(!thinkBox) return;
+  thinkBox.d.open = false;
+  // 收起时把标题改成「已完成」，让用户知道刚才有一段思考
+  thinkBox.s.innerHTML = '';
+  thinkBox.s.appendChild(el('span','','思考过程'));
+  thinkBox.s.appendChild(el('span','',
+    '· 已完成 ' + thinkBox.text.length + ' 字'));
+  thinkBox = null;
+}
+
+let shimmerEl = null;
+function showShimmer(){
+  if(shimmerEl) return;
+  shimmerEl = el('div','shimmer','思考中');
+  log.appendChild(shimmerEl);
+  scrollBottom();
+}
+function hideShimmer(){ if(shimmerEl){ shimmerEl.remove(); shimmerEl = null; } }
+
+function addPillNote(html){
+  closeThinking(); hideShimmer();
+  const n = el('div','pillnote');
+  const s = el('span');
+  s.innerHTML = html;
+  n.appendChild(s);
+  log.appendChild(n);
+  scrollBottom();
+}
+
+/* 任务计划卡片 */
+let planEl = null, planSteps = [];
+function addPlan(subtasks, summary){
+  closeThinking(); hideShimmer();
+  planEl = el('div','plan');
+  const head = el('div','plan-head');
+  head.appendChild(el('b','','任务拆解'));
+  head.appendChild(el('span','muted', subtasks.length + ' 个步骤'));
+  head.appendChild(el('span','plan-sum', summary || ''));
+  planEl.appendChild(head);
+  planSteps = [];
+  for(const st of subtasks){
+    const row = el('div','pstep');
+    const idx = el('span','pidx', String(st.index));
+    row.appendChild(idx);
+    const body = el('div','pbody');
+    body.appendChild(el('div','ptitle', st.title));
+    const meta = el('div','pmeta');
+    meta.innerHTML = `${st.kind_label} · 交给 <span class="pmodel">${esc(st.model_name)}</span> · ${esc(st.reason)}`;
+    body.appendChild(meta);
+    row.appendChild(body);
+    planEl.appendChild(row);
+    planSteps.push({row, idx});
+  }
+  log.appendChild(planEl);
+  scrollBottom();
+}
+function markPlanStep(index, state){
+  const s = planSteps[index - 1];
+  if(!s) return;
+  s.row.classList.remove('running','done');
+  s.row.classList.add(state);
+}
+
+function addDivider(text){
+  const d = el('div','divider', text);
+  log.appendChild(d);
+  scrollBottom();
+}
+function addTool(name, args){
+  closeThinking(); hideShimmer();
+  const t = el('div','tool');
+  const head = el('div','tool-head');
+  head.innerHTML = SVG.gear;
+  head.appendChild(el('span','tool-name', name));
+  head.appendChild(el('span','tool-arg', shortArgs(args)));
+  const state = el('span','tool-state','运行中');
+  head.appendChild(state);
+  head.insertAdjacentHTML('beforeend', SVG.chev);
+  const body = el('div','tool-body');
+  t.appendChild(head); t.appendChild(body);
+  head.onclick = ()=> t.classList.toggle('open');
+  log.appendChild(t);
+  scrollBottom();
+  return { t, state };
+}
+function shortArgs(args){
+  const v = args && (args.path || args.command || args.pattern || args.url || args.name);
+  if(v) return String(v).slice(0,120);
+  return JSON.stringify(args||{}).slice(0,120);
+}
+/* ============ 回复底部工具条 ============
+   左侧：复制 / 重新回答 / 朗读；右侧：预估消耗与模型信息。
+   不做点赞点踩。消耗来自本条回复各轮 stats 事件的累计。 */
+const FOOT_ICON = {
+  copy : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+  redo : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3.2-6.9"/><path d="M21 3v6h-6"/></svg>',
+  speak: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>'
+};
+
+function plainText(mdText){
+  const d = document.createElement('div');
+  d.innerHTML = md(mdText || '');
+  return d.textContent || '';
+}
+
+function attachMsgFoot(){
+  if(!cur || cur.foot) return;
+  const text = cur.text;
+  if(!text || !text.trim()) return;      // 纯工具轮次没有正文，不加工具条
+  const foot = el('div','msg-foot');
+
+  const bCopy = el('button','act');
+  bCopy.innerHTML = FOOT_ICON.copy + '<span>复制</span>';
+  bCopy.title = '复制全文';
+  bCopy.onclick = async ()=>{
+    try{
+      await navigator.clipboard.writeText(text);
+      bCopy.querySelector('span').textContent = '已复制';
+      setTimeout(()=>{ bCopy.querySelector('span').textContent = '复制'; }, 1200);
+    }catch(e){}
+  };
+
+  const bRedo = el('button','act');
+  bRedo.innerHTML = FOOT_ICON.redo + '<span>重新回答</span>';
+  bRedo.title = '丢弃这条回复，用同样的话再问一次';
+  bRedo.onclick = regenerate;
+
+  const bSpeak = el('button','act');
+  bSpeak.innerHTML = FOOT_ICON.speak + '<span>朗读</span>';
+  bSpeak.title = '朗读全文';
+  let speaking = false;
+  bSpeak.onclick = ()=>{
+    if(speaking){
+      speechSynthesis.cancel();
+      speaking = false;
+      bSpeak.querySelector('span').textContent = '朗读';
+      return;
+    }
+    const u = new SpeechSynthesisUtterance(plainText(text));
+    u.lang = 'zh-CN'; u.rate = 1.05;
+    u.onend = u.onerror = ()=>{
+      speaking = false;
+      bSpeak.querySelector('span').textContent = '朗读';
+    };
+    speaking = true;
+    bSpeak.querySelector('span').textContent = '停止';
+    speechSynthesis.speak(u);
+  };
+
+  foot.appendChild(bCopy); foot.appendChild(bRedo); foot.appendChild(bSpeak);
+
+  // 右侧：预估消耗 + 模型信息
+  const meta = el('span','meta');
+  const bits = [];
+  if(lastStats && lastStats.tokens) bits.push('预估 ' + lastStats.tokens + ' tokens');
+  if(lastStats && lastStats.cost > 0) bits.push('¥' + lastStats.cost.toFixed(4));
+  const mname = (lastStats && lastStats.model) || (lastAssign && lastAssign.model_name) || '';
+  if(mname) bits.push(mname);
+  meta.textContent = bits.join(' · ');
+  meta.title = '本条回复的预估 token 消耗与所用模型';
+  foot.appendChild(meta);
+
+  cur.foot = foot;
+  cur.m.appendChild(foot);
+  lastStats = null;                      // 本条已入账，累计器清零给下一条用
+  scrollBottom();
+}
+
+/* 重新回答：丢掉最后一条回复（含工具卡/思考框），用原话再执行一次 */
+async function regenerate(){
+  if(taskActive()){
+    addPillNote('已有任务正在执行中，等它跑完或停止后再重新回答。');
+    return;
+  }
+  let i = history.length - 1;
+  while(i >= 0 && history[i].role !== 'user') i--;
+  if(i < 0){ addPillNote('没有可以重新回答的对话。'); return; }
+  const prompt = history[i].content || '';
+  const hist = history.slice(0, i);
+  // 界面上把最后一条用户气泡之后的节点全部移掉
+  const bubbles = log.querySelectorAll('.msg-user');
+  const lastUser = bubbles[bubbles.length - 1];
+  if(lastUser){
+    let n = lastUser.nextSibling;
+    while(n){ const nx = n.nextSibling; n.remove(); n = nx; }
+  }else{
+    log.innerHTML = '';
+  }
+  cur = null; curTool = null;
+  history = hist;
+  setBusy(true);
+  await streamChat(prompt, hist);
+}
+
+function addError(msg){
+  closeThinking(); hideShimmer();
+  log.appendChild(el('div','errbox', msg));
+  scrollBottom();
+}
+
+function md(s){
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/```(\w*)\n?([\s\S]*?)```/g,(m,l,c)=>'<pre><code>'+c.replace(/\n$/,'')+'</code></pre>')
+    .replace(/`([^`\n]+)`/g,'<code>$1</code>')
+    .replace(/^### (.+)$/gm,'<h3>$1</h3>')
+    .replace(/^## (.+)$/gm,'<h2>$1</h2>')
+    .replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
+}
+
+/* ================= 上下文指示 ================= */
+function ctxSize(hist){
+  let n = 0;
+  for(const m of hist||[]) if(typeof m.content === 'string') n += m.content.length;
+  return n;
+}
+function updateContextMeter(size, th){
+  th = th || threshold;
+  if(!th) return;
+  const pct = Math.min(100, Math.round((size||0)/th*100));
+  $('ctxPct').textContent = `上下文 ${pct}%`;
+  const fill = $('ctxFill');
+  fill.style.width = pct + '%';
+  fill.classList.toggle('hot', pct > 80);
+}
+
+/* ================= 压缩 ================= */
+$('btnCompact').onclick = async ()=>{
+  if(busy) return;
+  if(!history.length){ showView('chat'); addPillNote('当前没有可压缩的对话'); return; }
+  const btn = $('btnCompact');
+  btn.disabled = true;
+  try{
+    const r = await fetch('/api/compact',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ history })
+    }).then(x=>x.json());
+    showView('chat');
+    if(r.error){ addError('压缩失败：'+r.error); }
+    else{
+      history = r.messages || [];
+      addPillNote(r.note || '压缩完成');
+      updateContextMeter(r.size, r.threshold);
+    }
+  }catch(e){ showView('chat'); addError('压缩失败：'+e); }
+  btn.disabled = false;
+};
+
+/* ================= 发送 ================= */
+function autoGrow(){
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+}
+input.addEventListener('input', autoGrow);
+input.addEventListener('keydown', e=>{
+  if(e.key === 'Enter' && !e.shiftKey){
+    e.preventDefault();
+    if(taskActive()){ addPillNote('任务执行中，先停止或等它跑完再发新指令。'); return; }
+    send();
+  }
+});
+sendBtn.onclick = ()=>{ if(taskActive()) stopTask(); else send(); };
+$('planBtn').onclick = ()=>{
+  autoPlan = !autoPlan;
+  $('planBtn').classList.toggle('on', autoPlan);
+  $('planBtn').title = autoPlan
+    ? '已开启：复合任务会被拆解并分配给不同模型'
+    : '已关闭：整段任务交给单个最合适的模型';
+};
+$('permBtn').onclick = async ()=>{
+  allowWrite = !allowWrite;
+  renderPerm();
+  // 权限跟着任务走：改一次之后，后续新建的任务都以这次的选择为默认
+  // （存到服务端，换标签页/刷新页面/后台发起的任务都沿用）
+  const r = await fetch('/api/prefs',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({permission: allowWrite ? 'full' : 'default'})
+  }).then(x=>x.json()).catch(e=>({error:String(e)}));
+  if(r.error){ toast(permBtn, '权限偏好没保存上：' + r.error, 'bad'); return; }
+  if(r.permission) allowWrite = r.permission === 'full';
+  renderPerm();
+  toast(permBtn, r.note || (allowWrite ? '已切换为完全访问权限' : '已切换为默认权限'),
+        allowWrite ? 'ok' : 'mute');
+};
+function renderPerm(){
+  permTxt.textContent = allowWrite ? '完全访问权限' : '默认权限';
+  permBtn.classList.toggle('warn', allowWrite);
+  permBtn.title = allowWrite
+    ? '完全访问权限：写文件与执行命令直接放行。点击切回默认权限'
+    : '默认权限：写文件与执行命令需人工确认。点击切换为完全访问权限';
+  const g = $('genPerm');
+  if(g) g.textContent = (allowWrite ? '完全访问权限' : '默认权限')
+    + '（在对话输入框左侧切换，会记住并作为后续新任务的默认值）';
+}
+renderPerm();
+
+/* 是否正有任务在执行：本标签页发起的（busy）或别处发起、界面接管过来的 */
+function taskActive(){
+  return busy || !!(liveTask && liveTask.status === 'running');
+}
+
+/* 发送键在「执行中」会变成停止键，避免用户以为能再发一条 */
+function syncComposer(){
+  const act = taskActive();
+  sendBtn.disabled = false;
+  sendBtn.classList.toggle('stopping', act);
+  sendBtn.title = act ? '停止当前任务' : '发送';
+  $('sendIcon').innerHTML = act
+    ? '<rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/>'
+    : '<path d="M12 19V5M5 12l7-7 7 7"/>';
+  $('sendIcon').classList.toggle('spin', false);
+  input.placeholder = act
+    ? '任务执行中 · 点右侧方块可停止；想发新指令请先停止或等它跑完'
+    : '向 AgentForge 描述任何事，回车发送，Shift+回车换行';
+}
+
+function setBusy(b){ busy = b; syncComposer(); }
+
+async function send(){
+  // 执行中不许再发：以前这里不拦，会导致任务并发 + 上下文串档
+  if(taskActive()){
+    showView('chat');
+    addPillNote('已有任务正在执行中。点右侧方块可停止它，或等它跑完再发新指令。');
+    return;
+  }
+  const text = input.value.trim();
+  if(!text) return;
+  if(!catalog || !comboOf(catalog.models).count){
+    openSettings('models');
+    return;
+  }
+  // 回看历史任务时发消息 = 开一条全新对话，绝不把上一条任务的上下文带进来
+  if(viewingHistory){ resetChat(); }
+  input.value = ''; autoGrow();
+  showView('chat');
+  enterChat(text);
+  addUser(text);
+  setBusy(true);
+  await streamChat(text, history);
+}
+
+/* 发送消息与「重新回答」共用的流式管线：text 是这次要执行的话，
+   hist 是它之前已有的上下文（新用户消息由服务端追加，不在这里放） */
+async function streamChat(text, hist){
+  const handle = (ev, data)=>{
+    if(ev === 'combo'){
+      updatePoolHint();
+    }
+    else if(ev === 'plan'){
+      addPlan(data.subtasks || [], data.summary);
+      if(liveTask){
+        liveTask.stepTotal = (data.subtasks || []).length;
+        if(data.summary) liveTask.progress = data.summary;
+      }
+      renderRunBar();
+    }
+    else if(ev === 'assign'){
+      // 不再渲染「通用 → gemma4:12b」那条分配胶囊，模型信息挪到回复底部工具条
+      lastAssign = data;
+      if(data.multi) markPlanStep(data.index, 'running');
+      if(liveTask){
+        if(data.total > 1){ liveTask.stepIndex = data.index; liveTask.stepTotal = data.total; }
+        if(data.model_name){
+          liveTask.models = Array.from(new Set([...(liveTask.models || []), data.model_name]));
+        }
+      }
+      renderRunBar();
+    }
+    else if(ev === 'subtask'){
+      addDivider(`第 ${data.index}/${data.total} 步`);
+    }
+    else if(ev === 'skill'){
+      addPillNote(`已加载技能 <b>${esc(data.name||'')}</b>`);
+    }
+    else if(ev === 'thinking'){
+      hideShimmer();
+      const t = addThinking();
+      t.text += data.text;
+      t.v.textContent = t.text;
+      scrollBottom();
+    }
+    else if(ev === 'delta'){
+      hideShimmer(); closeThinking();
+      if(!cur) cur = addAssistant();
+      cur.text += data.text;
+      cur.body.innerHTML = md(cur.text);
+      scrollBottom();
+    }
+    else if(ev === 'tool_start'){
+      cur = null;
+      curTool = addTool(data.name, data.args);
+      if(liveTask){ liveTask.tools = (liveTask.tools || 0) + 1; renderRunBar(); }
+    }
+    else if(ev === 'tool_result'){
+      if(curTool){
+        curTool.t.querySelector('.tool-body').textContent = data.output;
+        if(/^\[已拒绝\]/.test(data.output)){
+          curTool.t.classList.add('denied');
+          curTool.state.textContent = '已拒绝';
+          curTool.state.className = 'tool-state deny';
+        }else{
+          curTool.state.textContent = '完成';
+          curTool.state.className = 'tool-state ok';
+        }
+        curTool = null;
+      }
+    }
+    else if(ev === 'stats'){
+      // 每轮用量累计到本条回复上，收尾时显示在底部工具条的「预估消耗」里
+      lastStats = lastStats || { tokens:0, cost:0, model:'' };
+      lastStats.tokens += data.tokens || 0;
+      lastStats.cost += (data.cost || 0);
+      if(data.model) lastStats.model = data.model;
+    }
+    else if(ev === 'usage'){
+      if(liveTask){
+        liveTask.cost = data.cost || 0;
+        liveTask.tools = data.tool_calls || liveTask.tools;
+        liveTask.round = data.round || liveTask.round;
+        liveTask.tokens = data.tokens || 0;
+        if(data.local_only === false) liveTask.localOnly = false;
+        if(data.progress) liveTask.progress = data.progress;
+      }
+      renderRunBar();
+      syncComposer();
+    }
+    else if(ev === 'step'){
+      if(liveTask){
+        liveTask.round = data.step || liveTask.round;
+        if(data.progress) liveTask.progress = data.progress;
+      }
+      renderRunBar();
+    }
+    else if(ev === 'task'){
+      // 服务端第一帧就把任务落了台账：侧栏立刻出现「执行中」，
+      // 同时把状态条点亮开始计时
+      openTaskId = data.id || '';
+      beginLiveTask(data);
+      loadTasks();
+    }
+    else if(ev === 'memory'){
+      // 规则抽取是任务收尾时同步做的，这里如实告诉用户记忆长出来了
+      if(data.added){
+        addPillNote(`已自动沉淀 ${data.added} 条记忆`
+          + (data.items && data.items.length ? `：${esc(data.items[0].slice(0,40))}…` : '')
+          + '　<span style="color:var(--ink3)">（侧栏「记忆管理」可查看与修改）</span>');
+        refreshMemCount();
+      }
+    }
+    else if(ev === 'history'){ history = data.messages; attachMsgFoot(); }
+    else if(ev === 'error'){ addError(data.message); }
+    else if(ev === 'stopped'){
+      attachMsgFoot();               // 已生成的部分回复也带上工具条
+      cur = null; curTool = null;
+      addPillNote(`已停止：${esc(data.reason || '用户停止')}`
+        + (data.total > 1 ? `（完成 ${data.steps}/${data.total} 步，已完成的产出保留在上下文里）` : ''));
+      endLiveTask('stopped');
+    }
+    else if(ev === 'complete'){
+      cur = null;
+      if(data.multi) for(let i=1;i<=data.steps;i++) markPlanStep(i,'done');
+      if(liveTask) liveTask.stepIndex = data.steps, liveTask.stepTotal = data.steps;
+    }
+    else if(ev === 'done'){
+      attachMsgFoot();
+      hideShimmer(); closeThinking();
+      updateContextMeter(ctxSize(history), threshold);
+      setBusy(false);
+      if(liveTask && liveTask.status === 'running') endLiveTask('done');
+      loadTasks();
+      // 模型提炼是后台线程，跑完会再补几条：稍后回来刷一次计数
+      setTimeout(refreshMemCount, 5000);
+    }
+  };
+
+  try{
+    const res = await fetch('/api/chat',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        message: text,
+        history: hist,
+        // 显式带上本次任务的权限；服务端在没有这个字段时才回落到持久化的默认值
+        permission: allowWrite ? 'full' : 'default',
+        allow_write: allowWrite,
+        auto_plan: autoPlan
+      })
+    });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while(true){
+      const { done, value } = await reader.read();
+      if(done) break;
+      buf += dec.decode(value, { stream:true });
+      let idx;
+      while((idx = buf.indexOf('\n\n')) >= 0){
+        const chunk = buf.slice(0, idx); buf = buf.slice(idx+2);
+        let ev = 'message', dt = '';
+        for(const line of chunk.split('\n')){
+          if(line.startsWith('event: ')) ev = line.slice(7);
+          else if(line.startsWith('data: ')) dt += line.slice(6);
+        }
+        try{ handle(ev, JSON.parse(dt)); }catch(e){}
+      }
+    }
+  }catch(e){
+    addError('连接中断：' + e);
+  }
+  hideShimmer(); closeThinking();
+  setBusy(false);
+}
+
+/* ================= 移动端侧栏 ================= */
+const sidebar = $('sidebar'), scrim = $('scrim');
+function closeSidebar(){ sidebar.classList.remove('open'); scrim.classList.remove('on'); }
+$('btnMenu').onclick = ()=>{ sidebar.classList.toggle('open'); scrim.classList.toggle('on'); };
+scrim.onclick = closeSidebar;
+</script>
+</body>
+</html>

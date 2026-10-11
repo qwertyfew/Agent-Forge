@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 本项目
+.venv/
+.sessions/
+.run/
+_tmp/
+*.log
+
+# 编辑器
+.vscode/
+.idea/
+
+# 用户配置（含 API Key，不入库）
+models.json
+.tasks.json
+.prefs.json
+.tmp_research/
+.tmp_models_test.json
+
+# 工作区记忆（随任务增长，每台机器不同）
+.agentforge/
