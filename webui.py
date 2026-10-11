@@ -451,6 +451,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/open-folder":
             self._handle_open_folder()
             return
+        if path == "/api/upload":
+            self._handle_upload()
+            return
         if path != "/api/chat":
             self._json({"error": "not found"}, 404)
             return
@@ -745,6 +748,64 @@ class _Handler(BaseHTTPRequestHandler):
             f"以后新建的任务默认使用「{PERMISSION_LABEL.get(saved, saved)}」"
         )
         self._json(snap)
+
+    # ---------- 上传附件 ----------
+    def _handle_upload(self):
+        """接收前端 base64 附件，落到工作区 .agentforge/uploads/ 供 Agent 读取。
+
+        放在隐藏目录里是有意的：产出文件追踪会跳过隐藏目录，
+        用户上传的素材不该被算成「这个任务产出的文件」。
+        """
+        import base64
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 40 * 1024 * 1024:
+            self._json({"ok": False, "error": "文件过大（超过 25MB）"}, 413)
+            return
+        try:
+            req = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            self._json({"ok": False, "error": "invalid json"}, 400)
+            return
+        raw_name = str(req.get("name") or "upload.bin")
+        # 只取文件名，挡掉 ../ 之类的路径穿越
+        safe = Path(raw_name).name.replace("\\", "_").replace("/", "_")
+        safe = safe.strip().strip(".") or "upload.bin"
+        try:
+            blob = base64.b64decode(req.get("data") or "", validate=False)
+        except Exception as exc:  # noqa: BLE001
+            self._json({"ok": False, "error": f"解码失败：{exc}"}, 400)
+            return
+        if not blob:
+            self._json({"ok": False, "error": "空文件"}, 400)
+            return
+        if len(blob) > 25 * 1024 * 1024:
+            self._json({"ok": False, "error": "文件过大（超过 25MB）"}, 413)
+            return
+
+        root = Path(self.cfg.workspace_root).resolve()
+        folder = root / ".agentforge" / "uploads"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / safe
+        # 同名不覆盖，改名 a-1.png、a-2.png …
+        if target.exists():
+            stem, suffix = target.stem, target.suffix
+            i = 1
+            while (folder / f"{stem}-{i}{suffix}").exists():
+                i += 1
+            target = folder / f"{stem}-{i}{suffix}"
+        target.write_bytes(blob)
+
+        rel = target.relative_to(root).as_posix()
+        self._json(
+            {
+                "ok": True,
+                "name": target.name,
+                "path": rel,
+                "abs": str(target),
+                "size": len(blob),
+            }
+        )
 
     # ---------- 打开工作区文件夹（资源管理器） ----------
     def _handle_open_folder(self):

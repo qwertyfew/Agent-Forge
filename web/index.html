@@ -95,11 +95,14 @@
   .brand{display:flex;align-items:center;gap:8px;padding:6px 8px 12px;font-weight:650;font-size:15px;letter-spacing:.2px}
   .brand .mark{width:22px;height:22px;border-radius:7px;background:var(--send-bg);color:var(--send-ink);
     display:flex;align-items:center;justify-content:center}
-  /* 新建任务：无边框，左侧图标 + 右侧文字，整行悬停微亮（对齐 WorkBuddy 侧栏样式） */
-  .new-chat{display:flex;align-items:center;gap:9px;width:100%;padding:9px 10px;border-radius:10px;
-    font-size:13.5px;font-weight:600;text-align:left;border:0;background:transparent;color:var(--ink)}
+  /* 新建任务：无边框，左侧图标 + 右侧文字，整行悬停微亮（对齐 WorkBuddy 侧栏样式）
+     注意：与下方 .nav-item 保持完全一致的字号 / 行高 / 内距，
+     否则切换栏目时两行高度不同会让整栏上下跳动 */
+  .new-chat{display:flex;align-items:center;gap:9px;width:100%;padding:8px 10px;border-radius:10px;
+    font-size:13px;line-height:19px;font-weight:600;text-align:left;border:0;background:transparent;
+    color:var(--ink)}
   .new-chat:hover{background:var(--hover)}
-  .new-chat .plus{width:17px;height:17px;flex:none;display:flex;align-items:center;
+  .new-chat .plus{width:15px;height:15px;flex:none;display:flex;align-items:center;
     justify-content:center;color:var(--ink2);background:transparent;transition:color .15s ease}
   .new-chat .plus svg{width:15px;height:15px}
   .new-chat:hover .plus{color:var(--ink)}
@@ -112,7 +115,9 @@
   /* 新建任务下方的栏目区（记忆管理等） */
   .side-nav{display:flex;flex-direction:column;gap:2px;margin-top:4px}
   .nav-item{display:flex;align-items:center;gap:9px;width:100%;padding:8px 10px;border-radius:10px;
-    border:0;background:transparent;font-size:13px;color:var(--ink2);text-align:left;cursor:pointer}
+    border:0;background:transparent;font-size:13px;line-height:19px;color:var(--ink2);
+    text-align:left;cursor:pointer}
+  .nav-item svg{flex:none}
   .nav-item:hover{background:var(--hover);color:var(--ink)}
   .nav-item.on{background:var(--hover);color:var(--ink);font-weight:600}
   .nav-item .nt{flex:1}
@@ -261,13 +266,11 @@
   .icon-btn:hover{background:var(--hover);color:var(--ink)}
   #btnMenu{display:none}
 
-  /* 首页 Hero */
-  .hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 24px 8px;gap:26px}
+  /* 首页 Hero：空态时输入框就停在这里（见 .hero .composer-wrap） */
+  .hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 24px 8px;gap:22px}
   .hero h1{margin:0;font-size:30px;font-weight:650;letter-spacing:.2px}
-  .suggests{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;max-width:660px}
-  .sg{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink2);
-    border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:7px 14px}
-  .sg:hover{border-color:var(--ink3);color:var(--ink)}
+  .hero .composer-wrap{width:100%;max-width:760px;padding:0}
+  .hero .hint{margin-top:9px}
 
   /* 对话流 */
   .thread{flex:1;overflow-y:auto;scrollbar-width:thin}
@@ -362,14 +365,24 @@
   .composer-wrap{padding:6px 24px 12px;flex:none}
   .composer{max-width:760px;margin:0 auto;position:relative}
   .c-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-    box-shadow:var(--shadow);padding:12px 14px 10px}
+    box-shadow:var(--shadow);padding:14px 14px 12px}
   .c-card:focus-within{border-color:var(--line2)}
   textarea{display:block;width:100%;resize:none;border:none;outline:none;background:none;
-    font:inherit;color:var(--ink);min-height:26px;max-height:200px;padding:0 2px 8px}
+    font:inherit;color:var(--ink);min-height:62px;max-height:220px;padding:0 2px 10px;line-height:1.55}
   textarea::placeholder{color:var(--ink3)}
+  /* 已选附件：文件名小胶囊，可单个移除 */
+  .attach-row{display:flex;flex-wrap:wrap;gap:6px;padding:0 2px 10px}
+  .attach-chip{display:inline-flex;align-items:center;gap:6px;max-width:240px;
+    border:1px solid var(--line);border-radius:8px;background:var(--card);padding:3px 6px 3px 8px;
+    font-size:11.5px;color:var(--ink2)}
+  .attach-chip .an{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .attach-chip .ax{cursor:pointer;color:var(--ink3);flex:none;line-height:1}
+  .attach-chip .ax:hover{color:var(--err)}
   .c-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
   .cbtn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border-radius:999px;
     font-size:12.5px;color:var(--ink2);border:1px solid transparent}
+  /* 只有图标的按钮（上传）：方形，宽度收窄 */
+  .cbtn-icon{width:30px;padding:0;justify-content:center}
   .cbtn:hover{background:var(--hover);color:var(--ink)}
   .cbtn.warn{color:var(--orange);background:var(--orange-soft)}
   .cbtn.on{color:var(--accent);background:var(--accent-soft)}
@@ -578,7 +591,7 @@
       </div>
       <button class="new-chat" id="btnNew" title="开始一条全新的任务">
         <span class="plus">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.5 0-2.9-.4-4.1-1.1L3 21l2.1-5.4a8.5 8.5 0 1 1 15.9-4.1z"/><path d="M12 8.2v6.6M8.7 11.5h6.6"/></svg>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-5.4L8.4 21.2V17.5H7a4 4 0 0 1-4-4v-6a4 4 0 0 1 4-4z"/><path d="M12 7.8v5.4M9.3 10.5h5.4"/></svg>
         </span>
         新建任务
       </button>
@@ -663,9 +676,9 @@
       <div class="rb-track"><i id="rbFill"></i></div>
     </div>
 
-    <!-- ============ 对话视图 ============ -->    <div class="hero" id="hero">
+    <!-- ============ 对话视图 ============ -->
+    <div class="hero" id="hero">
       <h1>我们该做什么？</h1>
-      <div class="suggests" id="suggests"></div>
     </div>
 
     <div class="thread hide" id="thread">
@@ -675,8 +688,13 @@
     <div class="composer-wrap" id="composerWrap">
       <div class="composer">
         <div class="c-card">
-          <textarea id="input" rows="1" placeholder="向 AgentForge 描述任何事，回车发送，Shift+回车换行"></textarea>
+          <div class="attach-row hide" id="attachRow"></div>
+          <textarea id="input" rows="2" placeholder="向 AgentForge 描述任何事，回车发送，Shift+回车换行"></textarea>
           <div class="c-row">
+            <button class="cbtn cbtn-icon" id="btnAttach" title="上传文件（保存到工作区 .agentforge/uploads/，Agent 可直接读取）">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+            <input type="file" id="fileInput" multiple hidden>
             <button class="cbtn" id="permBtn" title="切换权限：默认权限下写文件与执行命令需人工确认">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/></svg>
               <span id="permTxt">默认权限</span>
@@ -859,7 +877,8 @@
 /* ================= 元素 ================= */
 const $ = id => document.getElementById(id);
 const log = $('log'), thread = $('thread'), hero = $('hero'), input = $('input'),
-      sendBtn = $('send'), permTxt = $('permTxt'), permBtn = $('permBtn');
+      sendBtn = $('send'), permTxt = $('permTxt'), permBtn = $('permBtn'),
+      composerWrapEl = $('composerWrap');
 
 let history = [];
 let busy = false;
@@ -905,6 +924,41 @@ function scrollBottom(){
 }
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+/* ================= 空态（落地页）=================
+   新建任务且还没输入时，输入框浮在页面中部（原来放默认问题的地方）；
+   一旦开始输入/有附件/有对话/任务在执行，就落回底部。 */
+const mainEl = document.querySelector('main');
+let attachments = [];          // 已上传附件：[{name, path}]
+function isLanding(){
+  return view === 'chat' && !busy && !taskActive() && history.length === 0
+    && !input.value.trim() && attachments.length === 0;
+}
+function renderLanding(){
+  const on = isLanding();
+  const inHero = composerWrapEl.parentElement === hero;
+  if(on && !inHero) hero.appendChild(composerWrapEl);
+  else if(!on && inHero) mainEl.appendChild(composerWrapEl);
+  // 落地页才显示大标题；开始输入后标题随输入框一起撤掉
+  if(view === 'chat') hero.classList.toggle('hide', !on);
+}
+
+function renderAttach(){
+  const row = $('attachRow');
+  row.innerHTML = '';
+  row.classList.toggle('hide', !attachments.length);
+  attachments.forEach((a, i)=>{
+    const chip = el('div','attach-chip');
+    chip.appendChild(el('span','an', a.name));
+    chip.title = a.path;
+    const x = el('span','ax','✕');
+    x.title = '移除';
+    x.onclick = ev => { ev.stopPropagation(); attachments.splice(i,1); renderAttach(); };
+    chip.appendChild(x);
+    row.appendChild(chip);
+  });
+  renderLanding();
+}
+
 /* ================= 视图切换 ================= */
 function showView(v){
   view = v;
@@ -913,7 +967,10 @@ function showView(v){
   $('viewSettings').classList.toggle('hide', !isSet);
   $('viewMemory').classList.toggle('hide', !isMem);
   $('composerWrap').classList.toggle('hide', isSet || isMem);
-  hero.classList.toggle('hide', isSet || isMem || history.length > 0);
+  // 空态时输入框挂在 hero 里（页面中部），否则挂在底部常驻位置
+  renderLanding();
+  const land = isLanding();
+  hero.classList.toggle('hide', isSet || isMem || !land);
   thread.classList.toggle('hide', isSet || isMem || history.length === 0);
   $('btnBack').classList.toggle('hide', !(isSet || isMem));
   $('btnMenu').classList.toggle('hide', isSet || isMem);
@@ -2017,21 +2074,6 @@ $('wsMeta').onclick = async () => {
   if(r && !r.ok) console.warn('打开文件夹失败：', r.error);
 };
 
-/* ================= 建议入口 ================= */
-const SUGGESTS = [
-  '列出工作区根目录的文件',
-  '分析这个项目的目录结构，然后写一份 README',
-  '看看 config.yaml 配置了什么，并总结成一段说明',
-  '用 git log 看看最近的提交记录'
-];
-for(const s of SUGGESTS){
-  const b = el('button','sg');
-  b.innerHTML = SVG.spark;
-  b.appendChild(el('span','', s));
-  b.onclick = ()=>{ input.value = s; input.focus(); autoGrow(); };
-  $('suggests').appendChild(b);
-}
-
 /* ================= 消息渲染 ================= */
 function enterChat(title){
   hero.classList.add('hide');
@@ -2048,9 +2090,9 @@ function resetChat(){
   chatTitle = '';
   openTaskId = '';
   viewingHistory = false;
+  attachments = [];
+  renderAttach();
   renderTasks();
-  hero.classList.remove('hide');
-  thread.classList.add('hide');
   $('topTitle').textContent = '';
   showView('chat');
 }
@@ -2342,9 +2384,38 @@ $('btnCompact').onclick = async ()=>{
 /* ================= 发送 ================= */
 function autoGrow(){
   input.style.height = 'auto';
-  input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+  input.style.height = Math.min(input.scrollHeight, 220) + 'px';
 }
-input.addEventListener('input', autoGrow);
+input.addEventListener('input', ()=>{ autoGrow(); renderLanding(); });
+
+/* ================= 附件上传 =================
+   选中的文件以 base64 发给后端，落在工作区 .agentforge/uploads/（隐藏目录，
+   不会被当成任务产出文件），随后把路径拼进消息里交给 Agent 读取。 */
+$('btnAttach').onclick = () => $('fileInput').click();
+$('fileInput').onchange = async e => {
+  const files = [...(e.target.files || [])];
+  e.target.value = '';
+  for(const f of files){
+    if(f.size > 25 * 1024 * 1024){
+      addPillNote(`「${f.name}」超过 25MB，未上传。`);
+      continue;
+    }
+    const data = await new Promise(res=>{
+      const fr = new FileReader();
+      fr.onload = () => res(String(fr.result || '').split(',')[1] || '');
+      fr.onerror = () => res('');
+      fr.readAsDataURL(f);
+    });
+    if(!data){ addPillNote(`「${f.name}」读取失败，未上传。`); continue; }
+    const r = await fetch('/api/upload',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({name: f.name, data})
+    }).then(x=>x.json()).catch(err=>({ok:false, error:String(err)}));
+    if(r && r.ok) attachments.push({name: r.name, path: r.path});
+    else addPillNote('上传失败：' + ((r && r.error) || '未知错误'));
+  }
+  renderAttach();
+};
 input.addEventListener('keydown', e=>{
   if(e.key === 'Enter' && !e.shiftKey){
     e.preventDefault();
@@ -2416,8 +2487,12 @@ async function send(){
     addPillNote('已有任务正在执行中。点右侧方块可停止它，或等它跑完再发新指令。');
     return;
   }
-  const text = input.value.trim();
-  if(!text) return;
+  const typed = input.value.trim();
+  if(!typed && !attachments.length) return;
+  // 有附件就把路径附在消息末尾，Agent 直接按路径读取
+  const text = attachments.length
+    ? (typed ? typed + '\n\n' : '') + attachments.map(a=>`[附件] ${a.path}`).join('\n')
+    : typed;
   if(!catalog || !comboOf(catalog.models).count){
     openSettings('models');
     return;
@@ -2425,10 +2500,12 @@ async function send(){
   // 回看历史任务时发消息 = 开一条全新对话，绝不把上一条任务的上下文带进来
   if(viewingHistory){ resetChat(); }
   input.value = ''; autoGrow();
+  attachments = []; renderAttach();
+  // 先标记执行中再切视图：否则空态判定会把输入框重新浮回页面中部
+  setBusy(true);
   showView('chat');
   enterChat(text);
   addUser(text);
-  setBusy(true);
   await streamChat(text, history);
 }
 
@@ -2608,6 +2685,10 @@ const sidebar = $('sidebar'), scrim = $('scrim');
 function closeSidebar(){ sidebar.classList.remove('open'); scrim.classList.remove('on'); }
 $('btnMenu').onclick = ()=>{ sidebar.classList.toggle('open'); scrim.classList.toggle('on'); };
 scrim.onclick = closeSidebar;
+
+/* 首屏：空态落地页，输入框停在页面中部 */
+renderAttach();
+showView('chat');
 </script>
 </body>
 </html>
