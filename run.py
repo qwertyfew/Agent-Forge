@@ -86,7 +86,16 @@ def main() -> int:
             print("提示：以下本地模型尚未安装，用到时会报错：")
             for m in missing:
                 print(f"  ollama pull {m}")
-    else:
+
+    # 一个能用的模型都没有——新电脑 clone 下来、没装 Ollama、又没把模板里的 api_key
+    # 填上时就是这个状态。先在这里说清楚下一步，别让用户撞上 "model not found"。
+    if not cli.store.fallback_pool():
+        print("错误：这台机器上一个可用模型都没有，无法开工。二选一：")
+        print("  用在线模型：cp models.example.json models.json  再把里面的 api_key 填上")
+        print("  用本地模型：装好 Ollama 后 ollama pull 一个模型，下次启动会自动配好窗口")
+        return 2
+
+    if not ollama_up:
         print(f"提示：连不上 Ollama（{cfg.ollama_host}），本地模型暂不可用，将只用在线模型。")
 
     # 默认模型跑不起来时会自动改用能跑的（见 Router.fallback_key），先说清楚
