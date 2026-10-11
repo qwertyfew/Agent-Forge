@@ -16,7 +16,7 @@ from agentforge import artifact, autonote, runcontrol
 from agentforge.cli import CLI
 from agentforge.config import Config
 from agentforge.memory import MemoryStore
-from agentforge.llm import native_context
+from agentforge.llm import ollama_probe
 from agentforge.modelstore import ModelStore
 from agentforge.orchestrator import run_task
 from agentforge.prefs import PERMISSION_LABEL, PrefsStore
@@ -357,21 +357,10 @@ class _Handler(BaseHTTPRequestHandler):
             _Handler._discovered_at = now
         return _Handler._discovered
 
-    def _probe_model(self, name: str) -> dict:
-        """问 Ollama 要某个本地模型的元信息（主要是原生上下文长度）。
-
-        只有「Ollama 里有、config.yaml 里没声明」的模型会走到这里，而且每个模型
-        只问一次（结果缓存进 models.local.json），所以这点耗时可以接受。这样用户 pull
-        完新模型直接勾选就能用，不必自己去查文档填 num_ctx。
-        """
-        try:
-            info = self.cli.client.model_info(name)
-        except Exception:  # noqa: BLE001
-            return {}
-        return {"native_ctx": native_context(info)}
-
     def _models_snapshot(self) -> dict:
-        snap = self.store.snapshot(self._discover(), probe=self._probe_model)
+        # probe 与 CLI 路径共用 llm.ollama_probe：新模型的原生窗口只问 Ollama 一次，
+        # 结果落进 models.local.json，之后不再重复问。
+        snap = self.store.snapshot(self._discover(), probe=ollama_probe(self.cli.client))
         snap["pool"] = self.store.summary_line()
         snap.update(self._prompt_budget())
         return snap

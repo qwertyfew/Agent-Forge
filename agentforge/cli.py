@@ -10,7 +10,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .config import Config
-from .llm import OllamaClient
+from .llm import OllamaClient, ollama_probe
 from .loop import Agent
 from .modelstore import ModelStore
 from .permissions import Guard
@@ -46,7 +46,8 @@ class CLI:
         # 可用模型目录：本地模型 + 自动发现 + 用户添加的付费模型
         self.store = ModelStore(cfg)
         try:
-            self.store.catalog(self.client.list_models())
+            # 带上 probe：新发现的本地模型顺带探一次原生窗口，与 Web 路径行为一致
+            self.store.catalog(self.client.list_models(), probe=ollama_probe(self.client))
         except Exception:  # noqa: BLE001
             self.store.catalog()
         self.guard = Guard(cfg, approver=self._approve)

@@ -324,3 +324,20 @@ class OllamaClient:
             if kind == "result":
                 result = payload
         return result
+
+
+def ollama_probe(client: "OllamaClient"):
+    """给 ModelStore 用的探测回调：问 Ollama 要某个模型的原生上下文长度。
+
+    只有「Ollama 里有、config.yaml 里没声明」的模型会走到这里，而且每个模型
+    只问一次（结果缓存进 models.local.json），所以这点耗时可以接受。这样用户
+    pull 完新模型直接勾选就能用，不必自己去查文档填 num_ctx。
+
+    CLI 与 Web 两条路径共用这一份实现——各写一份迟早会漂移。
+    """
+    def probe(name: str) -> dict:
+        try:
+            return {"native_ctx": native_context(client.model_info(name))}
+        except Exception:  # noqa: BLE001
+            return {}
+    return probe
