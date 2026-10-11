@@ -66,6 +66,20 @@ OUTSIDE_RULE = {
 LANG_REMINDER = {"role": "system",
                  "content": "提醒：忽略过程中的语言，最终回复一律用简体中文。"}
 
+# 长素材末端提醒。读入大量素材后模型容易「读完直接成文」：中后段细节丢失
+# （lost-in-the-middle）、沿用旧结论、编造细节（实测 gemma4:12b 整理 3.3 万字
+# 笔记时把作废的旧标题原样保留）。系统提示开头写了规程但离生成位置太远、
+# 12B 模型常常不遵守；与 LANG_REMINDER 同理，把提醒放到消息列表最末尾——
+# 生成时注意力最近的位置。触发条件是本任务 read_file 累计读取量超阈值。
+LONG_MATERIAL_CHARS = 8_000
+LONG_MATERIAL_REMINDER = {
+    "role": "system",
+    "content": "提醒：本任务已读取大量素材，禁止读完直接写最终文档。先用 write_file 落盘一份"
+               "信息清单（人物/设定/时间线/要点各一节，每条注明素材出处），再基于清单成文。"
+               "成文后必须自检：核心主体（主角/主题）是否认对；标题、旧结论等易残留字段是否"
+               "沿用了已作废内容；细节能否在素材中找到出处——发现编造或残留立即修正后再交付。",
+}
+
 # 长期记忆注入时的标题。写成指令而不是资料，模型才会真的照做
 MEMORY_HEADER = """## 长期记忆（来自以往任务，继续遵守）
 以下是以前的任务记下来的结论与偏好，请在本轮工作中遵守：
@@ -251,6 +265,8 @@ class Agent:
         任务台账不受影响。
         """
         stopped = stop_check or (lambda: False)
+        # 长素材提醒的累计读取量，每个任务独立统计（Agent 实例可能被多个请求共用）
+        self.long_read_chars = 0
         # 完全访问 = 本次调用显式传入 auto_approve=True，或 Guard 的全局自动批准
         # 已打开（CLI 的 --yes / /yes 走这条路）。两条通道必须给同一个答案，
         # 否则会出现「命令不用确认了、路径还是被拦」的分裂状态。
@@ -315,6 +331,8 @@ class Agent:
             tools = self._active_tools(ctx)
             messages = self._compact(self.messages_with_system(ctx))
             messages.append(dict(LANG_REMINDER))
+            if self.long_read_chars > LONG_MATERIAL_CHARS:
+                messages.append(dict(LONG_MATERIAL_REMINDER))
 
             result = None
             try:
@@ -389,6 +407,8 @@ class Agent:
                     return
                 yield {"type": "tool_start", "name": tc.name, "args": tc.arguments}
                 out = self._execute(tc.name, tc.arguments, auto_approve, file_log)
+                if tc.name == "read_file":
+                    self.long_read_chars += len(out)
                 yield {"type": "tool_result", "name": tc.name, "output": out}
                 _push({"role": "tool", "content": out})
 
