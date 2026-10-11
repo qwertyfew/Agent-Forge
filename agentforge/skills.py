@@ -28,6 +28,10 @@ import yaml
 # frontmatter 分隔符：文件必须以 --- 开头
 _FM_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.S)
 
+# 系统提示里每个 skill 只留这么长的描述。完整的 description 仍保存在 Skill
+# 对象里，自动加载的匹配完全不受影响——这里截的只是「给模型看的那一眼」。
+CATALOG_DESC_MAX = 64
+
 
 @dataclass
 class Skill:
@@ -203,14 +207,19 @@ class SkillRegistry:
 
     # ---------- Tier 1 ----------
     def catalog(self) -> str:
-        """给系统提示用的清单：只有名字和一句话描述。"""
+        """给系统提示用的清单：只有名字和一句话描述。
+
+        这里截断的只是「给模型看的那一眼」；自动加载的匹配用的是 Skill 内部
+        完整的 description，不受影响。英文 skill 的原描述 150+ 字符，9 个全量
+        列出来实测 564 tokens，截到 64 后约 250，而这份清单每轮请求都要重发。
+        """
         if not self.skills:
             return ""
-        lines = ["可用 skill（判断相关时用 use_skill 加载，不要凭猜测直接动手）："]
+        lines = ["可用 skill（相关时用 use_skill 加载，也可直接按名字判断）："]
         for s in self.skills.values():
-            d = s.description.replace("\n", " ")
-            if len(d) > 160:
-                d = d[:157] + "..."
+            d = " ".join((s.description or "").split())
+            if len(d) > CATALOG_DESC_MAX:
+                d = d[: CATALOG_DESC_MAX - 3] + "..."
             lines.append(f"  - {s.name}: {d}")
         return "\n".join(lines)
 

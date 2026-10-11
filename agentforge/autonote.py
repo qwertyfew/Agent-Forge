@@ -34,11 +34,26 @@ MAX_MODEL = 2       # 模型抽取最多条数
 
 _SENT_SPLIT = re.compile(r"[。！？!?\n；;]+")
 
+# 多步任务的编排提示词（orchestrator 的 STEP_FIRST/STEP_NEXT/PROGRESS_TEMPLATE）
+# 是作为 user 消息进历史的，里头带着「不要 / 必须」这类词，会被当成用户要求抓下来
+# ——实测记进过「请只完成这一步，不要越界去做后面的步骤」这种纯过程指令。
+# 这些句子对以后的任务毫无价值，每轮还要跟着系统提示重发一遍，必须挡掉。
+_NOISE = re.compile(
+    r"本步|这一步|越界|不要重复|已完成的操作|凭空猜测|"
+    r"按步骤|逐步完成|做完后用|落脚点|在此基础上继续|只完成"
+)
+
+
+def _noisy(text: str) -> bool:
+    """这句话是不是任务编排的过程指令（而不是值得长期保留的结论）。"""
+    return bool(_NOISE.search(str(text or "")))
+
 MODEL_PROMPT = """下面是一段智能体任务的对话记录。请只提炼**以后还用得上的结论**，例如：
 用户偏好、项目约定、环境事实、踩过的坑。
 
 规则：
 - 每行一条，以「- 」开头，不超过 40 字，不要写过程、不要写这次的临时结果
+- 不要记录任务步骤指令（如「只完成本步」「不要重复已完成的操作」），那些不是长期结论
 - 最多 2 条；如果没有值得长期保留的信息，只输出 NONE
 - 用中文，直接输出，不要任何解释
 """
@@ -88,6 +103,8 @@ def rule_notes(messages: Iterable[dict]) -> list[str]:
         for s in _sentences(m.get("content") or ""):
             if not (NOTE_MIN <= len(s) <= NOTE_MAX):
                 continue
+            if _noisy(s):
+                continue
             if not any(k in s for k in SIGNALS):
                 continue
             if s not in out:
@@ -119,6 +136,8 @@ def parse_model_notes(raw: str) -> list[str]:
         if not s or s.upper() == "NONE":
             continue
         if len(s) < NOTE_MIN:
+            continue
+        if _noisy(s):
             continue
         if s in out:
             continue
