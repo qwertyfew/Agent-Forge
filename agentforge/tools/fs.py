@@ -1,8 +1,23 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ast
+import json
 
 from .base import SAFE, WRITE, make_tool
+def _syntax_check(p: Path) -> str | None:
+    try:
+        if p.suffix.lower() == ".py":
+            ast.parse(p.read_text(encoding="utf-8", errors="replace"))
+        elif p.suffix.lower() == ".json":
+            json.loads(p.read_text(encoding="utf-8", errors="replace"))
+    except SyntaxError as e:
+        return f"第{e.lineno}行: {e.msg}"
+    except json.JSONDecodeError as e:
+        return f"第{e.pos}位置: {e.msg}"
+    except Exception as e:
+        return str(e)
+    return None
 
 TEXT_SUFFIXES = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".c", ".h", ".cpp",
@@ -48,6 +63,13 @@ def build_fs_tools(guard, cfg):
         old = p.read_text(encoding="utf-8", errors="replace") if existed else ""
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8", newline="")
+        
+        if existed and p.suffix.lower() in {".py", ".json"}:
+            check_result = _syntax_check(p)
+            if check_result:
+                p.write_text(old, encoding="utf-8", newline="")
+                return f"[错误] 修改已回滚（语法检查失败）: {check_result}\n你的 content 引入了语法错误，请修正后重试。"
+        
         action = "覆盖" if existed else "新建"
         diff = "" if not existed else f"（原 {len(old)} 字符 → 现 {len(content)} 字符）"
         return f"已{action}文件 {p} {diff}"
@@ -70,7 +92,12 @@ def build_fs_tools(guard, cfg):
                 f"[错误] 找到 {count} 处匹配，存在歧义，未做任何改动。\n"
                 f"请把 old_text 写得更长一些，包含足够的上下文以唯一定位。"
             )
+        src = p.read_text(encoding="utf-8", errors="replace")
         p.write_text(src.replace(old_text, new_text, 1), encoding="utf-8", newline="")
+        check_result = _syntax_check(p)
+        if check_result:
+            p.write_text(src, encoding="utf-8", newline="")
+            return f"[错误] 修改已回滚（语法检查失败）: {check_result}\n你的 new_text 引入了语法错误，请修正后重试。"
         return f"已修改 {p}（1 处替换）"
 
     # ---------- delete_file ----------
