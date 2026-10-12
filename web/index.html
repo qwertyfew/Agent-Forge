@@ -2372,6 +2372,11 @@ function adoptRunning(){
   const running = (taskData || []).find(t => t.status === 'running');
   if(running){
     if(!liveTask || liveTask.id !== running.id){
+      // 页面还停在初始落地态（没聊过、没开过任务、没在打字）时，接管 = 直接入场：
+      // 侧栏有任务在跑、主区域却还是落地页很割裂——自动切进该任务的执行视图。
+      // 每个任务只自动切这一次，之后用户手动离开（点「新对话」等）不再拽回来。
+      const pristine = view === 'chat' && !busy && !openTaskId && !viewingHistory
+        && history.length === 0 && !log.childElementCount && !input.value.trim();
       liveTask = {
         id: running.id, startedAt: running.created_at, status: 'running',
         tools: running.tools || 0, cost: running.cost || 0,
@@ -2379,6 +2384,16 @@ function adoptRunning(){
         progress: running.progress || '', models: running.models || [],
         followed: true, stopping: false
       };
+      if(pristine){
+        liveTask.autoOpened = true;
+        openTaskId = running.id;
+        renderTasks();                       // 侧栏立刻高亮
+        showView('chat');
+        enterChat(running.title || '运行中任务');
+        log.innerHTML = '';                  // 同步清场，赶在事件流回放前面，避免竞态丢内容
+        hideShimmer();
+        showShimmer();
+      }
       followTaskStream(running.id);   // 接管即挂流：能看到完整思考与回复
     }else{
       liveTask.tools = Math.max(liveTask.tools || 0, running.tools || 0);
