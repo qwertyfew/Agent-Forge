@@ -133,6 +133,11 @@
   .mem-item .mmeta{flex:none;display:flex;align-items:center;gap:8px;font-size:10.5px;color:var(--ink3)}
   .mem-item .mtag{border:1px solid var(--line);border-radius:5px;padding:0 5px;line-height:1.7;
     white-space:nowrap}
+  /* 记忆的语义层标签（L1 事实 / L2 约定 / L3 偏好） */
+  .mem-item .mtag.lay{font-weight:600}
+  .mem-item .mtag.lay.l1{color:var(--ink2);border-color:var(--ink3);background:var(--pill)}
+  .mem-item .mtag.lay.l2{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+  .mem-item .mtag.lay.l3{color:var(--ok);border-color:var(--ok);background:var(--ok-soft)}
   .side-sec{margin-top:14px}
   .side-title{font-size:11px;font-weight:600;color:var(--ink3);letter-spacing:.6px;padding:0 8px 6px;text-transform:uppercase}
   .chips{display:flex;flex-wrap:wrap;gap:6px;padding:2px 8px}
@@ -299,6 +304,42 @@
   .aitem .arow{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
   .adim{font-size:11.5px;color:var(--ink3);padding:6px 2px 0;line-height:1.6}
 
+  /* 技能管理页：按来源分「提取得到 / 安装得到」两块。
+     注意每个条目是**纵向**卡片（不要放进 .mem-item 那种横向 flex 里——
+     横向 flex 下名字会被挤到 min-width:0，英文会逐字母换行）。 */
+  .sk-sec{margin-top:20px}
+  .sk-sec-head{display:flex;align-items:baseline;gap:9px;padding:0 2px 8px;
+    border-bottom:1px solid var(--line)}
+  .sk-sec-head h4{margin:0;font-size:13px;font-weight:650;color:var(--ink)}
+  .sk-count{font-size:11px;color:var(--ink3);border:1px solid var(--line2);
+    border-radius:999px;padding:1px 7px;white-space:nowrap}
+  .sk-hint{font-size:11px;color:var(--ink3);margin-left:auto;text-align:right}
+  .sk-item{border:1px solid var(--line);border-radius:12px;background:var(--card);
+    padding:11px 13px}
+  .sk-item .sk-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .sk-item .sk-name{font-weight:600;font-size:12.5px;color:var(--accent);
+    font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all}
+  .sk-item .sk-tag{font-size:10.5px;border:1px solid var(--line2);border-radius:5px;
+    padding:0 6px;line-height:1.7;color:var(--ink3);white-space:nowrap;flex:none}
+  .sk-item .sk-tag.extracted{color:var(--accent);border-color:var(--accent);
+    background:var(--accent-soft)}
+  .sk-item .sk-desc{font-size:12px;color:var(--ink2);margin-top:6px;line-height:1.65;
+    white-space:pre-wrap;word-break:break-word}
+  /* 资产元数据：版本 + 触发边界（适用/不适用），借鉴 TencentDB 的 Skill 定义模型 */
+  .sk-item .sk-fields{margin-top:7px;display:flex;flex-direction:column;gap:4px}
+  .sk-item .sk-field{font-size:11.5px;color:var(--ink2);line-height:1.6;display:flex;gap:6px}
+  .sk-item .sk-field .fl{flex:none;color:var(--ink3);min-width:44px}
+  .sk-item .sk-field.use .fl{color:var(--accent)}
+  .sk-item .sk-field.not .fl{color:var(--ink3)}
+  .sk-item .sk-ver{font-size:10.5px;border:1px solid var(--line2);border-radius:5px;
+    padding:0 6px;line-height:1.7;color:var(--ink3);white-space:nowrap;flex:none;
+    font-family:ui-monospace,Menlo,Consolas,monospace}
+  .sk-item .sk-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    margin-top:8px;font-size:11px;color:var(--ink3)}
+  .sk-item .sk-actions{margin-left:auto}
+  .sk-item .sk-path{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;
+    color:var(--ink3);word-break:break-all;margin-top:7px}
+
   /* ============ 主区 ============ */
   main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg);position:relative}
   .topbar{display:flex;align-items:center;gap:10px;padding:10px 16px;min-height:52px}
@@ -359,10 +400,18 @@
   .msg-foot .meta{margin-left:auto;display:inline-flex;align-items:center;gap:6px;
     font-size:11px;color:var(--ink3);font-variant-numeric:tabular-nums;white-space:nowrap}
 
-  /* 思考过程：一行计时 + 纯文本，结束把计时定格为「已处理 XmYs」 */
-  .think-plain{margin:6px 0 2px}
-  .think-time{font-size:13px;color:var(--ink3);margin-bottom:2px;font-variant-numeric:tabular-nums}
-  .think-lines{font-size:13px;color:var(--ink2);white-space:pre-wrap;max-height:260px;overflow:auto}
+  /* 思考过程：不用框——无边框无底色的浅色小字，融进「输出→操作→输出」的流里。
+     每轮一个块，正式输出出来后挪到该段输出之后；点标题可折叠/展开。 */
+  .think-plain{margin:2px 0 6px}
+  .think-head{display:inline-flex;align-items:center;gap:5px;cursor:pointer;
+    font-size:11.5px;color:var(--ink3);user-select:none}
+  .think-head:hover{color:var(--ink2)}
+  .think-head .chev{font-size:10px;transition:transform .18s ease}
+  .think-plain:not(.open) .think-head .chev{transform:rotate(-90deg)}
+  .think-time{font-size:11.5px;color:var(--ink3);font-variant-numeric:tabular-nums}
+  .think-lines{font-size:12px;color:var(--ink3);white-space:pre-wrap;line-height:1.6;
+    margin-top:3px;max-height:300px;overflow:auto}
+  .think-plain:not(.open) .think-lines{display:none}
   .shimmer{font-size:13px;background:linear-gradient(90deg,var(--ink3) 0%,var(--ink) 50%,var(--ink3) 100%);
     background-size:200% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
     animation:sh 1.6s linear infinite;width:fit-content}
@@ -388,12 +437,33 @@
   .tool.denied .tool-name{color:var(--err)}
 
   /* 提示 pill */
-  .pillnote{display:flex;justify-content:center}
-  .pillnote span{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink3);
-    border:1px solid var(--line);border-radius:999px;padding:3px 12px;background:var(--panel)}
+  .pillnote{display:flex;justify-content:center;padding:4px 0;}
+  .pillnote span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink3);}
   .pillnote b{font-weight:600;color:var(--ink2)}
-  .pillnote.warn span{color:#9a5b00;background:#fff6e6;border-color:#f0c674}
-  .theme-dark .pillnote.warn span{color:#ffce85;background:#3a2c10;border-color:#6b4a16}
+  .pillnote.warn span{color:#9a5b00;}
+  .theme-dark .pillnote.warn span{color:#ffce85;}
+  .files-list{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:2px 0}
+  .file-btn{
+    display:inline-flex;
+    align-items:center;
+    gap:4px;
+    padding:2px 8px;
+    border-radius:999px;
+    border:1px solid var(--line);
+    background:var(--card);
+    font-size:11px;
+    color:var(--ink2);
+    cursor:pointer;
+    transition:all .15s ease;
+    white-space:nowrap;
+  }
+  .file-btn:hover{
+    border-color:var(--accent);
+    background:var(--accent-soft);
+    transform:translateY(-1px);
+    box-shadow:0 2px 4px rgba(0,0,0,0.1);
+  }
+  .file-btn:active{transform:translateY(0)}
 
   /* 任务计划卡片 */
   .plan{border:1px solid var(--line);border-radius:14px;background:var(--card);overflow:hidden}
@@ -410,6 +480,26 @@
   .pstep .pmodel{color:var(--ink2);font-weight:550}
   .pstep.running .pidx{background:var(--accent);color:#fff}
   .pstep.done .pidx{background:var(--ok);color:#fff}
+  .pstep.error .pidx{background:var(--err);color:#fff}
+
+  /* 并行任务：互不相关的任务各占一列，流式输出互不串行 */
+  .lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:10px}
+  .lane{border:1px solid var(--line);border-radius:14px;background:var(--card);
+    padding:10px 12px;min-width:0;overflow:hidden}
+  .lane-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;
+    padding-bottom:7px;border-bottom:1px dashed var(--line2)}
+  .lane-title{font-size:12.5px;font-weight:650;color:var(--ink);min-width:0}
+  .lane-model{margin-left:auto;font-size:10.5px;padding:1px 7px;border-radius:999px;
+    background:var(--accent-soft);color:var(--accent);font-weight:600;
+    max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lane-badge{font-size:10.5px;border-radius:999px;padding:1px 8px;background:var(--card);
+    border:1px solid var(--line2);color:var(--ink3);white-space:nowrap}
+  .lane-badge.running{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+  .lane-badge.done{background:var(--ok-soft);border-color:transparent;color:var(--ok)}
+  .lane-badge.error{background:var(--err-soft);border-color:transparent;color:var(--err)}
+  .lane-body{display:flex;flex-direction:column;gap:6px;max-height:520px;overflow:auto}
+  .lane-body .msg-ai{max-width:100%}
+  .lane-body .think-plain,.lane-body .tool{font-size:12px}
 
   /* 执行分隔（子任务接力） */
   .divider{display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--ink3);padding:2px 0}
@@ -535,6 +625,19 @@
   .minibtn{font-size:11.5px;color:var(--ink2);border:1px solid var(--line2);border-radius:7px;padding:4px 10px;white-space:nowrap}
   .minibtn:hover{border-color:var(--ink3);color:var(--ink)}
   .minibtn.danger:hover{border-color:var(--err);color:var(--err)}
+  /* 本地模型串行执行开关 */
+  .lserial{display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;
+    font-size:12px;color:var(--ink2)}
+  .lserial input[type=checkbox]{width:15px;height:15px;margin:0;flex:none;
+    accent-color:var(--accent);cursor:pointer}
+  /* 决策模型（多 agent 调度）选择 */
+  .dsel{margin-top:12px;padding-top:12px;border-top:1px dashed var(--line2)}
+  .dsel-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .dsel-row label{font-size:12.5px;font-weight:600;color:var(--ink2);white-space:nowrap}
+  .dsel-row select{height:32px;padding:0 10px;border:1px solid var(--line2);border-radius:9px;
+    background:var(--panel);color:var(--ink);outline:none;font-size:12.5px;min-width:230px;max-width:340px}
+  .dsel .fhint{margin-top:6px;font-size:11.5px;color:var(--ink3);display:block}
+  .dsel .fhint.bad{color:var(--warn,#c08000)}
 
   /* 添加付费模型 */
   .addpaid{margin-top:22px;border:1px dashed var(--line2);border-radius:14px;padding:16px}
@@ -825,7 +928,7 @@
           <div class="pane-head">
             <div>
               <h3>可用模型管理</h3>
-              <p>勾选要参与任务的模型，AgentForge 会把每个子任务分给该维度得分最高的那个。本地模型自动进入列表，付费模型填好厂商与 API Key 即可使用。</p>
+              <p>开启下面的自动配置后，AgentForge 会按任务类型自动选用最适配的模型，无需再逐个勾选。下方列出全部可调用的模型，不需要的可以「移除」——移除付费模型会删掉它的密钥配置，移除本地模型会把它从 Ollama 里真正删除（磁盘文件一并移除）。</p>
             </div>
             <div class="pane-actions">
               <button class="btn" id="btnBest" title="开启按任务类型自动选模型：自动选用覆盖最全、含付费的最佳组合">
@@ -836,10 +939,19 @@
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
                 自动配置本地模型
               </button>
-              <button class="btn" id="btnAll">全选</button>
-              <button class="btn" id="btnNone">清空</button>
             </div>
             <div class="routing-status sub" id="routingStatus"></div>
+            <label class="sub lserial" id="localSerialWrap">
+              <input type="checkbox" id="chkLocalSerial">
+              本地模型串行执行（同一时刻只跑一个，避免并发任务互相抢显存）
+            </label>
+            <div class="dsel">
+              <div class="dsel-row">
+                <label for="dispatcherModel">决策模型（多 agent 调度）</label>
+                <select id="dispatcherModel" title="负责把请求拆成多个任务、指派执行 agent 并维护交接的「调度大脑」"></select>
+              </div>
+              <span class="fhint" id="dispatcherStatus"></span>
+            </div>
           </div>
 
           <div class="combo-card" id="comboCard"></div>
@@ -883,7 +995,7 @@
           <div class="pane-head">
             <div>
               <h3>Skill 管理</h3>
-              <p>已安装的技能（Agent Skills 开放标准）。任务命中技能描述时，正文会自动注入本轮上下文；也可以让模型主动用 use_skill 加载。</p>
+              <p>全部技能（Agent Skills 开放标准），含 Agent 自动提炼的与放进 skills/ 的。任务命中技能描述时，正文会自动注入本轮上下文；也可以让模型主动用 use_skill 加载。</p>
             </div>
             <div class="pane-actions">
               <button class="btn" id="btnReloadSkills">刷新</button>
@@ -933,7 +1045,9 @@
               <p>
                 这里存放任务跑出来的长期记忆：你在对话里明说「记住 / 以后 / 每次都…」的内容由规则直接收录；
                 任务收尾时还会用最便宜的本地模型再提炼一两条结论。
-                记忆会注入后续任务的系统提示，直接改变 Agent 的行为，所以只留结论、不留过程。
+                每条记忆带一个<b>语义层</b>——<b>L1 事实与环境</b>（路径、端口、版本等可核对信息）、
+                <b>L2 项目约定</b>（工作方式、流程约定）、<b>L3 用户偏好</b>（稳定的个人偏好与习惯）。
+                注入后续任务时按任务类型分层检索：抠具体技术细节的任务优先给 L1，常规对话优先给 L2/L3。
               </p>
             </div>
             <div class="pane-actions">
@@ -944,6 +1058,9 @@
           <div class="mem-add">
             <input id="memAddInput" placeholder="手动添加一条记忆，例如：项目约定：前端文案一律用中文" />
             <button class="btn" id="btnMemAdd">添加</button>
+          </div>
+          <div class="kv" id="memLayerRow" style="border-bottom:0;padding-bottom:2px">
+            <span class="k">分层</span><span class="v" id="memLayerStat"></span>
           </div>
           <div class="alist" id="memList"></div>
           <div class="kv" style="margin-top:18px;border-bottom:0">
@@ -961,20 +1078,39 @@
             <div>
               <h3>技能管理</h3>
               <p>
-                这里分两类：<b>已安装</b>的技能（你放进 skills/ 目录，或来自插件）会随任务命中自动注入上下文；
-                <b>已学习</b>的技能由 Agent 自检机制在任务收尾时自动沉淀——当某次任务浮现出可复用的
-                方法论（如「长材料先清单后成文」），会用最便宜的本地模型写成 SKILL.md 并登记进来。
-                只可删除「已学习」的技能，手写技能请在目录里管理。
+                Agent Skills 开放标准：技能是一份带 frontmatter 的 SKILL.md，任务命中它的
+                触发词时正文会被自动注入上下文。下面按来源分两块——<b>提取得到的技能</b>是
+                Agent 跑完任务后自己提炼沉淀的；<b>安装得到的技能</b>是放进 skills/ 目录的。
+                每张卡片展示技能的<b>版本</b>、<b>触发边界</b>（什么场景该用 / 不该用）与附带资源；
+                声明的「不适用」场景命中时会主动让位，避免关键词撞车导致的误加载。
               </p>
             </div>
             <div class="pane-actions">
               <button class="btn" id="btnSkillRefresh">刷新</button>
-              <button class="btn" id="btnSkillClear">清空已学习</button>
+              <button class="btn" id="btnSkillClear">全部清空</button>
             </div>
           </div>
-          <div class="alist" id="skillList"></div>
+
+          <div class="sk-sec">
+            <div class="sk-sec-head">
+              <h4>提取得到的技能</h4>
+              <span class="sk-count" id="skExtractedCount">0 个</span>
+              <span class="sk-hint">任务收尾时由自检机制自动提炼，可单条删除</span>
+            </div>
+            <div class="alist" id="skillExtractedList"></div>
+          </div>
+
+          <div class="sk-sec">
+            <div class="sk-sec-head">
+              <h4>安装得到的技能</h4>
+              <span class="sk-count" id="skInstalledCount">0 个</span>
+              <span class="sk-hint">来自项目 skills/ 目录</span>
+            </div>
+            <div class="alist" id="skillInstalledList"></div>
+          </div>
+
           <div class="kv" style="margin-top:18px;border-bottom:0">
-            <span class="k">已学习目录</span><span class="v mono" id="skillLearnedDir"></span>
+            <span class="k">检索目录</span><span class="v mono" id="skillDirs2"></span>
           </div>
         </div>
       </div>
@@ -1192,6 +1328,13 @@ function renderMemory(d){
   const items = (d && d.entries) || [];
   memBadge(items.length);
   if(d && d.path) $('memPath').textContent = d.path;
+  const statEl = $('memLayerStat');
+  if(statEl){
+    const L = (d && d.layers) || {};
+    const parts = [['L3','用户偏好'],['L2','项目约定'],['L1','事实与环境']]
+      .map(([k,label])=> `${k} ${label} ${L[k]||0}`);
+    statEl.textContent = parts.join('   ·   ');
+  }
   if(!items.length){
     box.appendChild(el('div','task-empty',
       '还没有记忆。任务跑完会自动沉淀（你明说「记住 / 以后 / 每次」的内容一定会被收到）；也可以在上面手动添加。'));
@@ -1201,6 +1344,11 @@ function renderMemory(d){
     const row = el('div','mem-item');
     row.appendChild(el('div','mtxt', e.text || ''));
     const meta = el('div','mmeta');
+    // 语义层标签：L1 事实与环境 / L2 项目约定 / L3 用户偏好
+    const LAY = {L1:'L1 事实', L2:'L2 约定', L3:'L3 偏好'};
+    if(e.layer && LAY[e.layer]){
+      meta.appendChild(el('span','mtag lay ' + e.layer.toLowerCase(), LAY[e.layer]));
+    }
     if(e.ts) meta.appendChild(el('span','', e.ts));
     if(e.task) meta.appendChild(el('span','mtag', '任务 ' + e.task));
     const del = el('button','mini-btn','删除');
@@ -1264,8 +1412,8 @@ $('btnMemClear').onclick = async ()=>{
 };
 
 /* ================= 技能管理 =================
-   仿照记忆管理：查看自动沉淀的技能、逐条删除、整批清空。
-   只动「已学习」的技能（skills/learned/ 下），手写技能在目录里管。 */
+   两块：「提取得到的技能」（Agent 自检机制沉淀，frontmatter 带 auto_learned）
+   和「安装得到的技能」（放进 skills/ 目录的）。每条给出 名字 / 作用 / 时间 / 路径。 */
 let skillKnownCount = 0;
 async function skillPost(body){
   try{
@@ -1276,41 +1424,88 @@ async function skillPost(body){
     return await r.json();
   }catch(e){ return null; }
 }
-function renderSkills(d){
-  const box = $('skillList');
-  if(!box) return;
-  box.innerHTML = '';
-  const items = (d && d.skills) || [];
-  skillKnownCount = d.learned_count || 0;
-  if(d && d.learned_dir) $('skillLearnedDir').textContent = d.learned_dir;
+
+/* 单条技能卡片：纵向排布，名称一行、作用一行、边界/时间/路径一行 */
+function skillItem(s){
+  const it = el('div','sk-item');
+  const head = el('div','sk-head');
+  head.appendChild(el('span','sk-name', s.name));
+  head.appendChild(el('span','sk-tag' + (s.source === 'extracted' ? ' extracted' : ''),
+    s.source === 'extracted' ? '提取得到' : '安装得到'));
+  if(s.version) head.appendChild(el('span','sk-ver', 'v' + s.version));
+  if((s.resources||[]).length) head.appendChild(el('span','sk-tag', (s.resources||[]).length + ' 个资源'));
+  if(!s.managed) head.appendChild(el('span','sk-tag', '外部目录'));
+  it.appendChild(head);
+
+  it.appendChild(el('div','sk-desc', '作用：' + (s.description || '（无描述）')));
+
+  // 触发边界：版本化的技能资产要说清「什么场景该用 / 不该用」
+  if(s.when_to_use || s.when_not_to_use){
+    const fields = el('div','sk-fields');
+    if(s.when_to_use){
+      const row = el('div','sk-field use');
+      row.appendChild(el('span','fl','适用'));
+      row.appendChild(el('span','fv', s.when_to_use));
+      fields.appendChild(row);
+    }
+    if(s.when_not_to_use){
+      const row = el('div','sk-field not');
+      row.appendChild(el('span','fl','不适用'));
+      row.appendChild(el('span','fv', s.when_not_to_use));
+      fields.appendChild(row);
+    }
+    it.appendChild(fields);
+  }
+
+  const meta = el('div','sk-meta');
+  const whenLabel = s.source === 'extracted' ? '提取时间' : '安装时间';
+  meta.appendChild(el('span','', `${whenLabel}：${s.when_text || '未知'}`));
+  if(s.note) meta.appendChild(el('span','', s.note));
+  if(s.managed){
+    const del = el('button','mini-btn','删除');
+    del.title = '删除该技能（删除前会自动备份到 .run/）';
+    del.onclick = async ()=>{
+      const ok = await confirmModal({
+        title: `删除技能 ${s.name}？`,
+        sub: '会连同该技能目录一起删掉，并先整目录备份到 .run/ 下；删除后立即退出后续任务的自动匹配。',
+        danger: true, okText: '删除'
+      });
+      if(!ok) return;
+      const r = await skillPost({action:'delete', name:s.name});
+      if(r && r.ok){ renderSkills(r); toast(del, `已删除技能 ${s.name}`, 'mute'); }
+      else toast(del, (r && r.error) || '删除失败', 'bad');
+    };
+    const box = el('span','sk-actions');
+    box.appendChild(del);
+    meta.appendChild(box);
+  }
+  it.appendChild(meta);
+  if(s.path) it.appendChild(el('div','sk-path', s.path));
+  return it;
+}
+
+function fillSkillSection(listEl, items, emptyText){
+  listEl.innerHTML = '';
   if(!items.length){
-    box.appendChild(el('div','task-empty',
-      '还没有技能。任务里浮现出可复用的「方法论」时会自动沉淀成技能；也可以把含 SKILL.md 的目录放进 skills/ 手动安装。'));
+    listEl.appendChild(el('div','task-empty', emptyText));
     return;
   }
-  for(const s of items){
-    const row = el('div','mem-item');
-    const head = el('div','mtxt');
-    head.appendChild(el('b', '', s.name));
-    if(s.learned) head.appendChild(el('span','mtag','已学习'));
-    else head.appendChild(el('span','mtag mute','已安装'));
-    row.appendChild(head);
-    if(s.description) row.appendChild(el('div','mmeta', s.description));
-    if(s.path) row.appendChild(el('div','adesc mono', s.path));
-    const meta = el('div','mmeta');
-    if(s.learned){
-      const del = el('button','mini-btn','删除');
-      del.title = '删除这个自动沉淀的技能';
-      del.onclick = async ()=>{
-        const r = await skillPost({action:'delete', name:s.name});
-        if(r && r.ok){ renderSkills(r); toast(del, `已删除技能 ${s.name}`, 'mute'); }
-        else toast(del, (r && r.error) || '删除失败', 'bad');
-      };
-      meta.appendChild(del);
-    }
-    row.appendChild(meta);
-    box.appendChild(row);
-  }
+  for(const s of items) listEl.appendChild(skillItem(s));
+}
+
+function renderSkills(d){
+  const exBox = $('skillExtractedList'), inBox = $('skillInstalledList');
+  if(!exBox || !inBox) return;
+  const extracted = (d && d.extracted) || [];
+  const installed = (d && d.installed) || [];
+  skillKnownCount = (d && d.extracted_count) || 0;
+  $('skExtractedCount').textContent = extracted.length + ' 个';
+  $('skInstalledCount').textContent = installed.length + ' 个';
+  if(d && d.dirs) $('skillDirs2').textContent = d.dirs.join('   |   ') || '—';
+  fillSkillSection(exBox, extracted,
+    '还没有提取出技能。任务里浮现出可复用的「方法论」时，收尾会用本地模型自动提炼成技能落在这里。');
+  fillSkillSection(inBox, installed,
+    '还没有安装技能。把含 SKILL.md 的目录放进 skills/ 即可。');
 }
 async function loadSkills(){
   try{
@@ -1321,9 +1516,9 @@ async function loadSkills(){
 /* 后台模型抽取可能晚于 done 才把 skill 落盘：收尾后核对一次，有新增就提示 */
 function checkSkillGrew(){
   fetch('/api/skills').then(r=>r.json()).then(d=>{
-    const now = d.learned_count || 0;
+    const now = d.extracted_count || 0;
     if(skillKnownCount && now > skillKnownCount){
-      toast(null, `已自动沉淀 ${now - skillKnownCount} 个技能`, 'ok');
+      toast(null, `已自动提炼 ${now - skillKnownCount} 个技能`, 'ok');
     }
     skillKnownCount = now;
   }).catch(()=>{});
@@ -1332,17 +1527,21 @@ $('navSkill').onclick = ()=>{ showView('skills'); loadSkills(); };
 $('btnSkillRefresh').onclick = ()=> loadSkills();
 $('btnSkillClear').onclick = async ()=>{
   const ok = await confirmModal({
-    title: '清空全部已学习技能？',
-    sub: '这些是由 Agent 自动沉淀的方法论，清空后不会影响你手写的技能；此操作不可撤销。',
-    danger: true, okText: '清空已学习'
+    title: '清空全部技能？',
+    sub: '「提取得到的」和「安装得到的」都会删掉（含 webapp-testing 这类内置技能）。删除前会自动整目录备份到 .run/skills-backup-时间戳/，但网页上一键不可撤销。',
+    danger: true, okText: '全部清空'
   });
   if(!ok) return;
-  const r = await skillPost({action:'clear'});
-  if(r && r.ok){ loadSkills(); toast($('btnSkillClear'), `已清空 ${r.removed||0} 个已学习技能`, 'mute'); }
+  const r = await skillPost({action:'clear_all'});
+  if(r && r.ok){
+    renderSkills(r);
+    toast($('btnSkillClear'),
+      `已清空 ${r.removed||0} 个技能` + (r.backup ? '，备份在 ' + r.backup : ''), 'mute');
+  } else toast($('btnSkillClear'), (r && r.error) || '清空失败', 'bad');
 };
 function refreshSkillCount(){
   fetch('/api/skills').then(r=>r.json()).then(d=>{
-    skillKnownCount = d.learned_count || 0;
+    skillKnownCount = d.extracted_count || 0;
   }).catch(()=>{});
 }
 refreshMemCount();
@@ -1396,6 +1595,8 @@ function updateApplyButtons(){
     else if(mode === 'local') st.textContent = '路由模式：自动配置本地模型（按任务类型自动选，仅本地）';
     else st.textContent = '路由模式：关闭（使用默认模型，偏弱时仅提示）';
   }
+  const cs = $('chkLocalSerial');
+  if(cs) cs.checked = rt.local_serial !== false;
 }
 
 function refreshModels(){
@@ -1405,6 +1606,7 @@ function refreshModels(){
     renderCombo();
     renderModelList();
     renderProviders();
+    renderDispatcher();
     updatePoolHint();
     updateApplyButtons();
     // 窗口与固定开销都来自这份目录，拿到后重算一次占比（首屏时它可能还没回来）
@@ -1486,13 +1688,7 @@ function renderModelList(){
   list.innerHTML = '';
   const c = comboOf(catalog.models);
   for(const m of catalog.models){
-    const row = el('div','mrow' + (m.enabled ? ' on' : ''));
-
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = !!m.enabled;
-    cb.onchange = () => toggleModel(m.id, cb.checked, cb);
-    row.appendChild(cb);
+    const row = el('div','mrow');
 
     const main = el('div','mmain');
     const l1 = el('div','mline1');
@@ -1502,6 +1698,7 @@ function renderModelList(){
     if(m.provider_label) l1.appendChild(el('span','badge', m.provider_label));
     if(m.discovered) l1.appendChild(el('span','badge warn','自动发现'));
     if(m.source === '估算') l1.appendChild(el('span','badge','估算分'));
+    if(m.kind === 'local' && !m.available) l1.appendChild(el('span','badge warn','未安装'));
     // 窗口徽章：自动探测来的要标清楚，用户才知道这个数字是怎么定的
     const ctxWin = (m.spec && m.spec.num_ctx) || m.context_window || 0;
     if(ctxWin){
@@ -1557,19 +1754,34 @@ function renderModelList(){
       }catch(e){ tb.textContent = '测试失败'; tb.disabled = false; }
     };
     acts.appendChild(tb);
+
+    const del = el('button','minibtn danger','移除');
     if(m.kind === 'paid'){
-      const del = el('button','minibtn danger','删除');
       del.onclick = async ()=>{
         const yes = await confirmModal({
-          title: '删除付费模型',
-          sub: `确定删除「${m.name}」吗？它的 API Key 会一并从本地配置里移除，之后不会再参与自动分配。`,
-          okText: '删除', danger: true
+          title: '移除付费模型',
+          sub: `确定移除「${m.name}」吗？它的 API Key 会一并从本地配置里移除，之后不会再参与自动分配。`,
+          okText: '移除', danger: true
         });
         if(!yes) return;
-        await postModels({action:'remove_paid', id:m.id});
+        const r = await postModels({action:'remove_model', id:m.id});
+        if(r.error){ toast(del, r.error, 'bad'); return; }
+        toast(del, `已移除付费模型 ${m.name}`, 'ok');
       };
-      acts.appendChild(del);
+    }else{
+      del.onclick = async ()=>{
+        const yes = await confirmModal({
+          title: '移除本地模型',
+          sub: `确定移除本地模型「${m.name}」吗？它会同时从 Ollama 里删除——磁盘上的模型文件会被一并移除，之后需要重新 pull 才能再用。`,
+          okText: '移除并删除文件', danger: true
+        });
+        if(!yes) return;
+        const r = await postModels({action:'remove_model', id:m.id, delete_file:true});
+        if(r.error){ toast(del, r.error, 'bad'); return; }
+        toast(del, `已移除本地模型 ${m.name}（含本地文件）`, 'ok');
+      };
     }
+    acts.appendChild(del);
     row.appendChild(acts);
     list.appendChild(row);
   }
@@ -1634,13 +1846,19 @@ function openModal(cfg){
 
   const body = el('div','modal-body');
   const inputs = {};
+  const sectionEls = {};   // key -> 区块 DOM，供勾选项联动显隐
   for(const opt of (cfg.options || [])){
     const row = el('label','mopt' + (opt.checked ? ' on' : ''));
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = !!opt.checked;
     cb.disabled = !!opt.disabled;
-    cb.onchange = ()=> row.classList.toggle('on', cb.checked);
+    cb.onchange = ()=>{
+      row.classList.toggle('on', cb.checked);
+      // 勾选项 ↔ 明细区块联动：勾上才显示「将删除」的文件/记忆清单
+      const sec = sectionEls[opt.key];
+      if(sec) sec.style.display = cb.checked ? '' : 'none';
+    };
     inputs[opt.key] = cb;
     const mt = el('div','mt');
     mt.appendChild(el('b','', opt.label));
@@ -1667,6 +1885,11 @@ function openModal(cfg){
     }
     wrap.appendChild(bd);
     body.appendChild(wrap);
+    if(sec.key && inputs[sec.key]){
+      sectionEls[sec.key] = wrap;
+      // 初始状态与勾选框一致：没勾上的清单先收起
+      if(!inputs[sec.key].checked) wrap.style.display = 'none';
+    }
   }
   box.appendChild(body);
 
@@ -1723,19 +1946,15 @@ function confirmModal(cfg){
   });
 }
 
-async function toggleModel(id, on, anchor){
-  if(!catalog) return;
-  const target = catalog.models.find(m=>m.id === id);
-  const rect = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
-  const ids = catalog.models.filter(m=>m.enabled).map(m=>m.id);
-  const next = on ? Array.from(new Set([...ids, id])) : ids.filter(x=>x !== id);
-  if(!next.length){ toast(rect, '至少要保留一个可用模型', 'bad'); refreshModels(); return; }
-  // 先本地更新，让得分提示即时响应
-  catalog.models.forEach(m=>{ if(m.id === id) m.enabled = on; });
-  renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons();
-  toast(rect, (target ? target.name : id) + (on ? ' 已启用' : ' 已取消'), on ? 'ok' : 'mute');
-  await postModels({action:'enable', ids:next});
-}
+/* 本地模型串行执行开关：切换后立即持久化到配置文件，并热更新到运行中的客户端，
+   无需重启。勾选 = 同一时刻只跑一个本地模型（避免并发任务互抢显存）。 */
+$('chkLocalSerial').onchange = async function(){
+  const on = this.checked;
+  const r = await postModels({action:'set_local_serial', on});
+  if(r.error){ toast(this, r.error, 'bad'); this.checked = !on; return; }
+  toast(this, on ? '本地模型已改为串行执行（同时只跑一个）'
+                 : '本地模型已允许并行执行', 'ok');
+};
 
 $('btnBest').onclick = async ()=>{
   const b = $('btnBest');
@@ -1756,16 +1975,49 @@ $('btnBestLocal').onclick = async ()=>{
   catalog = r; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons();
   toast(b, `已自动配置本地模型 · 按任务类型自动选模型已开启（仅本地）`, 'ok');
 };
-$('btnAll').onclick = async ()=>{
-  const b = $('btnAll');
-  const r = await postModels({action:'enable', ids: catalog.models.map(m=>m.id)});
-  toast(b, r.error ? r.error : `已启用全部 ${(r.enabled || []).length} 个模型`, r.error ? 'bad' : 'ok');
-};
-$('btnNone').onclick = async ()=>{
-  const b = $('btnNone');
-  const keep = catalog.models[0];
-  const r = await postModels({action:'enable', ids: [keep.id]});
-  toast(b, r.error ? r.error : `已清空勾选 · 保留 ${keep.name}`, r.error ? 'bad' : 'mute');
+/* 决策模型下拉：多 agent 的「调度大脑」。可选任意模型（本地或在线）——
+   只要它能稳定产出 JSON。留空 = 关闭调度，回退到规则拆解。 */
+function renderDispatcher(){
+  if(!catalog) return;
+  const sel = $('dispatcherModel'), st = $('dispatcherStatus');
+  if(!sel) return;
+  const d = catalog.dispatcher || {};
+  const cur = d.model || '';
+  // 保留用户当前选择，重建选项时不要把它顶掉
+  sel.innerHTML = '';
+  const off = document.createElement('option');
+  off.value = ''; off.textContent = '（关闭：回退到规则拆解）';
+  sel.appendChild(off);
+  for(const m of (catalog.models || [])){
+    const o = document.createElement('option');
+    o.value = m.key || m.name;
+    o.textContent = m.name + (m.kind === 'local' ? '（本地）' : '（在线）')
+      + (m.available === false ? ' · 不可用' : '');
+    sel.appendChild(o);
+  }
+  sel.value = cur;
+  if(st){
+    st.classList.remove('bad');
+    if(!cur){
+      st.textContent = '未启用调度：请求会走内置的规则拆解。选一个模型即可开启多 agent 调度。';
+    }else if(d.available){
+      st.textContent = `调度已启用：${d.name || cur}（${d.source === 'paid' ? '在线' : '本地'}）`
+        + '。只有真正互不相关的多件事才会被拆开，同一件事的步骤仍作为一个任务。';
+    }else{
+      st.textContent = `调度模型「${d.name || cur}」当前不可用`
+        + (d.source === 'local' ? '（本地尚未安装，可 ollama pull）' : '（请检查 API Key / base_url）')
+        + '，任务会自动回退到规则拆解。';
+      st.classList.add('bad');
+    }
+  }
+}
+
+$('dispatcherModel').onchange = async function(){
+  const model = this.value;
+  const r = await postModels({action:'set_dispatcher', model});
+  if(r.error){ toast(this, r.error, 'bad'); renderDispatcher(); return; }
+  catalog = r; renderDispatcher();
+  toast(this, model ? '决策模型已更新，多 agent 调度立即生效' : '已关闭多 agent 调度', 'ok');
 };
 
 function renderProviders(){
@@ -1894,12 +2146,15 @@ function refreshSkills(){
     for(const s of list){
       const it = el('div','aitem');
       const h = el('div','ah');
-      h.appendChild(el('span','aname', s.name));
+      h.appendChild(el('span','aname mono', s.name));
+      h.appendChild(el('span','badge', s.source === 'extracted' ? '提取得到' : '安装得到'));
       h.appendChild(el('span','badge local','自动匹配'));
       const n = (s.resources || []).length;
       if(n) h.appendChild(el('span','badge', n + ' 个资源'));
       it.appendChild(h);
-      it.appendChild(el('div','adesc', s.description || '（无描述）'));
+      it.appendChild(el('div','adesc', '作用：' + (s.description || '（无描述）')));
+      const line = (s.source === 'extracted' ? '提取时间：' : '安装时间：') + (s.when_text || '未知');
+      it.appendChild(el('div','adesc', line));
       if(s.path) it.appendChild(el('div','apath', s.path));
       box.appendChild(it);
     }
@@ -2044,7 +2299,7 @@ let liveTask = null;
    现在服务端把事件广播进 TaskBus，这里用 EventSource 订阅：
    先重放缓冲、再续播实时事件，接管者和发起者看到一样的东西。 */
 let taskStream = null, taskStreamId = '';
-const STREAM_EVENTS = ['task','combo','plan','assign','subtask','step','skill','route','stats','usage',
+const STREAM_EVENTS = ['task','combo','plan','assign','subtask','dispatch','task_done','bridge','conflict','step','skill','route','stats','usage',
   'thinking','delta','tool_start','tool_result','history','error','stopped','complete','memory','done'];
 function followTaskStream(id){
   if(busy || (taskStream && taskStreamId === id)) return;   // 自己发起的流已在手上
@@ -2284,20 +2539,21 @@ async function openClearDialog(){
 
   const sections = [];
   if(created.items.length){
-    sections.push({title:'将删除 · 任务新建的文件', items: created.items.map(fileRow), more: created.count});
+    // key 与上方勾选项对应：勾选「任务新建的文件」才显示这份清单
+    sections.push({key:'created', title:'将删除 · 任务新建的文件', items: created.items.map(fileRow), more: created.count});
   }
   if(modified.items.length){
-    sections.push({title:'将删除 · 任务修改过的文件', items: modified.items.map(fileRow), more: modified.count});
+    sections.push({key:'modified', title:'将删除 · 任务修改过的文件', items: modified.items.map(fileRow), more: modified.count});
   }
   if(memRows.length){
-    sections.push({title:'将删除 · 任务写入的记忆', items: memRows, more: mem.count});
+    sections.push({key:'memory', title:'将删除 · 任务写入的记忆', items: memRows, more: mem.count});
   }
 
   let result = null;
   openModal({
     title: '清空任务',
     sub: `将清理 ${c.tasks} 条已结束的任务。一条任务除了对话记录，还会留下磁盘文件和记忆条目，`
-       + `勾选后一并清理（正在执行的任务不受影响）。`,
+       + `勾选后一并清理（正在执行的任务不受影响）。下方的文件/记忆清单会随勾选实时显示或收起。`,
     options: [
       {
         key:'history', checked:true, label:'对话记录', count: c.tasks + ' 条',
@@ -2477,17 +2733,81 @@ function rebuildRail(){
     rail.appendChild(it);
   });
 }
-function addAssistant(){
+/* parent 给定时挂到它下面（并行任务的每一列各自渲染），否则进主对话流 */
+function addAssistant(parent){
   const m = el('div','msg-ai');
   const body = el('div','body');
   m.appendChild(body);
-  log.appendChild(m);
+  (parent || log).appendChild(m);
   scrollBottom();
   return { m, body, text:'' };
 }
 
 /* 当前正在流式输出的回复与工具卡；lastStats/lastAssign 汇总本条回复的消耗与模型 */
 let cur = null, curTool = null, lastStats = null, lastAssign = null;
+
+/* ============ 并行任务分行渲染 ============
+   parallel 模式下后端会同时推多路 delta/tool 事件，用 task_id 区分。这里给每个
+   任务开一列，事件按 task_id 落到各自那一列，避免两路输出串在一起。 */
+let lanes = null;      // {taskId: {body, badge, cur, tool, think}}
+function addTaskLanes(tasks){
+  closeThinking(); hideShimmer();
+  const wrap = el('div','lanes');
+  lanes = {};
+  for(const t of tasks){
+    const col = el('div','lane');
+    const head = el('div','lane-head');
+    head.appendChild(el('b','lane-title', `${t.index}. ${t.title || t.detail || ''}`));
+    const badge = el('span','lane-badge','排队中');
+    head.appendChild(badge);
+    if(t.model_name) head.appendChild(el('span','lane-model', t.model_name));
+    col.appendChild(head);
+    const body = el('div','lane-body');
+    col.appendChild(body);
+    wrap.appendChild(col);
+    lanes[t.id] = {col, body, badge, cur:null, tool:null, think:null};
+  }
+  log.appendChild(wrap);
+  scrollBottom();
+}
+function laneOf(taskId){ return (lanes && taskId) ? (lanes[taskId] || null) : null; }
+/* 收尾时摘掉分栏：之后的总答复仍回主对话流；已渲染的分栏留在记录里可回看 */
+function dropLanes(){
+  if(lanes){ for(const k in lanes) closeLaneThinking(lanes[k]); }
+  lanes = null;
+}
+
+/* 分栏里的思考块收尾：定格计时并从 lane 上摘下（与 closeThinking 同一套视觉） */
+function closeLaneThinking(lane){
+  const tb = lane && lane.think;
+  if(!tb) return null;
+  clearInterval(tb.timer);
+  tb.time.textContent = '· 已处理 ' + fmtThinkDur(Date.now() - tb.t0);
+  if(tb.lbl) tb.lbl.textContent = '思考过程';
+  lane.think = null;
+  return tb;
+}
+function addLaneThinking(lane){
+  if(lane.think) return lane.think;
+  const d = el('div','think-plain open');
+  const head = el('div','think-head');
+  head.appendChild(el('span','chev','▾'));
+  const lbl = el('span','','思考中');
+  const time = el('span','think-time','· 0s');
+  head.appendChild(lbl); head.appendChild(time);
+  const v = el('div','think-lines');
+  d.appendChild(head); d.appendChild(v);
+  head.onclick = ()=> d.classList.toggle('open');
+  lane.body.appendChild(d);
+  const t0 = Date.now();
+  const timer = setInterval(()=>{ time.textContent = '· ' + fmtThinkDur(Date.now() - t0); }, 1000);
+  const ob = {
+    d, lbl, time, v, text:'', t0, timer, moved:false,
+    push(x){ this.text += x; this.v.textContent = this.text; },
+  };
+  lane.think = ob;
+  return ob;
+}
 
 let thinkBox = null;
 function fmtThinkDur(ms){
@@ -2496,23 +2816,31 @@ function fmtThinkDur(ms){
 }
 function addThinking(){
   if(thinkBox) return thinkBox;
-  const d = el('div','think-plain');
-  const time = el('div','think-time','思考中 · 0s');
+  const d = el('div','think-plain open');
+  const head = el('div','think-head');
+  head.appendChild(el('span','chev','▾'));
+  const lbl = el('span','','思考中');
+  const time = el('span','think-time','· 0s');
+  head.appendChild(lbl); head.appendChild(time);
   const v = el('div','think-lines');
-  d.appendChild(time); d.appendChild(v);
+  d.appendChild(head); d.appendChild(v);
+  head.onclick = ()=> d.classList.toggle('open');
   log.appendChild(d);
   const t0 = Date.now();
-  const timer = setInterval(()=>{ time.textContent = '思考中 · ' + fmtThinkDur(Date.now() - t0); }, 1000);
-  thinkBox = { d, time, v, text:'', t0, timer };
+  const timer = setInterval(()=>{ time.textContent = '· ' + fmtThinkDur(Date.now() - t0); }, 1000);
+  thinkBox = { d, lbl, time, v, text:'', t0, timer, moved:false };
   scrollBottom();
   return thinkBox;
 }
 function closeThinking(){
-  if(!thinkBox) return;
-  // 只把计时定格为「已处理 XmYs」，内容保持原样可回看
+  if(!thinkBox) return null;
+  // 定格计时，标签从「思考中」换成「思考过程」，内容保持可见可折叠
   clearInterval(thinkBox.timer);
-  thinkBox.time.textContent = '已处理 ' + fmtThinkDur(Date.now() - thinkBox.t0);
+  thinkBox.time.textContent = '· 已处理 ' + fmtThinkDur(Date.now() - thinkBox.t0);
+  if(thinkBox.lbl) thinkBox.lbl.textContent = '思考过程';
+  const box = thinkBox;
   thinkBox = null;
+  return box;
 }
 
 let shimmerEl = null;
@@ -2573,7 +2901,7 @@ function addDivider(text){
   log.appendChild(d);
   scrollBottom();
 }
-function addTool(name, args){
+function addTool(name, args, parent){
   closeThinking(); hideShimmer();
   const t = el('div','tool');
   const head = el('div','tool-head');
@@ -2586,7 +2914,7 @@ function addTool(name, args){
   const body = el('div','tool-body');
   t.appendChild(head); t.appendChild(body);
   head.onclick = ()=> t.classList.toggle('open');
-  log.appendChild(t);
+  (parent || log).appendChild(t);
   scrollBottom();
   return { t, state };
 }
@@ -3192,6 +3520,20 @@ function handleTaskEvent(ev, data){
       // 不再渲染「通用 → gemma4:12b」那条分配胶囊，模型信息挪到回复底部工具条
       lastAssign = data;
       if(data.multi) markPlanStep(data.index, 'running');
+      // 决策模型点的执行者被系统换掉时明确说一句——否则用户会以为小模型在硬扛
+      if(data.reassigned && data.reason && !data.multi){
+        addPillNote(`调度指派：<b>${esc(data.model_name||'')}</b> —— ${esc(data.reason)}`);
+      }
+      const ln = laneOf(data.task_id);
+      if(ln){
+        ln.badge.textContent = '运行中';
+        ln.badge.className = 'lane-badge running';
+        if(data.model_name){
+          const mb = ln.col.querySelector('.lane-model');
+          if(mb) mb.textContent = data.model_name;
+          else ln.col.querySelector('.lane-head').appendChild(el('span','lane-model', data.model_name));
+        }
+      }
       if(liveTask){
         if(data.total > 1){ liveTask.stepIndex = data.index; liveTask.stepTotal = data.total; }
         if(data.model_name){
@@ -3201,7 +3543,44 @@ function handleTaskEvent(ev, data){
       renderRunBar();
     }
     else if(ev === 'subtask'){
-      addDivider(`第 ${data.index}/${data.total} 步`);
+      // 并行分栏模式下，各任务在自己的列里跑，不再需要「第 x/n 步」的横向分隔
+      if(!lanes) addDivider(`第 ${data.index}/${data.total} 步`);
+    }
+    else if(ev === 'dispatch'){
+      // 多 agent：决策模型先把请求拆成【语义独立】的任务，并为每个任务指派 agent
+      const tasks = data.tasks || [];
+      if(data.multi){
+        const who = data.dispatcher ? ` · 决策模型 ${esc(data.dispatcher)}` : '';
+        const mode = data.parallel
+          ? '，互不相关的任务<b>并行</b>执行'
+          : (data.local_serial ? '，任务串行接力（本地模型一次只跑一个）' : '，任务串行接力');
+        addPillNote(`多 agent 调度：拆成 <b>${tasks.length}</b> 个任务${who}${mode}`
+          + (data.source === 'llm' ? '' : '（决策模型不可用，已按规则拆解）'));
+      }
+      if(data.rationale) addPillNote('调度说明：' + esc(data.rationale));
+      if(data.parallel && tasks.length > 1) addTaskLanes(tasks);
+    }
+    else if(ev === 'task_done'){
+      // 某个 agent 任务完成：把计划里的这一步标记完成，分栏模式下更新该列状态
+      if(data.index) markPlanStep(data.index, data.status === 'error' ? 'error' : 'done');
+      const ln = laneOf(data.task_id);
+      if(ln){
+        ln.badge.textContent = data.status === 'error' ? '失败' : '完成';
+        ln.badge.className = 'lane-badge ' + (data.status === 'error' ? 'error' : 'done');
+        if(ln.think) ln.think = null;
+      }
+      if(liveTask && data.summary) liveTask.progress = String(data.summary).slice(0, 60);
+      renderRunBar();
+    }
+    else if(ev === 'bridge'){
+      // 能力桥接：调度器替弱中文模型做了翻译预处理
+      addPillNote(`能力桥接：${esc(data.reason || '已为执行模型翻译输入')}`);
+    }
+    else if(ev === 'conflict'){
+      // 并行任务改到同一个文件：写入已排队，但最终内容需要人工核对
+      addPillNote(`并行写入冲突：<b>${esc(data.path || '')}</b>`
+        + ` 被「${(data.tasks||[]).map(esc).join('」和「')}」同时修改`
+        + (data.note ? ` —— ${esc(data.note)}` : ''), true);
     }
     else if(ev === 'skill'){
       if(data.auto){
@@ -3231,35 +3610,67 @@ function handleTaskEvent(ev, data){
     }
     else if(ev === 'thinking'){
       hideShimmer();
-      const t = addThinking();
-      t.text += data.text;
-      t.v.textContent = t.text;
+      const ln = laneOf(data.task_id);
+      if(ln){ addLaneThinking(ln).push(data.text); }
+      else{
+        const t = addThinking();
+        t.text += data.text;
+        t.v.textContent = t.text;
+      }
       scrollBottom();
     }
     else if(ev === 'delta'){
-      hideShimmer(); closeThinking();
-      if(!cur) cur = addAssistant();
-      cur.text += data.text;
-      cur.body.innerHTML = md(cur.text);
+      hideShimmer();
+      const ln = laneOf(data.task_id);
+      if(ln){
+        // 并行分栏：这一路输出只进自己那一列，和另一路互不干扰
+        const tb = closeLaneThinking(ln);
+        if(!ln.cur) ln.cur = addAssistant(ln.body);
+        ln.cur.text += data.text;
+        ln.cur.body.innerHTML = md(ln.cur.text);
+        // 分栏内同样遵守「输出在前、思考在后」
+        if(tb && !tb.moved && tb.d.parentNode){
+          ln.cur.m.insertAdjacentElement('afterend', tb.d);
+          tb.moved = true;
+        }
+      }else{
+        const tb = closeThinking();
+        if(!cur) cur = addAssistant();
+        cur.text += data.text;
+        cur.body.innerHTML = md(cur.text);
+        // 思考挪到本段正式输出之后：输出 → 思考 → (下一次操作)
+        if(tb && !tb.moved && tb.d.parentNode){
+          cur.m.insertAdjacentElement('afterend', tb.d);
+          tb.moved = true;
+        }
+      }
       scrollBottom();
     }
     else if(ev === 'tool_start'){
-      cur = null;
-      curTool = addTool(data.name, data.args);
+      const ln = laneOf(data.task_id);
+      if(ln){
+        ln.cur = null;
+        ln.tool = addTool(data.name, data.args, ln.body);
+      }else{
+        cur = null;
+        curTool = addTool(data.name, data.args);
+      }
       if(liveTask){ liveTask.tools = (liveTask.tools || 0) + 1; renderRunBar(); }
     }
     else if(ev === 'tool_result'){
-      if(curTool){
-        curTool.t.querySelector('.tool-body').textContent = data.output;
+      const ln = laneOf(data.task_id);
+      const card = ln ? ln.tool : curTool;
+      if(card){
+        card.t.querySelector('.tool-body').textContent = data.output;
         if(/^\[已拒绝\]/.test(data.output)){
-          curTool.t.classList.add('denied');
-          curTool.state.textContent = '已拒绝';
-          curTool.state.className = 'tool-state deny';
+          card.t.classList.add('denied');
+          card.state.textContent = '已拒绝';
+          card.state.className = 'tool-state deny';
         }else{
-          curTool.state.textContent = '完成';
-          curTool.state.className = 'tool-state ok';
+          card.state.textContent = '完成';
+          card.state.className = 'tool-state ok';
         }
-        curTool = null;
+        if(ln) ln.tool = null; else curTool = null;
       }
     }
     else if(ev === 'stats'){
@@ -3317,9 +3728,13 @@ function handleTaskEvent(ev, data){
         refreshMemCount();
       }
     }
-    else if(ev === 'history'){ history = data.messages; attachMsgFoot(); updateCompactBtn(); updateContextMeter(history, threshold); }
-    else if(ev === 'error'){ addError(data.message); }
+    else if(ev === 'history'){
+      dropLanes();   // 各任务的结果已由汇总答复收口，后续 delta 回主对话流
+      history = data.messages; attachMsgFoot(); updateCompactBtn(); updateContextMeter(history, threshold);
+    }
+    else if(ev === 'error'){ dropLanes(); addError(data.message); }
     else if(ev === 'stopped'){
+      dropLanes();
       attachMsgFoot();               // 已生成的部分回复也带上工具条
       cur = null; curTool = null;
       addPillNote(`已停止：${esc(data.reason || '用户停止')}`
@@ -3327,11 +3742,13 @@ function handleTaskEvent(ev, data){
       endLiveTask('stopped');
     }
     else if(ev === 'complete'){
+      dropLanes();
       cur = null;
       if(data.multi) for(let i=1;i<=data.steps;i++) markPlanStep(i,'done');
       if(liveTask) liveTask.stepIndex = data.steps, liveTask.stepTotal = data.steps;
     }
     else if(ev === 'done'){
+      dropLanes();
       attachMsgFoot();
       hideShimmer(); closeThinking();
       updateContextMeter(history, threshold);
@@ -3351,6 +3768,7 @@ async function streamChat(text, hist){
   sentMsgs = (hist || []).concat([{ role: 'user', content: text }]);
   sentTokens = ctxTokens(sentMsgs);
   statsSeen = 0;
+  lanes = null;   // 清掉上一轮的并行分栏（异常中断时可能残留）
   try{
     const res = await fetch('/api/chat',{
       method:'POST', headers:{'Content-Type':'application/json'},

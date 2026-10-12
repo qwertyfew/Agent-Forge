@@ -17,8 +17,8 @@ from urllib.parse import urlparse
 from agentforge import artifact, autonote, autoskill, runcontrol
 from agentforge.cli import CLI
 from agentforge.config import Config
-from agentforge.memory import MemoryStore
-from agentforge.llm import ollama_probe
+from agentforge.memory import LAYER_LABEL, MemoryStore
+from agentforge.llm import ollama_probe, set_local_serial
 from agentforge.modelstore import ModelStore
 from agentforge.orchestrator import run_task
 from agentforge.prefs import PERMISSION_LABEL, PrefsStore
@@ -189,6 +189,56 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
     # ---------- 技能 / 工具 ----------
+    def _skills_root(self) -> Path:
+        """受管理的技能根目录（项目 skills/）。
+
+        只有这个目录下的技能才允许在网页上删除——用户级 ~/.agentforge/skills
+        和额外挂进来的目录不归这里管，免得点一下清空把别处的东西也带走。
+        """
+        if self.cfg.skill_dirs:
+            return Path(self.cfg.skill_dirs[0])
+        return Path(self.cfg.workspace_root) / "skills"
+
+    @staticmethod
+    def _fmt_when(ts: float) -> str:
+        try:
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+        except (OSError, ValueError, OverflowError):
+            return ""
+
+    @staticmethod
+    def _skill_when(sk) -> float:
+        """技能的时间。
+
+        提取得到的技能优先用 frontmatter 里的 learned_at（提取那一刻），
+        没有就退回 SKILL.md 的 mtime；安装得到的技能就用 mtime（放进目录的时刻）。
+        """
+        for key in ("learned_at", "installed_at"):
+            raw = getattr(sk, key, "") or ""
+            if not raw:
+                continue
+            for pat in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                try:
+                    return time.mktime(time.strptime(raw.strip(), pat))
+                except ValueError:
+                    continue
+        try:
+            return (sk.dirpath / "SKILL.md").stat().st_mtime
+        except OSError:
+            try:
+                return sk.dirpath.stat().st_mtime
+            except OSError:
+                return 0.0
+
+    def _skill_note(self, sk) -> str:
+        """自动沉淀的技能里写着「自动沉淀于任务 XXX」，提出来给页面显示。"""
+        try:
+            raw = (sk.dirpath / "SKILL.md").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        m = re.search(r"自动沉淀于任务\s*([A-Za-z0-9_-]+)", raw)
+        return f"来自任务 {m.group(1)}" if m else ""
+
     def _skills_snapshot(self) -> dict:
         reg = self.cli.skills
         # 每次都重扫：自动沉淀的 skill 是后台线程写盘后即时注册的，
@@ -198,36 +248,83 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001
             pass
         learned = autoskill.learned_dir(self.cfg)
+        managed = self._skills_root().resolve()
         items = []
-        learned_count = 0
         for name, sk in reg.skills.items():
-            is_learned = str(sk.dirpath).startswith(str(learned))
-            if is_learned:
-                learned_count += 1
+            path = Path(sk.dirpath).resolve()
+            # 「提取得到」= 自检机制写出来的（落在 skills/learned/ 或 frontmatter
+            # 标了 auto_learned）；其余都算「安装得到」——用户放进 skills/ 的、
+            # 或从别处装进来的。
+            try:
+                in_learned = path.is_relative_to(Path(learned).resolve())
+            except (ValueError, OSError):
+                in_learned = str(path).startswith(str(learned))
+            is_extracted = bool(in_learned or getattr(sk, "auto_learned", False))
+            ts = self._skill_when(sk)
             items.append(
                 {
                     "name": name,
                     "description": sk.description,
                     "path": str(sk.dirpath),
                     "resources": sk.resources(),
+                    # 资产元数据：版本 + 触发边界（借鉴 TencentDB 的 Skill 定义模型）
+                    "version": getattr(sk, "version", "") or "",
+                    "when_to_use": getattr(sk, "when_to_use", "") or "",
+                    "when_not_to_use": getattr(sk, "when_not_to_use", "") or "",
                     "auto": True,  # 当前实现里 skill 全部参与自动匹配
-                    "learned": is_learned,  # 是否由自检机制自动沉淀（可整批管理）
+                    "source": "extracted" if is_extracted else "installed",
+                    "learned": is_extracted,  # 兼容旧前端字段
+                    "when": ts,
+                    "when_text": self._fmt_when(ts),
+                    "note": self._skill_note(sk) if is_extracted else "",
+                    "managed": str(path).startswith(str(managed)),
                 }
             )
+        extracted = sorted(
+            (x for x in items if x["source"] == "extracted"),
+            key=lambda x: -x["when"],
+        )
+        installed = sorted(
+            (x for x in items if x["source"] == "installed"),
+            key=lambda x: -x["when"],
+        )
         return {
-            "skills": items,
+            "skills": extracted + installed,
+            "extracted": extracted,
+            "installed": installed,
+            "extracted_count": len(extracted),
+            "installed_count": len(installed),
+            "learned_count": len(extracted),  # 兼容旧前端字段
             "dirs": [str(d) for d in reg.dirs],
             "learned_dir": str(learned),
-            "learned_count": learned_count,
+            "managed_root": str(self._skills_root()),
             "auto_load": self.cfg.skill_auto_load,
             "min_score": self.cfg.skill_min_score,
         }
 
-    def _handle_skills(self):
-        """技能管理：删除单个已学习技能 / 清空全部已学习技能。
+    def _backup_skills(self, dirs: list[Path]) -> str:
+        """删除前把整个技能目录复制到 .run/skills-backup-<时间戳>/。
 
-        只动「自动沉淀」目录（skills/learned/）下的 skill，不碰用户手写的技能；
-        删除即移除整个 skill 目录并重扫注册表，让它立刻退出后续任务的自动匹配。
+        技能目录是用户手写和 Agent 沉淀混在一起的，网页面板点一下「全部清空」
+        就没了；留一份本地备份，误删了能捞回来（.run/ 不入库，不污染仓库）。
+        """
+        import shutil
+
+        dest = Path(self.cfg.workspace_root) / ".run" / time.strftime(
+            "skills-backup-%Y%m%d-%H%M%S"
+        )
+        for d in dirs:
+            try:
+                shutil.copytree(d, dest / d.name, dirs_exist_ok=True)
+            except OSError:
+                pass
+        return str(dest)
+
+    def _handle_skills(self):
+        """技能管理：删除单个技能 / 清空全部技能。
+
+        只动项目 skills/ 目录下的技能；每次删除前先整目录备份到 .run/，
+        再移除并重扫注册表，让它立刻退出后续任务的自动匹配。
         """
         length = int(self.headers.get("Content-Length") or 0)
         try:
@@ -237,45 +334,71 @@ class _Handler(BaseHTTPRequestHandler):
             return
         action = (req.get("action") or "").strip()
         reg = self.cli.skills
-        learned = autoskill.learned_dir(self.cfg)
+        learned = Path(autoskill.learned_dir(self.cfg)).resolve()
+        root = self._skills_root().resolve()
+        import shutil
+
+        def _under(p: Path, base: Path) -> bool:
+            try:
+                return p.is_relative_to(base)
+            except (ValueError, OSError):
+                return str(p).startswith(str(base))
+
         if action == "delete":
             name = (req.get("name") or "").strip()
+            try:  # 技能可能刚落盘（或刚被手动放进目录），先重扫再找
+                reg.scan()
+            except Exception:  # noqa: BLE001
+                pass
             sk = reg.get(name)
             if sk is None:
                 self._json({"ok": False, "error": "未找到该技能"}, 400)
                 return
-            if not str(sk.dirpath).startswith(str(learned)):
-                self._json({"ok": False, "error": "只支持删除自动沉淀的技能"}, 400)
+            if not _under(Path(sk.dirpath).resolve(), root):
+                self._json({"ok": False, "error": "该技能不在项目 skills/ 下，不能在这里删"}, 400)
                 return
+            backup = self._backup_skills([Path(sk.dirpath)])
             try:
-                import shutil
-
                 shutil.rmtree(sk.dirpath, ignore_errors=True)
                 reg.scan()
             except Exception as e:  # noqa: BLE001
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
                 return
-        elif action == "clear":
-            removed = 0
-            for sk in list(reg.skills.values()):
-                if str(sk.dirpath).startswith(str(learned)):
-                    try:
-                        import shutil
+            snap = self._skills_snapshot()
+            snap.update({"ok": True, "backup": backup})
+            self._json(snap)
+            return
 
-                        shutil.rmtree(sk.dirpath, ignore_errors=True)
-                        removed += 1
-                    except Exception:  # noqa: BLE001
-                        pass
+        if action in ("clear_all", "clear"):
+            targets = [
+                Path(sk.dirpath)
+                for sk in list(reg.skills.values())
+                if _under(Path(sk.dirpath).resolve(), root)
+                and (action == "clear_all" or _under(Path(sk.dirpath).resolve(), learned))
+            ]
+            if not targets:
+                snap = self._skills_snapshot()
+                snap.update({"ok": True, "removed": 0, "backup": ""})
+                self._json(snap)
+                return
+            backup = self._backup_skills(targets)
+            removed = 0
+            for d in targets:
+                try:
+                    shutil.rmtree(d, ignore_errors=True)
+                    removed += 1
+                except Exception:  # noqa: BLE001
+                    pass
             try:
                 reg.scan()
             except Exception:  # noqa: BLE001
                 pass
-            self._json({"ok": True, "removed": removed})
+            snap = self._skills_snapshot()
+            snap.update({"ok": True, "removed": removed, "backup": backup})
+            self._json(snap)
             return
-        else:
-            self._json({"ok": False, "error": f"未知操作 {action}"}, 400)
-            return
-        self._json(self._skills_snapshot())
+
+        self._json({"ok": False, "error": f"未知操作 {action}"}, 400)
 
     def _tools_snapshot(self) -> dict:
         reg = self.cli.registry
@@ -530,6 +653,7 @@ class _Handler(BaseHTTPRequestHandler):
             "capability": bool(self.cfg.routing_capability),
             "allow_upgrade": bool(self.cfg.routing_allow_upgrade),
             "allow_paid_upgrade": bool(self.cfg.routing_allow_paid_upgrade),
+            "local_serial": bool(getattr(self.cfg, "local_serial", True)),
             "mode": ("best" if (self.cfg.routing_capability
                                 and self.cfg.routing_allow_upgrade
                                 and self.cfg.routing_allow_paid_upgrade)
@@ -537,8 +661,73 @@ class _Handler(BaseHTTPRequestHandler):
                                       and self.cfg.routing_allow_upgrade)
                      else "off"),
         }
+        # 决策/调度模型（多 agent 的 Dispatcher）当前指向谁、能不能用
+        snap["dispatcher"] = self._dispatcher_snapshot()
         snap.update(self._prompt_budget())
         return snap
+
+    def _dispatcher_snapshot(self) -> dict:
+        dkey = (getattr(self.cfg, "dispatcher_model", "") or "").strip()
+        spec = None
+        if dkey:
+            spec = self.cfg.models.get(dkey) or next(
+                (s for s in self.cfg.models.values() if s.name == dkey), None)
+        kind = getattr(spec, "kind", "") if spec is not None else ""
+        return {
+            "enabled": bool(getattr(self.cfg, "dispatcher_enabled", False)),
+            "model": dkey,
+            "name": spec.display if spec is not None else "",
+            "source": ("paid" if kind == "paid" else "local") if spec is not None else "none",
+            "available": bool(getattr(spec, "available", False)) if spec is not None else False,
+            "any_available": any(getattr(e, "available", False) for e in getattr(self.store, "_catalog", [])),
+        }
+
+    def _write_dispatcher_model(self, model: str) -> bool:
+        """把决策/调度模型写回配置文件（agent.dispatcher.model）。已有则替换，没有则补块。
+
+        用逐行扫描而不是整体 dump，避免把 config 里的注释和其它节全部重排。
+        """
+        p = getattr(self.cfg, "source_path", None)
+        if not p:
+            return False
+        p = Path(p)
+        if not p.exists():
+            return False
+        val = f'{model}'
+        quoted = f'"{val}"'
+        lines = p.read_text(encoding="utf-8").splitlines()
+        out: list[str] = []
+        in_disp = False
+        replaced = False
+        for ln in lines:
+            if re.match(r'^(\s*)dispatcher\s*:\s*(.*)$', ln):
+                in_disp = True
+                out.append(ln)
+                continue
+            if in_disp and not replaced:
+                if ln.strip() and not ln.startswith("    "):
+                    in_disp = False                 # 遇到更浅的非空行 → 离开该块
+                else:
+                    mm = re.match(r'^(\s+)model\s*:\s*(.*)$', ln)
+                    if mm:
+                        out.append(f"{mm.group(1)}model: {quoted}")
+                        replaced = True
+                        continue
+            out.append(ln)
+        if not replaced:
+            final: list[str] = []
+            inserted = False
+            for ln in out:
+                final.append(ln)
+                if not inserted and re.match(r'^agent\s*:\s*$', ln):
+                    final.append("  dispatcher:")
+                    final.append(f"    model: {quoted}")
+                    inserted = True
+            if not inserted:
+                return False
+            out = final
+        p.write_text("\n".join(out) + "\n", encoding="utf-8")
+        return True
 
     def _write_routing(self, capability: bool, allow_upgrade: bool,
                         allow_paid_upgrade: bool,
@@ -600,6 +789,26 @@ class _Handler(BaseHTTPRequestHandler):
                             missing.pop(key, None)
             out = final
         p.write_text("\n".join(out) + "\n", encoding="utf-8")
+        return True
+
+    def _write_local_serial(self, on: bool) -> bool:
+        """把「本地模型串行执行」开关写回配置文件（放进 ollama: 块）。
+
+        已有 local_serial 就替换，没有就插到 ollama: 行之后。返回是否成功写入。
+        """
+        p = getattr(self.cfg, "source_path", None)
+        if not p:
+            return False
+        p = Path(p)
+        if not p.exists():
+            return False
+        text = p.read_text(encoding="utf-8")
+        line = f"  local_serial: {'true' if on else 'false'}"
+        if re.search(r'^\s*local_serial\s*:', text, re.M):
+            text = re.sub(r'^\s*local_serial\s*:.*$', line, text, flags=re.M)
+        else:
+            text = re.sub(r'^(ollama\s*:\s*\n)', r'\1' + line + "\n", text, count=1, flags=re.M)
+        p.write_text(text, encoding="utf-8")
         return True
 
     def _prompt_budget(self) -> dict:
@@ -687,6 +896,51 @@ class _Handler(BaseHTTPRequestHandler):
                 eid = str(req.get("id") or "")
                 ok = self.store.remove_paid(eid)
                 note = "已删除该付费模型" if ok else "没有找到该模型"
+
+            elif action == "remove_model":
+                # 统一的「移除模型」：付费模型删配置，本地模型顺带删掉本地文件
+                eid = str(req.get("id") or "")
+                delete_file = bool(req.get("delete_file", True))
+                res = self.store.remove_model(
+                    eid, delete_file=delete_file, client=self.cli.client
+                )
+                if not res.get("ok"):
+                    self._json({"error": res.get("error", "移除失败")}, 400)
+                    return
+                if res.get("kind") == "local":
+                    note = "已移除该本地模型"
+                    if res.get("deleted_file"):
+                        note += "（本地文件已删除）"
+                    if res.get("removed_config"):
+                        note += "，配置声明一并清除"
+                else:
+                    note = "已移除该付费模型"
+
+            elif action == "set_local_serial":
+                on = bool(req.get("on", True))
+                self.cfg.local_serial = on
+                set_local_serial(on)
+                self._write_local_serial(on)
+                note = "本地模型已改为串行执行（同时只跑一个）" if on \
+                    else "本地模型已允许并行执行"
+
+            elif action == "set_dispatcher":
+                # 配置多 agent 的决策/调度模型（本地或在线都行；空=关闭，回退规则拆解）
+                model = str(req.get("model") or "").strip()
+                if model:
+                    found = self.store.find_any(model) or next(
+                        (e for e in self.store._catalog if e.name == model), None)
+                    if found is None:
+                        self._json({"error": f"未知模型：{model}"}, 400)
+                        return
+                    model = found.key        # 统一存 cfg.models 里的 key，Dispatcher 好查
+                self.cfg.dispatcher_model = model
+                self._write_dispatcher_model(model)
+                if model:
+                    spec = self.cfg.models.get(model)
+                    note = "已把决策模型设为 " + (spec.display if spec else model)
+                else:
+                    note = "已关闭多 agent 调度（回退到规则拆解）"
 
             elif action == "apply_best":
                 picks = self.store.apply_best(int(req.get("budget") or 0) or None)
@@ -867,11 +1121,14 @@ class _Handler(BaseHTTPRequestHandler):
         # 不做全局硬切换——只在明确偏弱且存在更强可用模型时升级；否则把决策
         # 透明地播报给用户，让他知道「为什么是这个模型、还有没有更好的」。
         cap_route = None
+        preferred_key = ""
         if model_key == "auto" and getattr(self.cfg, "routing_capability", True):
             try:
                 cap_route = self.cli.router.capability(message, self.store)
                 if cap_route.get("upgrade"):
-                    model_key = cap_route["best_key"]   # 自动升级到更强可用模型
+                    # 只当作「优先模型」上报，不直接钉死 model_key——
+                    # 否则会挡住多 agent 调度（调度模型要按任务重新指派模型）。
+                    preferred_key = cap_route["best_key"]
             except Exception:  # noqa: BLE001
                 cap_route = None
 
@@ -904,6 +1161,7 @@ class _Handler(BaseHTTPRequestHandler):
                 })
             for ev in run_task(cli.agent, self.store, history, message,
                                auto_plan=auto_plan, model_key=model_key,
+                               preferred_key=preferred_key,
                                stop_check=stop_ev.is_set,
                                auto_approve=auto_approve, file_log=file_log):
                 kind = ev["type"]
@@ -990,6 +1248,17 @@ class _Handler(BaseHTTPRequestHandler):
                     emit("assign", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "subtask":
                     emit("subtask", {"index": ev["index"], "total": ev["total"], "text": ev["text"]})
+                elif kind == "dispatch":
+                    # 多 agent：决策模型给出的拆解与指派
+                    emit("dispatch", {k: v for k, v in ev.items() if k != "type"})
+                elif kind == "task_done":
+                    # 某个 agent 任务完成，前端据此把计划里的这一步标记为完成
+                    emit("task_done", {k: v for k, v in ev.items() if k != "type"})
+                elif kind == "bridge":
+                    emit("bridge", {k: v for k, v in ev.items() if k != "type"})
+                elif kind == "conflict":
+                    # 并行任务写到了同一个文件：写入已排队，这里提醒用户核对结果
+                    emit("conflict", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "stopped":
                     was_stopped = True
                     emit("stopped", {
@@ -1103,6 +1372,9 @@ class _Handler(BaseHTTPRequestHandler):
         return {
             "entries": items,
             "count": len(items),
+            # 分层统计：界面显示「偏好 N / 约定 N / 事实 N」，也便于核对分层是否生效
+            "layers": self.mem.layer_counts(),
+            "layer_labels": dict(LAYER_LABEL),
             "path": str(self.mem.path),
         }
 
