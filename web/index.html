@@ -445,7 +445,7 @@
   .toolrun.open .tool-head .chev{transform:rotate(180deg)}
 
   /* 提示 pill */
-  .pillnote{display:flex;justify-content:center;padding:4px 0;}
+  .pillnote{display:flex;justify-content:flex-start;padding:4px 0;text-align:left;}
   .pillnote span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink3);}
   .pillnote b{font-weight:600;color:var(--ink2)}
   .pillnote.warn span{color:#9a5b00;}
@@ -2391,6 +2391,11 @@ function adoptRunning(){
         showView('chat');
         enterChat(running.title || '运行中任务');
         log.innerHTML = '';                  // 同步清场，赶在事件流回放前面，避免竞态丢内容
+        // 外部指派的任务（curl/其他端发起）流里没有用户气泡，回放的事件只有
+        // 思考/工具/回复——不补一条的话，输入框和输出开头的头像时间全都缺失。
+        // 用台账标题补上，同时让第一个 AI 元素挂上头像行（addUser 会置 needAIHead）。
+        headTimeOverride = running.created_at || 0;
+        if(running.title) addUser(running.title);
         hideShimmer();
         showShimmer();
       }
@@ -2434,6 +2439,7 @@ function endLiveTask(status){
   if(!liveTask) return;
   liveTask.status = status || 'done';
   liveTask.endedAt = Date.now()/1000;
+  headTimeOverride = 0;
   renderRunBar();
   syncComposer();
   const id = liveTask.id;
@@ -2816,6 +2822,7 @@ function addUser(text){
 }
 /* AI 回复的头像行：圆形 logo + 名称 + 时间（对齐用户气泡之后，像聊天软件那样） */
 let needAIHead = false;
+let headTimeOverride = 0;   // 接管外部指派的任务时，头像时间用任务真实开始时间而不是"现在"
 function aiHead(){
   const h = el('div','ai-head');
   const ava = el('span','ai-ava');
@@ -2824,8 +2831,8 @@ function aiHead(){
   const col = el('div','ai-id');
   const name = (lastStats && lastStats.model) ? lastStats.model : 'AgentForge';
   col.appendChild(el('b','ai-name', name));
-  const now = new Date();
-  col.appendChild(el('span','ai-time', now.getHours() + ':' + String(now.getMinutes()).padStart(2,'0')));
+  const t = headTimeOverride ? new Date(headTimeOverride * 1000) : new Date();
+  col.appendChild(el('span','ai-time', t.getHours() + ':' + String(t.getMinutes()).padStart(2,'0')));
   h.appendChild(col);
   return h;
 }

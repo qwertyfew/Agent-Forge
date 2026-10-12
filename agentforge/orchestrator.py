@@ -501,6 +501,13 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
     if total >= 2 and getattr(agent.cfg, "dispatcher_synthesis", True):
         final = dispatcher.synthesize(message, state.result_items())
         if final:
+            # 输出边界的语言闸门：整合模型也可能是英文倾向的弱模型，而桥接执行的
+            # 子任务摘要常常整段英文。用户记忆里「回复一律中文」这类偏好不能只靠
+            # 提示词自觉——最后这里程序化兜底，不是中文就强制回译。
+            if not _mostly_chinese(final):
+                zh = dispatcher.translate(final, "Chinese")
+                if zh:
+                    final = zh
             final_convo = [*final_convo, {"role": "assistant", "content": final}]
             yield {"type": "assistant", "content": final, "history": final_convo}
 
