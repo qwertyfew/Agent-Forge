@@ -1,0 +1,25 @@
+# 仓库根目录结构
+
+- dir  .github/
+- file .gitignore  (2754 B)
+- file CHANGELOG.md  (18094 B)
+- file CONTRIBUTING.md  (4785 B)
+- file CONTRIBUTING_CN.md  (4866 B)
+- file INSTALL.md  (39075 B)
+- file INSTALL_CN.md  (33691 B)
+- file LICENSE  (1315 B)
+- dir  MemoryCore/
+- dir  MemoryKnowledge/
+- dir  MemoryPanel/
+- dir  MemoryProxy/
+- file README.deployment.md  (21076 B)
+- file README.docker.md  (9260 B)
+- file README.md  (21834 B)
+- file README_CN.md  (20272 B)
+- file ROADMAP.md  (4995 B)
+- file ROADMAP_CN.md  (4581 B)
+- dir  adapters/
+- dir  agents/
+- dir  assets/
+- dir  deploy/
+- dir  sdk/
