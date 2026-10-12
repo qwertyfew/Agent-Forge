@@ -1244,7 +1244,10 @@ class _Handler(BaseHTTPRequestHandler):
                     self.tasks.touch(task_id, tool=True, progress=progress_text())
                     emit("tool_start", {"name": ev["name"], "args": ev["args"]})
                 elif kind == "tool_result":
-                    emit("tool_result", {"name": ev["name"], "output": ev["output"]})
+                    payload = {"name": ev["name"], "output": ev["output"]}
+                    if ev.get("failed"):
+                        payload["failed"] = True
+                    emit("tool_result", payload)
                 elif kind == "skill":
                     emit("skill", {"name": ev["name"], "detail": ev["detail"]})
                 elif kind == "stats":
@@ -1323,6 +1326,9 @@ class _Handler(BaseHTTPRequestHandler):
                 elif kind == "conflict":
                     # 并行任务写到了同一个文件：写入已排队，这里提醒用户核对结果
                     emit("conflict", {k: v for k, v in ev.items() if k != "type"})
+                elif kind == "verify":
+                    # 收尾验证闸门：系统亲自运行验证命令的真实结果（模型只有解读权）
+                    emit("verify", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "stopped":
                     was_stopped = True
                     emit("stopped", {

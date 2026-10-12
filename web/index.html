@@ -2345,7 +2345,7 @@ let liveTask = null;
    现在服务端把事件广播进 TaskBus，这里用 EventSource 订阅：
    先重放缓冲、再续播实时事件，接管者和发起者看到一样的东西。 */
 let taskStream = null, taskStreamId = '';
-const STREAM_EVENTS = ['task','combo','plan','assign','subtask','dispatch','task_done','bridge','conflict','step','skill','route','stats','usage',
+const STREAM_EVENTS = ['task','combo','plan','assign','subtask','dispatch','task_done','bridge','conflict','verify','step','skill','route','stats','usage',
   'thinking','delta','tool_start','tool_result','history','error','stopped','complete','memory','done'];
 function followTaskStream(id){
   if(busy || (taskStream && taskStreamId === id)) return;   // 自己发起的流已在手上
@@ -3785,6 +3785,14 @@ function handleTaskEvent(ev, data){
         + ` 被「${(data.tasks||[]).map(esc).join('」和「')}」同时修改`
         + (data.note ? ` —— ${esc(data.note)}` : ''), true);
     }
+    else if(ev === 'verify'){
+      // 收尾验证闸门：系统在任务收尾时亲自运行验证命令的真实结果，
+      // 不是模型自报的结论；失败时最终答复末尾会附上系统侧报告
+      addPillNote(`系统侧验证 <b>${esc(data.cmd||'')}</b> → `
+        + (data.ok ? '<b>通过</b>' : '<b>失败</b>')
+        + `（退出码 ${esc(String(data.exit ?? '?'))}，耗时 ${esc(String(data.duration ?? '?'))}s）`
+        + (data.ok ? '' : '，详见最终答复附带的系统侧验证报告'), !data.ok);
+    }
     else if(ev === 'skill'){
       if(data.auto){
         addPillNote(`已自动沉淀技能 <b>${esc(data.name||'')}</b>`
@@ -3867,7 +3875,11 @@ function handleTaskEvent(ev, data){
       const card = ln ? ln.tool : curTool;
       if(card){
         card.body.textContent = data.output;
-        if(/^\[已拒绝\]/.test(data.output)){
+        if(data.failed || /^\[错误\]/.test(data.output)){
+          card.item.classList.add('denied');
+          card.state.textContent = '失败';
+          card.state.className = 'tool-state deny';
+        }else if(/^\[已拒绝\]/.test(data.output)){
           card.item.classList.add('denied');
           card.state.textContent = '已拒绝';
           card.state.className = 'tool-state deny';

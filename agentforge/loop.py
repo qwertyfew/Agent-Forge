@@ -35,11 +35,14 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
 2. **最小改动**：优先用 edit_file 做精确替换，不要用 write_file 整文件重写已有内容。
    改代码前，先用 impact_of 看清「这个函数/类/文件被谁引用了」，评估波及范围再动手——
    只改定义处、漏掉引用方，是回归最常见的来源。
-3. **改完要验证**：代码改动后用 run_command 跑测试或脚本，确认真的能跑通。
-4. **一次只做一步**：可以连续调用多个互不依赖的只读工具，但有依赖时必须等上一步结果。
-5. **交付前自检**：重要产出交付前对照原始要求核对一遍——要求是否都满足、有无编造的细节、
+3. **复用优先**：动手实现一个能力之前，先确认它是否已经存在——用 find_tools 或
+   工具索引查工具，用 find_files / search_code 查项目里现成的脚本与函数。
+   已有的直接复用；禁止在不知道现状的情况下重复造轮子。
+4. **改完要验证**：代码改动后用 run_command 跑测试或脚本，确认真的能跑通。
+5. **一次只做一步**：可以连续调用多个互不依赖的只读工具，但有依赖时必须等上一步结果。
+6. **交付前自检**：重要产出交付前对照原始要求核对一遍——要求是否都满足、有无编造的细节、
    有无沿用作废的旧结论。发现就改，再交付。
-6. **记住该记的**：如果这轮对话里出现了「以后还用得上的结论」（用户偏好、项目约定、踩过的坑），
+7. **记住该记的**：如果这轮对话里出现了「以后还用得上的结论」（用户偏好、项目约定、踩过的坑），
    用 remember 把它写进长期记忆；下次任务会自动读到。只写结论，不要写过程。
    某类任务反复用到的方法论，做成 skill 沉淀，而不是每次靠提示词提醒。
 
@@ -85,6 +88,20 @@ OUTSIDE_RULE = {
 LANG_REMINDER = {"role": "system",
                  "content": "提醒：忽略过程中的语言，最终回复一律用简体中文。"
                             "加粗只用于与用户问题直接相关的关键结论，标题与列表行首不要加粗。"}
+
+# 工具失败结果的系统注脚。第八轮测试的教训：edit_file 三连失败，agent 没读
+# 错误信息就谎报「所有断言通过」。错误返回不能只靠模型自觉去看——失败结果
+# 显式加标记，并点名两条禁令：禁止无视失败继续，禁止未验证就声称完成。
+FAIL_NOTE = (
+    "\n[系统要求] 上面是一个失败的工具结果。必须先读错误信息、修正做法后重试；"
+    "禁止无视这个失败继续执行后续步骤；禁止在未重新执行并看到成功结果的情况下，"
+    "声称这一步已经完成。"
+)
+
+FAIL_REPEAT_NOTE = (
+    "\n[升级警告] 同一工具已连续失败 {n} 次。停止用同样的参数重试："
+    "先 read_file / list_dir 核实现场，换一种方法；还是不行就如实向用户说明卡在哪里。"
+)
 
 # 长期记忆注入时的标题。写成指令而不是资料，模型才会真的照做
 MEMORY_HEADER = """## 长期记忆（来自以往任务，继续遵守）
@@ -170,6 +187,9 @@ class Agent:
         self.permission_label = "完全访问权限"
         # 是否处于完全访问权限（决定路径边界放不放工作区之外，见 OUTSIDE_RULE）
         self.full_access = True
+        # 连续失败计数：同一 agent 连续收到失败的工具结果时逐次升级提醒
+        # （FAIL_NOTE / FAIL_REPEAT_NOTE），见 run() 里的工具结果分发处
+        self.fail_streak = 0
 
     # ---------- 模型 ----------
     def set_model(self, key: str) -> None:
@@ -535,7 +555,23 @@ class Agent:
                     out = self._execute(tc.name, tc.arguments, auto_approve, file_log)
                     if tool_def is not None and tool_def.risk == SAFE:
                         call_cache[sig] = out
-                yield {"type": "tool_result", "name": tc.name, "output": out}
+
+                # 失败结果强呈现：错误/拒绝不能混在普通输出里被无视。
+                # [错误] 附上两条禁令（不许无视失败继续、不许未验证声称完成）；
+                # 连续失败第 2 次起升级为「换方法或如实说明」的硬提醒。
+                # [已拒绝] 用户已明确说不要，注脚换成「别重试」，避免鼓励硬刚。
+                failed = out.startswith("[错误]")
+                denied = out.startswith("[已拒绝]")
+                if failed:
+                    self.fail_streak += 1
+                    out = out + FAIL_NOTE
+                    if self.fail_streak >= 2:
+                        out += FAIL_REPEAT_NOTE.format(n=self.fail_streak)
+                else:
+                    if not denied:
+                        self.fail_streak = 0
+                yield {"type": "tool_result", "name": tc.name, "output": out,
+                       **({"failed": True} if (failed or denied) else {})}
                 _push({"role": "tool", "content": out})
 
         yield {"type": "error", "message": f"已达到最大步数 {self.cfg.max_steps}，任务未收敛，请拆小任务或提高上限。"}

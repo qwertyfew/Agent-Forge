@@ -25,6 +25,7 @@ from typing import Any, Iterator
 from .dispatcher import Dispatcher, SharedState, TaskSpec
 from .loop import Agent
 from .planner import KIND_DIM, KIND_LABEL, Subtask, kind_of, make_plan, needs_plan, plan_summary
+from . import verify as verify_gate
 
 # 首步与后续步骤的提示词模板。都强调"只做这一步"，否则模型会越界把后面的活也干了。
 STEP_FIRST = """【总体任务】
@@ -149,6 +150,7 @@ AGENT_TASK_TEMPLATE = """【总任务】
 {bridged}
 请只完成你负责的这个任务，不要越界去做别的任务。上面「进度」里是前面 agent 的结果摘要
 与产出文件；需要细节就直接 read_file 去读那些文件，不要凭空猜测。
+复用优先：项目里已有的工具、脚本、函数先用 find_tools / search_code 查证，已有能力不要重复实现。
 完成后用一两句话说明本步结果。
 """
 
@@ -175,6 +177,59 @@ def _mostly_chinese(text: str, ratio: float = 0.15) -> bool:
 def _worth_dispatch(message: str, pool_size: int) -> bool:
     """是否值得动用决策模型拆解：包含多个动作，或请求本身较长。"""
     return needs_plan(message, pool_size) or len((message or "").strip()) >= 60
+
+
+def _verify_gate(agent, message: str, holder: dict,
+                 auto_approve=None, stop_check=None):
+    """收尾验证闸门（系统侧强制）：模型只有解读权，没有裁定权。
+
+    - 任务书里声明了验证命令（如「验证：python tools/x.py」）→ 程序亲自运行，
+      真实结果通过 verify 事件播报；失败时给模型一轮修正机会（可修可如实说明），
+      之后无论模型总结说什么，都会在答复末尾附上程序写的系统侧验证报告。
+    - 没声明验证命令、但模型总结声称「验证通过」且全程没跑过 run_command →
+      在答复末尾追加「未经系统确认」声明。
+
+    holder 进出各带 {"summary", "convo"}：闸门可能改写总结（追加报告/被修正轮
+    重写），调用方从 holder 里取最终值。
+    """
+    cfg = agent.cfg
+    if not getattr(cfg, "verify_gate", True):
+        return
+    convo = holder.get("convo") or []
+    summary = holder.get("summary") or ""
+    cmd = verify_gate.extract_verify_cmd(message, cfg.workspace_root)
+    if cmd:
+        res = verify_gate.run_verify_cmd(cmd, cfg.workspace_root)
+        yield {
+            "type": "verify", "cmd": cmd, "ok": res["ok"],
+            "exit": res["code"], "duration": res["duration"],
+            "output": res["output"],
+        }
+        if not res["ok"]:
+            # 失败给一轮修正机会：能修就修（会重新跑验证看到真实通过），
+            # 修不了就如实说明。修正轮的产出无论是什么，报告照附——裁定权在系统。
+            prompt = verify_gate.CORRECTIVE_PROMPT.format(
+                cmd=cmd, verdict="失败", code=res["code"],
+                duration=res["duration"], output=res["output"],
+                summary=summary or "（无）",
+            )
+            for ev in agent.run(convo, prompt, auto_route=False,
+                                stop_check=stop_check, auto_approve=auto_approve):
+                k = ev.get("type")
+                if k in ("user", "route"):
+                    continue
+                if k == "assistant":
+                    convo = ev["history"]
+                    summary = (ev.get("content") or "").strip() or summary
+                yield ev
+        summary = (summary + "\n\n---\n"
+                   + verify_gate.report_block(cmd, res)).strip()
+    elif (verify_gate.claimed_verified(summary)
+          and not verify_gate.ran_verification(convo)):
+        summary = (summary + "\n\n---\n" + verify_gate.UNVERIFIED_NOTE).strip()
+    if summary != holder.get("summary"):
+        holder["summary"] = summary
+        holder["convo"] = convo
 
 
 def _topo_order(tasks: list[TaskSpec]) -> list[TaskSpec]:
@@ -508,8 +563,26 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
                 zh = dispatcher.translate(final, "Chinese")
                 if zh:
                     final = zh
+            # 收尾验证闸门在语言闸门之后：附上的系统侧报告随最终答复一起出去
+            holder = {"summary": final, "convo": final_convo}
+            yield from _verify_gate(agent, message, holder,
+                                    auto_approve=auto_approve, stop_check=stopped)
+            final = holder["summary"]
+            final_convo = holder["convo"]
             final_convo = [*final_convo, {"role": "assistant", "content": final}]
             yield {"type": "assistant", "content": final, "history": final_convo}
+    else:
+        # 没做汇总（单任务或关掉 synthesis）时同样要过闸门：拿最后一份历史
+        # 的末条助手正文当总结。
+        holder = {"summary": _last_assistant(final_convo), "convo": final_convo}
+        yield from _verify_gate(agent, message, holder,
+                                auto_approve=auto_approve, stop_check=stopped)
+        if holder["summary"] and holder["summary"] != _last_assistant(final_convo):
+            final_convo = holder["convo"]
+            yield {"type": "assistant", "content": holder["summary"],
+                   "history": final_convo}
+        else:
+            final_convo = holder["convo"]
 
     yield {"type": "complete", "steps": total, "multi": total >= 2}
 
@@ -744,6 +817,14 @@ def run_task(
 
         if failed:
             return
+
+    # 收尾验证闸门：验证命令系统亲自跑，谎报在这里现形（见 _verify_gate）
+    holder = {"summary": summary, "convo": hist}
+    yield from _verify_gate(agent, message, holder,
+                            auto_approve=auto_approve, stop_check=stopped)
+    if holder["summary"] != summary:
+        summary, hist = holder["summary"], holder["convo"]
+        yield {"type": "assistant", "content": summary, "history": hist}
 
     yield {"type": "complete", "steps": total, "multi": multi}
 

@@ -127,6 +127,9 @@ class Config:
     # 任务收尾的记忆自动沉淀（规则抽取 + 模型提炼）。关掉后仍保留两条手动通道：
     # 模型主动调 remember 工具、侧栏「记忆管理」手工增删。
     memory_autonote: bool = True
+    # 收尾验证闸门（agentforge/verify.py）：任务书声明了验证命令（「验证：xxx」）时，
+    # 任务结束前由系统亲自运行该命令、把真实结果附进最终答复；模型只有解读权。
+    verify_gate: bool = True
 
     # ---- 多 agent 调度（Dispatcher）----
     # 由一个本地决策模型把请求拆成【语义独立】的任务、指派执行 agent、维护共享进度，
@@ -234,6 +237,8 @@ class Config:
         cfg.rounds_hard = int(a.get("rounds_hard", 60))
         cfg.stream = bool(a.get("stream", True))
         cfg.memory_autonote = bool(a.get("memory_autonote", True))
+        # 收尾验证闸门：任务书里声明了验证命令时，收尾由系统亲自运行并播报真实结果
+        cfg.verify_gate = bool(a.get("verify_gate", True))
         relay = str(a.get("relay", "brief" if cfg.relay_brief else "full")).strip().lower()
         cfg.relay_brief = relay != "full"
 
