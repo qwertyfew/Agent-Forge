@@ -135,43 +135,58 @@ class Router:
             vals = [int(sc.get(d, 0) or 0) for d in dims]
             return min(vals) if vals else 0
 
+        # 默认会用的（已启用池内最佳）
         chosen = max(enabled, key=lambda e: (_combo(e), e.total))
+        # 允许自动选用的池：未开付费升级时只在本地区间内自动选，绝不擅自用付费模型
+        if self.allow_paid_upgrade:
+            pool = all_avail or enabled
+        else:
+            pool = [e for e in (all_avail or enabled) if getattr(e, "kind", "") != "paid"]
+        best = max(pool, key=lambda e: (_combo(e), e.total))
+        # 全局最强（含付费）——只在「超出授权范围」时用于提示
         strongest = max(all_avail or enabled, key=lambda e: (_combo(e), e.total))
-        chosen_score = _combo(chosen)
-        best_score = _combo(strongest)
-        gap = best_score - chosen_score
+
+        chosen_score0 = _combo(chosen)
+        chosen_name0 = chosen.display
+        chosen_score = chosen_score0
+        best_score = _combo(best)
+        strongest_score = _combo(strongest)
+        gap = best_score - chosen_score0
 
         notice = ""
         upgrade = False
-        # 默认模型在该维度偏弱，且存在明显更强的可用模型
-        if chosen_score < self.quality_threshold and gap >= 8 and strongest.key != chosen.key:
-            if strongest.kind == "paid":
-                # 付费模型：默认绝不自动用，只提示用户去启用
-                if not self.allow_paid_upgrade:
-                    notice = (f"该任务需要较强的{label}能力（{dim} 维度），当前选用 "
-                              f"{chosen.display} 仅 {chosen_score} 分；已启用模型中最强也仅为它。"
-                              f"如需更高质量，可在「可用模型」里启用 {strongest.display}"
-                              f"（{best_score} 分，付费）。")
+        auto = False
+        reason = (f"按能力路由：{label}类任务 → {dim} 维度，"
+                  f"默认 {chosen_name0}（{chosen_score0} 分）")
+
+        if self.allow_upgrade and best.key != chosen.key and best_score > chosen_score0:
+            # 池内就有更强的、且被授权自动选用 → 直接自动切换
+            upgrade = True
+            auto = True
+            chosen = best
+            chosen_score = best_score
+            reason = (f"按能力路由自动选用：{label}类任务 → {dim} 维度，"
+                      f"{chosen.display}（{chosen_score} 分）")
+            notice = (f"已按任务类型自动选用 {chosen.display}（{label}能力 {chosen_score} 分，"
+                      f"优于默认 {chosen_name0} 的 {chosen_score0} 分）")
+        elif best.key != chosen.key and best_score > chosen_score0:
+            # 能力路由开着但自动升级未授权 → 仅提示去开启对应的一键配置
+            if getattr(best, "kind", "") == "paid":
+                notice = (f"该任务需要较强的{label}能力（{dim} 维度）。当前默认 {chosen_name0} "
+                          f"仅 {chosen_score0} 分；全局最优是付费模型 {best.display}（{best_score} 分）。"
+                          f"在「可用模型」里点「自动配置最佳模型」即可让此类任务自动启用它。")
             else:
-                # 本地更强模型：未启用则建议启用；开启 allow_upgrade 则自动改用
-                if self.allow_upgrade and strongest.available:
-                    upgrade = True
-                    notice = (f"能力路由：该任务需较强{label}能力，已自动升级到 "
-                              f"{strongest.display}（{dim} {best_score} 分，优于 "
-                              f"{chosen.display} 的 {chosen_score} 分）。")
-                else:
-                    notice = (f"该任务需要较强的{label}能力（{dim} 维度），当前选用 "
-                              f"{chosen.display} 仅 {chosen_score} 分；存在更强的本地模型 "
-                              f"{strongest.display}（{best_score} 分，尚未启用）。"
-                              f"在「可用模型」里勾选它即可让此类任务自动落到它身上。")
+                notice = (f"该任务需要较强的{label}能力（{dim} 维度）。当前默认 {chosen_name0} "
+                          f"仅 {chosen_score0} 分；存在更强的本地模型 {best.display}（{best_score} 分）。"
+                          f"在「可用模型」里点「自动配置本地模型」即可让此类任务自动选用它。")
 
         return {
             "kind": kind, "dimension": dim, "dimension_label": label,
             "chosen_key": chosen.key, "chosen_name": chosen.display,
             "chosen_score": chosen_score,
             "best_key": strongest.key, "best_name": strongest.display,
-            "best_score": best_score, "gap": gap, "upgrade": upgrade,
+            "best_score": strongest_score, "gap": gap,
+            "upgrade": upgrade, "auto": auto,
             "notice": notice,
-            "reason": (f"按能力路由：{label}类任务 → {dim} 维度，"
-                       f"选用 {chosen.display}（{chosen_score} 分）"),
+            "reason": reason,
         }

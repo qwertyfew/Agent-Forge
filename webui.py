@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import queue
 import threading
 import time
@@ -525,8 +526,81 @@ class _Handler(BaseHTTPRequestHandler):
         # 结果落进 models.local.json，之后不再重复问。
         snap = self.store.snapshot(self._discover(), probe=ollama_probe(self.cli.client))
         snap["pool"] = self.store.summary_line()
+        snap["routing"] = {
+            "capability": bool(self.cfg.routing_capability),
+            "allow_upgrade": bool(self.cfg.routing_allow_upgrade),
+            "allow_paid_upgrade": bool(self.cfg.routing_allow_paid_upgrade),
+            "mode": ("best" if (self.cfg.routing_capability
+                                and self.cfg.routing_allow_upgrade
+                                and self.cfg.routing_allow_paid_upgrade)
+                     else "local" if (self.cfg.routing_capability
+                                      and self.cfg.routing_allow_upgrade)
+                     else "off"),
+        }
         snap.update(self._prompt_budget())
         return snap
+
+    def _write_routing(self, capability: bool, allow_upgrade: bool,
+                        allow_paid_upgrade: bool,
+                        quality_threshold: int | None = None) -> bool:
+        """把路由开关写回加载时用的配置文件（config.yaml 或 config.lanrun.yaml）。
+
+        已有则替换、没有则插入到 routing: 块下，尽量不动其它内容与注释。
+        返回是否成功写入。
+        """
+        p = getattr(self.cfg, "source_path", None)
+        if not p:
+            return False
+        p = Path(p)
+        if not p.exists():
+            return False
+        keys: dict[str, object] = {
+            "capability": capability,
+            "allow_upgrade": allow_upgrade,
+            "allow_paid_upgrade": allow_paid_upgrade,
+        }
+        if quality_threshold is not None:
+            keys["quality_threshold"] = int(quality_threshold)
+
+        def _fmt(v: object) -> str:
+            return str(v).lower() if isinstance(v, bool) else str(v)
+
+        text = p.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        missing = dict(keys)
+        out: list[str] = []
+        in_routing = False
+        for ln in lines:
+            m = re.match(r'^(\s*)routing\s*:\s*(.*)$', ln)
+            if m:
+                in_routing = True
+                out.append(ln)
+                continue
+            if in_routing:
+                km = re.match(r'^(\s{2})([\w-]+)\s*:\s*(.*)$', ln)
+                if km and km.group(2) in keys:
+                    key = km.group(2)
+                    out.append(f"{km.group(1)}{key}: {_fmt(keys[key])}")
+                    missing.pop(key, None)
+                    continue
+                # 遇到更浅的非空行即离开 routing 块
+                if ln.strip() and not ln.startswith('  '):
+                    in_routing = False
+            out.append(ln)
+        # 缺的 key 插到 routing: 行之后
+        if missing:
+            final: list[str] = []
+            for ln in out:
+                final.append(ln)
+                if re.match(r'^routing\s*:\s*(.*)$', ln):
+                    for key in ("capability", "allow_upgrade",
+                               "allow_paid_upgrade", "quality_threshold"):
+                        if key in missing:
+                            final.append(f"  {key}: {_fmt(keys.get(key, missing[key]))}")
+                            missing.pop(key, None)
+            out = final
+        p.write_text("\n".join(out) + "\n", encoding="utf-8")
+        return True
 
     def _prompt_budget(self) -> dict:
         """每轮请求的固定开销（系统提示 + 全部工具 schema）token 估算。
@@ -625,6 +699,30 @@ class _Handler(BaseHTTPRequestHandler):
                     return
                 note = ("已应用本地最佳配置（仅本地模型，付费模型已全部取消勾选）："
                         + "、".join(e.display for e in picks))
+
+            elif action == "auto_config":
+                scope = str(req.get("scope") or "local")
+                if scope == "best":
+                    # 自动配置最佳模型：能力路由开，自动升级到最强（含付费模型）
+                    self.store.apply_best()
+                    flags = {"capability": True, "allow_upgrade": True,
+                             "allow_paid_upgrade": True}
+                    note = "已开启「按任务类型自动选模型」· 含付费最佳模型"
+                else:
+                    # 自动配置本地模型：能力路由开，自动升级到最强本地模型（不用付费）
+                    self.store.apply_best_local()
+                    flags = {"capability": True, "allow_upgrade": True,
+                             "allow_paid_upgrade": False}
+                    note = "已开启「按任务类型自动选模型」· 仅本地模型"
+                self._write_routing(**flags)
+                # 同步到运行中的配置与路由实例，免得重启才生效
+                self.cfg.routing_capability = flags["capability"]
+                self.cfg.routing_allow_upgrade = flags["allow_upgrade"]
+                self.cfg.routing_allow_paid_upgrade = flags["allow_paid_upgrade"]
+                r = self.cli.router
+                r.capability_on = flags["capability"]
+                r.allow_upgrade = flags["allow_upgrade"]
+                r.allow_paid_upgrade = flags["allow_paid_upgrade"]
 
             elif action == "test":
                 eid = str(req.get("id") or "")
@@ -800,6 +898,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "best_key": cap_route.get("best_key"),
                     "best_name": cap_route.get("best_name"),
                     "best_score": cap_route.get("best_score"),
+                    "auto": cap_route.get("auto", False),
                     "reason": cap_route.get("reason", ""),
                     "notice": cap_route.get("notice", ""),
                 })

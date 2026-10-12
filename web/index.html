@@ -828,17 +828,18 @@
               <p>勾选要参与任务的模型，AgentForge 会把每个子任务分给该维度得分最高的那个。本地模型自动进入列表，付费模型填好厂商与 API Key 即可使用。</p>
             </div>
             <div class="pane-actions">
-              <button class="btn" id="btnBest" title="自动挑选覆盖最全、总分最高的组合">
+              <button class="btn" id="btnBest" title="开启按任务类型自动选模型：自动选用覆盖最全、含付费的最佳组合">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 13H11l-1 9 8.5-11H12z"/></svg>
-                一键应用最优配置
+                自动配置最佳模型
               </button>
-              <button class="btn" id="btnBestLocal" title="只在本地模型里挑选覆盖最全、总分最高的一组，付费模型全部取消勾选">
+              <button class="btn" id="btnBestLocal" title="开启按任务类型自动选模型：只在本地模型里自动选用最强者，绝不用付费模型">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
-                一键应用本地最佳配置
+                自动配置本地模型
               </button>
               <button class="btn" id="btnAll">全选</button>
               <button class="btn" id="btnNone">清空</button>
             </div>
+            <div class="routing-status sub" id="routingStatus"></div>
           </div>
 
           <div class="combo-card" id="comboCard"></div>
@@ -1379,20 +1380,22 @@ const ICON_LOCAL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" 
 function updateApplyButtons(){
   const bAll = $('btnBest'), bLocal = $('btnBestLocal');
   if(!bAll || !bLocal) return;
-  const on = (catalog && catalog.models ? catalog.models : []).filter(m=>m.enabled).map(m=>m.id);
-  const same = (ids)=>{
-    if(!Array.isArray(ids) || !ids.length || ids.length !== on.length) return false;
-    const s = new Set(on);
-    return ids.every(i=>s.has(i));
-  };
-  const allOn = same(catalog && catalog.best);
-  const localOn = same(catalog && catalog.best_local);
-  bAll.classList.toggle('primary', allOn);
-  bLocal.classList.toggle('primary', localOn);
-  bAll.innerHTML = ICON_BEST + ' 一键应用最优配置' + (allOn ? '<span class="onnow">生效中</span>' : '');
-  bLocal.innerHTML = ICON_LOCAL + ' 一键应用本地最佳配置' + (localOn ? '<span class="onnow">生效中</span>' : '');
-  bAll.title = allOn ? '这一套正在生效中' : '自动挑选覆盖最全、总分最高的组合（含付费模型）';
-  bLocal.title = localOn ? '这一套正在生效中' : '只在本地模型里挑选覆盖最全、总分最高的一组，付费模型全部取消勾选';
+  const rt = (catalog && catalog.routing) || {mode:'off'};
+  const mode = rt.mode || 'off';
+  const onBest = mode === 'best';
+  const onLocal = mode === 'local';
+  bAll.classList.toggle('primary', onBest);
+  bLocal.classList.toggle('primary', onLocal);
+  bAll.innerHTML = ICON_BEST + ' 自动配置最佳模型' + (onBest ? '<span class="onnow">生效中</span>' : '');
+  bLocal.innerHTML = ICON_LOCAL + ' 自动配置本地模型' + (onLocal ? '<span class="onnow">生效中</span>' : '');
+  bAll.title = onBest ? '按任务类型自动选模型（含付费最佳）正在生效' : '开启按任务类型自动选模型，自动选用覆盖最全、含付费的最佳组合';
+  bLocal.title = onLocal ? '按任务类型自动选模型（仅本地）正在生效' : '开启按任务类型自动选模型，只在本地模型里自动选用最强者';
+  const st = $('routingStatus');
+  if(st){
+    if(mode === 'best') st.textContent = '路由模式：自动配置最佳模型（按任务类型自动选，含付费）';
+    else if(mode === 'local') st.textContent = '路由模式：自动配置本地模型（按任务类型自动选，仅本地）';
+    else st.textContent = '路由模式：关闭（使用默认模型，偏弱时仅提示）';
+  }
 }
 
 function refreshModels(){
@@ -1736,22 +1739,22 @@ async function toggleModel(id, on, anchor){
 
 $('btnBest').onclick = async ()=>{
   const b = $('btnBest');
-  b.disabled = true; b.textContent = '计算中…';
-  const r = await postModels({action:'apply_best'});
+  b.disabled = true; b.textContent = '配置中…';
+  const r = await postModels({action:'auto_config', scope:'best'});
   b.disabled = false;
-  updateApplyButtons();          // 应用成功后高亮迁移到这颗按钮上
   if(r.error){ toast(b, r.error, 'bad'); return; }
-  toast(b, `已应用最优配置 · 共 ${(r.enabled || []).length} 个模型`, 'ok');
+  catalog = r; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons();
+  toast(b, `已自动配置最佳模型 · 按任务类型自动选模型已开启（含付费）`, 'ok');
 };
 
 $('btnBestLocal').onclick = async ()=>{
   const b = $('btnBestLocal');
-  b.disabled = true; b.textContent = '计算中…';
-  const r = await postModels({action:'apply_best_local'});
+  b.disabled = true; b.textContent = '配置中…';
+  const r = await postModels({action:'auto_config', scope:'local'});
   b.disabled = false;
-  updateApplyButtons();          // 应用成功后高亮迁移到这颗按钮上
   if(r.error){ toast(b, r.error, 'bad'); return; }
-  toast(b, `已应用本地最佳配置 · 仅本地模型 ${(r.enabled || []).length} 个`, 'ok');
+  catalog = r; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons();
+  toast(b, `已自动配置本地模型 · 按任务类型自动选模型已开启（仅本地）`, 'ok');
 };
 $('btnAll').onclick = async ()=>{
   const b = $('btnAll');
@@ -3210,15 +3213,20 @@ function handleTaskEvent(ev, data){
       }
     }
     else if(ev === 'route'){
-      // 能力路由决策：把「为什么是这个模型」说清楚；若默认模型偏弱且有更强的，
-      // 用更显眼的提示引导用户去启用——直接回应「瓶颈在模型能力」的疑虑
+      // 能力路由：先判断任务类型，再决定用哪个模型。
+      // auto=true 表示已按任务类型自动选用了更强的模型；否则偏弱时只给提示引导开启一键配置
       const dim = data.dimension_label || '能力';
-      let note = `按能力路由：<b>${esc(dim)}</b>类任务 → ${esc(data.dimension||'')} 维度，`
-        + `选用 <b>${esc(data.chosen_name||'')}</b>(${data.chosen_score||'?'})`;
-      addPillNote(note);
-      if(data.notice){
-        addPillNote(esc(data.notice), true);
-        toast(null, '路由提示：' + data.notice, 'mute');
+      if(data.auto){
+        addPillNote(`按能力路由自动选用：<b>${esc(dim)}</b>类任务 → ${esc(data.dimension||'')} 维度，`
+          + `已自动选用 <b>${esc(data.chosen_name||'')}</b>（${data.chosen_score||'?'} 分）`);
+        toast(null, '已按任务类型自动选用 ' + (data.chosen_name||''), 'ok');
+      } else {
+        addPillNote(`按能力路由：<b>${esc(dim)}</b>类任务 → ${esc(data.dimension||'')} 维度，`
+          + `选用 <b>${esc(data.chosen_name||'')}</b>（${data.chosen_score||'?'} 分）`);
+        if(data.notice){
+          addPillNote(esc(data.notice), true);
+          toast(null, '路由提示：' + data.notice, 'mute');
+        }
       }
     }
     else if(ev === 'thinking'){

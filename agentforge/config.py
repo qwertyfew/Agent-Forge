@@ -133,6 +133,8 @@ class Config:
     skill_auto_max_chars: int = 1600     # 自动注入时正文截断长度（完整性用 use_skill 取）
 
     session_dir: Path = field(default_factory=lambda: ROOT / ".sessions")
+    # 加载时所用配置文件的路径（运行时回写路由开关用，如 config.yaml / config.lanrun.yaml）
+    source_path: Path | None = None
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Config":
@@ -143,6 +145,7 @@ class Config:
                 raw = yaml.safe_load(f) or {}
 
         cfg = cls()
+        cfg.source_path = path
 
         o = raw.get("ollama", {}) or {}
         cfg.ollama_host = _expand(o.get("host", cfg.ollama_host)).rstrip("/")
