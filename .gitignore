@@ -36,5 +36,7 @@ models.local.json
 .tmp_research/
 .tmp_models_test.json
 
-# 工作区记忆（随任务增长，每台机器不同）
-.agentforge/
+# 工作区运行期状态：任务笔记、上传附件每次运行都在变，不入库。
+# 例外：长期记忆 memory.md 只有几百字节且跨机器通用，随仓库同步。
+.agentforge/*
+!.agentforge/memory.md
