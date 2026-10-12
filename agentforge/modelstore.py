@@ -26,7 +26,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import Config, ModelSpec
+from .config import Config, ModelSpec, DEFAULT_CONFIG_PATH
 from .scores import DIMENSIONS, DIM_KEYS, combo, lookup, total_of
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -471,6 +471,53 @@ class ModelStore:
         self.catalog()
         self.save()
         return len(self.paid) < before
+
+    def remove_model(self, entry_id: str, delete_file: bool = True,
+                     client=None) -> dict:
+        """移除一个模型（付费在线模型或本地模型），供设置页的「移除」按钮调用。
+
+        - 付费模型：等价于 remove_paid——从 models.json 的付费列表里删掉，密钥一并移除。
+        - 本地模型：``delete_file=True`` 时让 Ollama 真正删掉它（`ollama rm`，
+          释放磁盘上的权重文件）；再从配置文件的声明里摘掉（显式声明的本地模型
+          若不摘，下次 catalog() 又会被加回来），最后清出可用目录与启用列表。
+
+        返回 ``{"ok": bool, "kind": "local"/"paid", ...}``。免费发现得到的本地模型
+        不在配置文件里声明，删除后只会从 Ollama 消失，不会再被重新发现。
+        """
+        entry = self.find(entry_id)
+        if entry is None:
+            return {"ok": False, "error": "未找到该模型"}
+
+        if entry.kind == "paid":
+            ok = self.remove_paid(entry_id)
+            return {"ok": ok, "kind": "paid"}
+
+        # ---- 本地模型 ----
+        deleted_file = False
+        if delete_file and client is not None:
+            try:
+                deleted_file = bool(client.delete_model(entry.name))
+            except Exception:  # noqa: BLE001
+                deleted_file = False
+
+        # 从配置文件里摘掉声明。source_path 是本次实际加载的文件
+        # （通常是 config.lanrun.yaml），DEFAULT_CONFIG_PATH 是仓库模板 config.yaml；
+        # 两处都试一遍，哪份声明了就从哪份删掉。
+        removed_config = False
+        for p in (self.cfg.source_path, DEFAULT_CONFIG_PATH):
+            if p and Config.remove_local_model_entry(p, entry.name):
+                removed_config = True
+
+        self.cfg.unregister_model(entry.key)
+        if self.enabled_ids:
+            self.enabled_ids = [i for i in self.enabled_ids if i != entry_id]
+
+        self.catalog()
+        self.save()
+        return {
+            "ok": True, "kind": "local",
+            "deleted_file": deleted_file, "removed_config": removed_config,
+        }
 
     def set_scores(self, entry_id: str, scores: dict) -> None:
         """手动覆盖某个模型的维度分（内置跑分不认同时的出口）。"""

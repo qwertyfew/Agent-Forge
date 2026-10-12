@@ -42,6 +42,10 @@ class ModelSpec:
     num_predict: int = 0
     think: bool | None = None
     desc: str = ""
+    # 这个模型单次调用后把权重在显存里留多久（空 = 用 ollama.keep_alive 的全局值）。
+    # 决策模型这类「调用一次就闲着」的模型可以设 "0"，用完立刻释放显存，
+    # 给执行模型腾地方——16GB 卡上两个本地模型常驻会互相挤。
+    keep_alive: str = ""
 
     # ---- 多 provider 支持 ----
     # ollama = 本机 Ollama；openai = OpenAI 兼容接口；anthropic = Claude 官方接口
@@ -84,6 +88,9 @@ class Config:
     ollama_host: str = "http://localhost:11434"
     keep_alive: str = "15m"
     request_timeout: int = 900
+    # 本地模型串行执行：同一时刻只跑一个本地模型，避免两个并发任务同时压 Ollama
+    # 抢 GPU/显存互相拖累。付费/在线模型不受此限制，可并行。
+    local_serial: bool = True
 
     models: dict[str, ModelSpec] = field(default_factory=dict)
     routing_default: str = "general"
@@ -110,9 +117,35 @@ class Config:
 
     max_steps: int = 40
     max_tool_output_chars: int = 12000
-    keep_recent_tool_results: int = 6
+    keep_recent_tool_results: int = 8
+    # 轮次预算：软预算 = 从这轮起每轮提醒「该收敛了」；硬上限 = 撤掉工具强制交卷。
+    # 反复迭代的主要出口：不给预算，小模型能把一个简单任务探索 50+ 轮。
+    rounds_soft: int = 30
+    rounds_hard: int = 60
     stream: bool = True
     relay_brief: bool = True           # 多步任务交接时只传「计划+摘要+文件」，不传全量历史
+
+    # ---- 多 agent 调度（Dispatcher）----
+    # 由一个本地决策模型把请求拆成【语义独立】的任务、指派执行 agent、维护共享进度，
+    # 任务在 agent 之间接力流转。模型不可用或输出无法解析时自动回退到规则拆解。
+    dispatcher_enabled: bool = True
+    # 决策/调度模型。默认 Qwen3-14B：拆解与交接能力强、中文好，Q4 量化约 9GB，
+    # 16GB 显存能跑（32B 的 Q4 约 20GB，16GB 卡放不下）。可在「可用模型管理」里
+    # 换成任意本地或在线模型（留空=关闭调度，回退到规则拆解）。
+    dispatcher_model: str = "qwen3.5:4b"
+    dispatcher_max_tasks: int = 6
+    # 独立任务并行执行（互不相关的任务同时跑，减少模型闲置）。只在「完全访问权限」
+    # 下生效——并发任务各自弹审批框会互相打架。本地模型仍受 ollama.local_serial 串行约束，
+    # 所以并行的收益主要在在线/付费模型上。
+    dispatcher_parallel: bool = True
+    dispatcher_translate: bool = True      # 弱中文模型做翻译桥接（先译入、结果再译回）
+    # 中文维度低于这个分的执行模型才做翻译桥接。桥接要多花两次调度调用，只有真
+    # 的不会中文的模型才值得；阈值定太高会让每个本地模型都白白绕一圈。
+    dispatcher_bridge_threshold: int = 55
+    # 是否允许决策模型自己动手执行「简单对话」类任务（闲聊/解释，不碰工具不做计算）。
+    # 工具/代码/数学/写作/分析这类要真本事的任务无论开关如何都不会派给决策模型。
+    dispatcher_execute_simple: bool = True
+    dispatcher_synthesis: bool = True      # 收尾由决策模型把各 agent 结果汇总成一份答复
 
     # ---- 工具按需下发（省固定开销，见 agentforge/toolselect.py）----
     tools_lazy: bool = True            # True = 只下发核心 + 关键词命中的工具
@@ -151,6 +184,7 @@ class Config:
         cfg.ollama_host = _expand(o.get("host", cfg.ollama_host)).rstrip("/")
         cfg.keep_alive = str(o.get("keep_alive", cfg.keep_alive))
         cfg.request_timeout = int(o.get("request_timeout", cfg.request_timeout))
+        cfg.local_serial = bool(o.get("local_serial", cfg.local_serial))
 
         for key, spec in (raw.get("models", {}) or {}).items():
             cfg.models[key] = ModelSpec(
@@ -163,6 +197,7 @@ class Config:
                 num_predict=int(spec.get("num_predict", 0)),
                 think=spec.get("think", None),
                 desc=spec.get("desc", ""),
+                keep_alive=str(spec.get("keep_alive", "") or ""),
             )
 
         r = raw.get("routing", {}) or {}
@@ -191,10 +226,24 @@ class Config:
         a = raw.get("agent", {}) or {}
         cfg.max_steps = int(a.get("max_steps", 40))
         cfg.max_tool_output_chars = int(a.get("max_tool_output_chars", 12000))
-        cfg.keep_recent_tool_results = int(a.get("keep_recent_tool_results", 6))
+        cfg.keep_recent_tool_results = int(a.get("keep_recent_tool_results", 8))
+        cfg.rounds_soft = int(a.get("rounds_soft", 30))
+        cfg.rounds_hard = int(a.get("rounds_hard", 60))
         cfg.stream = bool(a.get("stream", True))
         relay = str(a.get("relay", "brief" if cfg.relay_brief else "full")).strip().lower()
         cfg.relay_brief = relay != "full"
+
+        d = a.get("dispatcher", {}) or {}
+        cfg.dispatcher_enabled = bool(d.get("enabled", cfg.dispatcher_enabled))
+        cfg.dispatcher_model = str(d.get("model", cfg.dispatcher_model))
+        cfg.dispatcher_max_tasks = int(d.get("max_tasks", cfg.dispatcher_max_tasks))
+        cfg.dispatcher_parallel = bool(d.get("parallel", cfg.dispatcher_parallel))
+        cfg.dispatcher_translate = bool(d.get("translate", cfg.dispatcher_translate))
+        cfg.dispatcher_bridge_threshold = int(
+            d.get("bridge_threshold", cfg.dispatcher_bridge_threshold))
+        cfg.dispatcher_execute_simple = bool(
+            d.get("execute_simple", cfg.dispatcher_execute_simple))
+        cfg.dispatcher_synthesis = bool(d.get("synthesis", cfg.dispatcher_synthesis))
 
         t = raw.get("tools", {}) or {}
         cfg.tools_lazy = bool(t.get("lazy", cfg.tools_lazy))
@@ -244,3 +293,35 @@ class Config:
 
     def unregister_model(self, key: str) -> None:
         self.models.pop(key, None)
+
+    @staticmethod
+    def remove_local_model_entry(path: str | Path, model_name: str) -> bool:
+        """从配置文件里删除一个本地模型声明（按 name 匹配对应的 key）。返回是否删到。
+
+        仅用于「移除本地模型」：把 config 里显式声明的本地模型条目也一并摘掉。
+        否则下次 catalog() 又会按配置把它加回可用目录（显示成「未安装」），
+        用户就会觉得「明明删了怎么还在」。找不到该模型时原样返回、不写文件。
+        """
+        path = Path(path)
+        if not path.exists():
+            return False
+        try:
+            raw: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (yaml.YAMLError, OSError):
+            return False
+        models = raw.get("models")
+        if not isinstance(models, dict):
+            return False
+        hit = None
+        for k, v in models.items():
+            if isinstance(v, dict) and v.get("name") == model_name:
+                hit = k
+                break
+        if hit is None:
+            return False
+        models.pop(hit)
+        path.write_text(
+            yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        return True

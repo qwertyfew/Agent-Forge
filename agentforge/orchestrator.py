@@ -18,8 +18,12 @@
 
 from __future__ import annotations
 
+import queue
+import threading
 from typing import Any, Iterator
 
+from .dispatcher import Dispatcher, SharedState, TaskSpec
+from .loop import Agent
 from .planner import KIND_DIM, KIND_LABEL, Subtask, kind_of, make_plan, needs_plan, plan_summary
 
 # 首步与后续步骤的提示词模板。都强调"只做这一步"，否则模型会越界把后面的活也干了。
@@ -129,6 +133,380 @@ def _single_task(message: str, entries: list[dict]) -> Subtask:
     )
 
 
+# ---------------------------------------------------------------- 多 agent 编排
+
+# 交给某个 agent 的任务提示。强调「只做你这一个任务」，并附上前面 agent 的进度简报。
+AGENT_TASK_TEMPLATE = """【总任务】
+{message}
+
+【你负责第 {index}/{total} 个任务】{title}
+任务要求：{goal}
+所需能力：{capability}
+交接说明：{handoff}
+
+【前面 agent 的进度】
+{brief}
+{bridged}
+请只完成你负责的这个任务，不要越界去做别的任务。上面「进度」里是前面 agent 的结果摘要
+与产出文件；需要细节就直接 read_file 去读那些文件，不要凭空猜测。
+完成后用一两句话说明本步结果。
+"""
+
+# 翻译桥接时附加的说明：让弱中文模型放心用英文干活。
+BRIDGE_NOTE = """
+【注意】你不太擅长处理中文，本任务的输入已由调度器翻译成英文，请用英文完成；
+你的产出会被调度器译回中文交给用户。"""
+
+BRIDGE_CN_THRESHOLD = 70      # 中文维度低于此分的模型才做翻译桥接
+
+
+def _has_cjk(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
+
+
+def _mostly_chinese(text: str, ratio: float = 0.15) -> bool:
+    s = text or ""
+    if not s:
+        return False
+    cjk = sum(1 for ch in s if "\u4e00" <= ch <= "\u9fff")
+    return cjk / max(len(s), 1) >= ratio
+
+
+def _worth_dispatch(message: str, pool_size: int) -> bool:
+    """是否值得动用决策模型拆解：包含多个动作，或请求本身较长。"""
+    return needs_plan(message, pool_size) or len((message or "").strip()) >= 60
+
+
+def _topo_order(tasks: list[TaskSpec]) -> list[TaskSpec]:
+    """按依赖关系排执行顺序（同批任务保持原序）；依赖缺失/成环时直接放行，避免卡死。"""
+    remaining = list(tasks)
+    done: set[str] = set()
+    ordered: list[TaskSpec] = []
+    guard = 0
+    while remaining and guard < 1000:
+        guard += 1
+        ready = [t for t in remaining if all(d in done for d in t.depends_on)]
+        if not ready:
+            ready = [remaining[0]]
+        for t in ready:
+            remaining.remove(t)
+            ordered.append(t)
+            done.add(t.id)
+    return ordered
+
+
+def _is_local_model(agent, model_key: str) -> bool:
+    try:
+        return getattr(agent.cfg.model(model_key), "kind", "local") == "local"
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _ready_batch(tasks: list[TaskSpec], done: set[str]) -> list[TaskSpec]:
+    """取出当前可执行的一批任务（依赖都已完成的算就绪）。
+
+    依赖成环或指向不存在的任务时，就绪集合会为空——这时退回队首一个任务，
+    宁可慢一点也不能卡死。
+    """
+    ready = [t for t in tasks if all(d in done for d in t.depends_on)]
+    return ready or [tasks[0]]
+
+
+def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
+                    message: str, dispatcher: Dispatcher,
+                    stop_check=None, auto_approve: bool | None = None,
+                    file_log: list | None = None) -> Iterator[dict[str, Any]]:
+    """多 agent 编排：决策模型拆解 → 共享黑板 → 任务在 agent 之间流转。
+
+    调度模型先把请求拆成若干【语义独立】的任务并指派执行 agent，每个 agent 都
+    拿到「共享进度简报」，因此后面的 agent 不会从头开始。执行分两种：
+
+    - 串行接力（默认）：一个任务跑完再跑下一个，上下文一路继承。
+    - 并行（dispatcher_parallel 且处于完全访问权限）：同一批就绪的**互不相关**
+      任务同时跑，各自一个 agent 实例、各自一路流式输出（事件带 task_id，前端按
+      task 分行渲染）。本地模型受两道闸约束——llm 层的请求锁 + 这里的「本地闸门」
+      （local_serial 打开时同一时刻只有一个本地模型任务在跑），在线模型不受影响。
+
+    冲突处理：并行任务写同一个文件时由 permissions.claim_write 排队写入；跑完
+    一批再检出重叠写入并发 conflict 事件提醒用户核对。
+
+    事件与单模型路径兼容（plan/assign/subtask/delta/…），另加 dispatch / task_done /
+    bridge / conflict。
+    """
+    stopped = stop_check or (lambda: False)
+    plan = dispatcher.plan(message, entries)
+    ordered = _topo_order(plan.tasks)
+    if not ordered:
+        return
+    total = len(ordered)
+    # 让 index 与真实执行顺序一致（拓扑排序可能打乱原计划次序），前端计划卡
+    # 与 assign 事件才能对上号
+    for i, t in enumerate(ordered):
+        t.index = i + 1
+
+    # 并行前提：① 配置允许；② 完全访问权限——默认权限下每次写文件/执行命令都要
+    # 人工确认，多路同时弹确认会互相打架，所以退回串行接力。
+    full_access = auto_approve is True or bool(getattr(agent.guard, "auto_approve_all", False))
+    parallel_on = bool(getattr(agent.cfg, "dispatcher_parallel", True)) and full_access
+
+    yield {
+        "type": "dispatch",
+        "tasks": [t.as_dict() for t in ordered],
+        "rationale": plan.rationale,
+        "source": plan.source,
+        "dispatcher": plan.dispatcher_name,
+        "multi": total >= 2,
+        "parallel": parallel_on and total >= 2,
+        "local_serial": bool(getattr(agent.cfg, "local_serial", True)),
+    }
+    if total >= 2:
+        yield {"type": "plan", "subtasks": [t.as_dict() for t in ordered],
+               "summary": plan.summary()}
+
+    state = SharedState(message)
+    state.register(ordered)
+
+    weak_cn = {e["key"]: int((e.get("scores") or {}).get("chinese", 100)) for e in entries}
+    translate_on = bool(getattr(agent.cfg, "dispatcher_translate", True))
+    cn_threshold = int(getattr(agent.cfg, "dispatcher_bridge_threshold", BRIDGE_CN_THRESHOLD))
+
+    base_convo = list(history)
+    # 本地闸门：开启「本地串行」时，同一时刻至多一个本地模型任务在跑，避免两个
+    # 本地模型同时驻留显存互相拖累。在线模型不受影响，真正并行。
+    local_gate = threading.Semaphore(1) if getattr(agent.cfg, "local_serial", True) else None
+
+    shared_log: list = file_log if file_log is not None else []
+    log_lock = threading.Lock()
+    sink: dict[str, dict] = {}          # task_id -> {"files": [...], "failed": bool, "convo": [...]}
+    hist_holder: dict = {"convo": base_convo}   # 串行接力时最后一份完整历史
+
+    def spawn_agent():
+        """给并行任务起一个独立的 Agent：Agent 持有 per-run 可变状态，不能共用。"""
+        return Agent(agent.cfg, agent.client, agent.registry, agent.guard,
+                     agent.router, skill_registry=agent.skills, hub=agent.hub)
+
+    def one_task(t: TaskSpec, ag, convo_in: list[dict]) -> Iterator[dict]:
+        """跑一个任务；事件原样产出，结果写进 sink。串行直用，也可在线程里跑。"""
+        # 模型可能刚从设置里被删掉，退回池内第一个可用模型
+        if t.model_key not in agent.cfg.models:
+            t.model_key = entries[0]["key"]
+            t.model_name = entries[0]["name"]
+
+        yield {
+            "type": "assign",
+            "index": t.index, "total": total,
+            "model_key": t.model_key, "model_name": t.model_name,
+            "kind": t.kind, "kind_label": KIND_LABEL.get(t.kind, t.kind),
+            "reason": t.reason, "title": t.title, "score": t.score,
+            "multi": total >= 2, "task_id": t.id,
+            "reassigned": bool(getattr(t, "reassigned", False)),
+            "role": f"{KIND_LABEL.get(t.kind, t.kind)} agent",
+            "capability": t.capability,
+            "depends_on": list(t.depends_on),
+            "handoff": t.handoff,
+        }
+
+        state.start(t.id)
+        brief = state.brief(t)
+
+        # 能力桥接：执行模型中文很弱、任务又需要中文时，先把输入译成英文
+        goal = t.goal
+        bridged = False
+        if (translate_on and _has_cjk(goal)
+                and weak_cn.get(t.model_key, 100) < cn_threshold):
+            en = dispatcher.translate(goal, "English")
+            if en and en != goal:
+                goal = en
+                bridged = True
+                yield {"type": "bridge", "task_id": t.id, "to": "English",
+                       "reason": f"{t.model_name} 中文能力较弱，调度器已把任务译成英文"}
+
+        prompt = AGENT_TASK_TEMPLATE.format(
+            message=message, index=t.index, total=total, title=t.title,
+            goal=goal, capability=t.capability or "（未特别指定）",
+            handoff=t.handoff or "（无）", brief=brief,
+            bridged=BRIDGE_NOTE if bridged else "",
+        )
+        yield {"type": "subtask", "index": t.index, "total": total,
+               "text": t.goal, "task_id": t.id}
+
+        ag.set_model(t.model_key)
+        local = _is_local_model(agent, t.model_key)
+        gate = local_gate if (local and local_gate is not None) else None
+        if gate is not None:
+            gate.acquire()          # 本地模型排队；在线模型直接过
+
+        local_log: list = []
+        summary = ""
+        failed = False
+        convo = list(convo_in)
+        try:
+            for ev in ag.run(convo, prompt, auto_route=False, stop_check=stopped,
+                             auto_approve=auto_approve, file_log=local_log):
+                k = ev.get("type")
+                if k in ("user", "route"):
+                    continue                       # 用户气泡本地渲染；路由由编排层决定
+                if k == "assistant":
+                    convo = ev["history"]
+                    summary = (ev.get("content") or "").strip()
+                if k == "error":
+                    failed = True
+                if k == "stopped":
+                    yield {"type": "history", "messages": ev.get("history") or convo}
+                    yield {"type": "stopped", "steps": t.index, "total": total,
+                           "reason": ev.get("reason") or "用户停止"}
+                    return
+                if k in ("delta", "thinking", "tool_start", "tool_result", "stats", "step"):
+                    ev = {**ev, "task_id": t.id}
+                yield ev
+        finally:
+            if gate is not None:
+                gate.release()
+
+        # 桥接后把结果译回中文，保证给用户的是中文
+        if bridged and summary and not _mostly_chinese(summary):
+            zh = dispatcher.translate(summary, "Chinese")
+            if zh:
+                summary = zh
+
+        new_files: list[str] = []
+        for rec in local_log:
+            p = str(rec.get("path") or "")
+            if p and p not in new_files:
+                new_files.append(p)
+        if local_log:
+            with log_lock:                  # 各任务的产出文件合并进总台账
+                shared_log.extend(local_log)
+        final_line = summary or _last_assistant(convo)
+        state.finish(t.id, final_line, new_files, status="error" if failed else "done")
+        sink[t.id] = {"files": new_files, "failed": failed, "convo": convo}
+        hist_holder["convo"] = convo
+        yield {"type": "task_done", "task_id": t.id, "index": t.index, "total": total,
+               "status": "error" if failed else "done", "title": t.title,
+               "summary": final_line, "files": new_files}
+
+    def conflict_events(batch: list[TaskSpec]):
+        """一批并行任务都改了同一个文件时明确告警（写入已被排队，但结果要核对）。"""
+        owner: dict[str, str] = {}
+        name_of = {t.id: t.title for t in ordered}
+        for t in batch:
+            for p in (sink.get(t.id, {}).get("files") or []):
+                if p in owner and owner[p] != t.id:
+                    yield {"type": "conflict", "path": p,
+                           "tasks": [name_of.get(owner[p], owner[p]),
+                                     name_of.get(t.id, t.id)],
+                           "note": "两个并行任务都改了同一个文件，已按先后顺序串行写入，请核对最终内容"}
+                else:
+                    owner[p] = t.id
+
+    def run_parallel(wave: list[TaskSpec]) -> Iterator[dict]:
+        """同一批就绪任务并行跑：各自 agent 实例，事件经队列汇聚后按到达顺序产出。"""
+        q: queue.Queue = queue.Queue()
+        done_marker = object()
+
+        def worker(t: TaskSpec) -> None:
+            try:
+                ag = spawn_agent()
+                for ev in one_task(t, ag, base_convo):
+                    q.put(ev)
+            except Exception as e:  # noqa: BLE001  单个任务崩了不该拖垮同批其它任务
+                q.put({"type": "error", "task_id": t.id,
+                       "message": f"{t.title}：{type(e).__name__}: {e}"})
+                sink.setdefault(t.id, {"files": [], "failed": True})
+            finally:
+                q.put(done_marker)
+
+        for t in wave:
+            threading.Thread(target=worker, args=(t,), daemon=True).start()
+
+        pending = len(wave)
+        stopping = False
+        while pending > 0:
+            if stopping:
+                try:
+                    ev = q.get(timeout=0.2)     # 停止后只收尾，不再转发
+                except queue.Empty:
+                    continue
+            else:
+                ev = q.get()
+            if ev is done_marker:
+                pending -= 1
+                continue
+            if not stopping and stopped():
+                stopping = True
+                continue
+            if not stopping:
+                yield ev
+
+    def run_serial() -> Iterator[dict]:
+        convo = base_convo
+        remaining = list(ordered)
+        done_ids: set[str] = set()
+        while remaining:
+            if stopped():
+                yield {"type": "history",
+                       "messages": convo or [{"role": "user", "content": message}]}
+                yield {"type": "stopped", "steps": len(done_ids), "total": total,
+                       "reason": "用户停止"}
+                return
+            t = _ready_batch(remaining, done_ids)[0]
+            remaining = [x for x in remaining if x is not t]
+            for ev in one_task(t, agent, convo):
+                if ev.get("type") == "assistant":
+                    convo = ev["history"]
+                yield ev
+                if ev.get("type") == "stopped":
+                    return
+            done_ids.add(t.id)
+            if sink.get(t.id, {}).get("failed"):
+                return                          # 接力链上一步失败，后面的不再硬跑
+
+    if not parallel_on or total == 1:
+        yield from run_serial()
+    else:
+        remaining = list(ordered)
+        done_ids: set[str] = set()
+        while remaining:
+            if stopped():
+                yield {"type": "history",
+                       "messages": base_convo or [{"role": "user", "content": message}]}
+                yield {"type": "stopped", "steps": len(done_ids), "total": total,
+                       "reason": "用户停止"}
+                return
+            wave = _ready_batch(remaining, done_ids)
+            remaining = [x for x in remaining if x not in wave]
+            if len(wave) > 1:
+                yield from run_parallel(wave)
+            else:
+                for ev in one_task(wave[0], agent, base_convo):
+                    yield ev
+                    if ev.get("type") == "stopped":
+                        return
+            yield from conflict_events(wave)
+            done_ids.update(t.id for t in wave)
+            # 这批里某个任务失败不影响别的批（它们彼此独立），交给收尾汇总时如实说明
+
+    # 完整历史：串行接力时最后一份 convo 已包含全部；并行时各任务历史相互独立，
+    # 需要按任务顺序把各自新增的部分拼回去（否则下一次对话会丢掉它们做过的事）。
+    if parallel_on and total > 1:
+        final_convo = list(base_convo)
+        for t in ordered:
+            c = sink.get(t.id, {}).get("convo") or []
+            if len(c) > len(base_convo):
+                final_convo.extend(c[len(base_convo):])
+    else:
+        final_convo = hist_holder["convo"]
+
+    # 收尾：决策模型把各 agent 的结果汇总成一份答复（多任务时才做）
+    if total >= 2 and getattr(agent.cfg, "dispatcher_synthesis", True):
+        final = dispatcher.synthesize(message, state.result_items())
+        if final:
+            final_convo = [*final_convo, {"role": "assistant", "content": final}]
+            yield {"type": "assistant", "content": final, "history": final_convo}
+
+    yield {"type": "complete", "steps": total, "multi": total >= 2}
+
+
 def run_task(
     agent,
     store,
@@ -136,6 +514,7 @@ def run_task(
     message: str,
     auto_plan: bool = True,
     model_key: str = "",
+    preferred_key: str = "",
     stop_check=None,
     auto_approve: bool | None = None,
     file_log: list | None = None,
@@ -144,6 +523,9 @@ def run_task(
 
     model_key 非空且不是 "auto" 时表示用户手动指定了模型：跳过自动分配，
     所有步骤钉在该模型上执行。
+
+    preferred_key 是能力路由建议的「优先模型」：不视为手动钉定，调度模型可用时
+    仍由它按能力重新指派；只有调度模型不可用时才退化为整体使用该优先模型。
 
     stop_check 返回 True 时在下一个步骤边界停下，已完成的步骤产出照常保留。
 
@@ -174,6 +556,17 @@ def run_task(
         pinned = {"id": found.id, "key": found.key, "name": found.display,
                   "scores": found.scores, "total": found.total}
 
+    # 能力路由的自动升级只当作「优先模型」：它不阻断多 agent 调度，也不等同于
+    # 用户手动钉模型——只有手动钉（model_key）才跳过自动分配。调度模型可用时，
+    # 由它按能力重新指派更合适；不可用时才退化为整体使用这个优先模型。
+    preferred: dict | None = None
+    pref_key = (preferred_key or "").strip()
+    if pref_key and pref_key != "auto" and not pinned:
+        f = store.find_any(pref_key)
+        if f is not None and f.available:
+            preferred = {"id": f.id, "key": f.key, "name": f.display,
+                         "scores": f.scores, "total": f.total}
+
     entries = _entries_of(pool)
     if not entries:
         yield {
@@ -197,6 +590,22 @@ def run_task(
         ),
     }
 
+    # 多 agent：由本地决策模型拆解 → 指派 → 接力。仅在未手动指定模型、且请求
+    # 值得拆解（多动作或较长）时启用；决策模型不可用时自动落回下面的规则快路。
+    if (auto_plan and not pinned
+            and getattr(agent.cfg, "dispatcher_enabled", False)
+            and _worth_dispatch(message, len(entries))):
+        try:
+            disp = Dispatcher(agent.cfg, agent.hub, store)
+        except Exception:  # noqa: BLE001
+            disp = None
+        if disp is not None and disp.available():
+            yield from run_multi_agent(
+                agent, store, entries, history, message, disp,
+                stop_check=stop_check, auto_approve=auto_approve, file_log=file_log,
+            )
+            return
+
     plan: list[Subtask] = []
     if auto_plan and needs_plan(message, len(entries)):
         plan = [s for s in make_plan(message, entries) if (s.detail or "").strip()]
@@ -211,6 +620,12 @@ def run_task(
             st.model_name = pinned["name"]
             st.model_id = pinned["id"]
             st.reason = "手动指定模型"
+    elif preferred:
+        for st in plan:
+            st.model_key = preferred["key"]
+            st.model_name = preferred["name"]
+            st.model_id = preferred["id"]
+            st.reason = "能力路由自动升级"
 
     if multi:
         yield {
@@ -326,4 +741,4 @@ def run_task(
     yield {"type": "complete", "steps": total, "multi": multi}
 
 
-__all__ = ["run_task"]
+__all__ = ["run_task", "run_multi_agent"]

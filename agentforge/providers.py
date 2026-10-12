@@ -85,6 +85,80 @@ class OpenAIClient:
         out["max_tokens"] = np if np > 0 else 8192
         return out
 
+    # ---------- 格式转换 ----------
+    @staticmethod
+    def _convert_messages(messages: list[dict]) -> list[dict]:
+        """把内部历史转成 OpenAI 兼容接口要求的形状。
+
+        内部历史里 `assistant.tool_calls[].function.arguments` 是 **dict**（Ollama 原生
+        就吃这个格式），但 OpenAI 兼容接口（DeepSeek / SiliconFlow / OpenAI…）要求：
+
+        - `arguments` 必须是 JSON **字符串**（传对象会直接 422：
+          `invalid type: map, expected a string`）；
+        - `tool_calls` 每项要带 `id` 与 `type`；
+        - `role=tool` 的消息要带 `tool_call_id` 指回对应的那次调用。
+
+        只做「按需补全」，不改内部历史本身，也不动 Ollama 那条路径。
+
+        另外做一道**消息形状兜底**：把所有 system 消息收拢并合并成**唯一一条**放到
+        最前面。内部历史有时会在末尾追加语言提醒之类的 system 消息，而严格的
+        provider（DeepSeek / SiliconFlow / 通义）要求 system 必须位于开头、
+        且通常只接受一条，否则直接 400（"System message must be at the beginning"）。
+        在这里统一上提，等于给上层所有 append 行为兜底。
+        """
+        # 1) 收拢 system：一律上提到开头，合并成一条
+        system_parts: list[str] = []
+        body: list[dict] = []
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            if m.get("role") == "system":
+                c = m.get("content")
+                if isinstance(c, str) and c.strip():
+                    system_parts.append(c.strip())
+                elif isinstance(c, list):        # 多模态 system 块：抽出文本
+                    for blk in c:
+                        if isinstance(blk, dict) and blk.get("text"):
+                            system_parts.append(str(blk["text"]).strip())
+                continue
+            body.append(m)
+
+        out: list[dict] = []
+        if system_parts:
+            out.append({"role": "system", "content": "\n\n".join(system_parts)})
+
+        # 2) 逐条补全 tool_calls / tool_call_id 的形状
+        pending: list[str] = []            # 等待应答的 tool_call id（按出现顺序配对）
+        for idx, m in enumerate(body):
+            msg = dict(m)
+            content = msg.get("content")
+            if content is not None and not isinstance(content, str):
+                msg["content"] = json.dumps(content, ensure_ascii=False)
+
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                tcs = []
+                for j, tc in enumerate(msg["tool_calls"] or []):
+                    fn = tc.get("function") or {}
+                    cid = tc.get("id") or f"call_{idx}_{j}"
+                    args = fn.get("arguments")
+                    if not isinstance(args, str):
+                        args = json.dumps(args if args is not None else {},
+                                          ensure_ascii=False)
+                    tcs.append({
+                        "id": cid,
+                        "type": tc.get("type") or "function",
+                        "function": {"name": fn.get("name", ""), "arguments": args},
+                    })
+                    pending.append(cid)
+                msg["tool_calls"] = tcs
+            elif msg.get("role") == "tool":
+                if not msg.get("tool_call_id"):
+                    msg["tool_call_id"] = pending.pop(0) if pending else f"call_{idx}"
+                elif pending:
+                    pending.pop(0)
+            out.append(msg)
+        return out
+
     # ---------- 流式 ----------
     def chat_stream(
         self,
@@ -99,7 +173,7 @@ class OpenAIClient:
     ) -> Iterator[tuple[str, Any]]:
         payload: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": self._convert_messages(messages),
             "stream": True,
             "stream_options": {"include_usage": True},
             **self._convert_options(options, spec),
@@ -125,12 +199,17 @@ class OpenAIClient:
             if resp.status_code >= 400:
                 raise ProviderError(f"HTTP {resp.status_code}: {_extract_error(resp)}")
 
-            for raw in resp.iter_lines(decode_unicode=True):
+            for raw in resp.iter_lines(decode_unicode=False):
                 if not raw:
                     continue
                 if stop_check is not None and stop_check():
                     raise GenerationStopped(result)
-                line = raw.strip()
+                # 必须自己按 UTF-8 解码。OpenAI 兼容 provider 的流是
+                # `text/event-stream` 且常常不带 charset，此时 requests 会把
+                # resp.encoding 认成 ISO-8859-1，decode_unicode=True 就会把
+                # 中文（正文和工具参数）整段解成乱码——中文文件名 / 搜索词一发
+                # 出去就错，工具全都匹配不上。
+                line = raw.decode("utf-8", "replace").strip()
                 if not line.startswith("data:"):
                     continue
                 body = line[5:].strip()
@@ -331,12 +410,17 @@ class AnthropicClient:
             if resp.status_code >= 400:
                 raise ProviderError(f"HTTP {resp.status_code}: {_extract_error(resp)}")
 
-            for raw in resp.iter_lines(decode_unicode=True):
+            for raw in resp.iter_lines(decode_unicode=False):
                 if not raw:
                     continue
                 if stop_check is not None and stop_check():
                     raise GenerationStopped(result)
-                line = raw.strip()
+                # 必须自己按 UTF-8 解码。OpenAI 兼容 provider 的流是
+                # `text/event-stream` 且常常不带 charset，此时 requests 会把
+                # resp.encoding 认成 ISO-8859-1，decode_unicode=True 就会把
+                # 中文（正文和工具参数）整段解成乱码——中文文件名 / 搜索词一发
+                # 出去就错，工具全都匹配不上。
+                line = raw.decode("utf-8", "replace").strip()
                 if not line.startswith("data:"):
                     continue
                 try:
@@ -484,6 +568,8 @@ class ClientHub:
         return client.chat_stream(
             model=args["model"], messages=messages, tools=tools,
             options=args["options"], think=args["think"],
+            # 模型级 keep_alive：决策模型可设 "0"，用完立刻把显存还给执行模型
+            keep_alive=(getattr(spec, "keep_alive", "") or None),
             stop_check=stop_check,
         )
 

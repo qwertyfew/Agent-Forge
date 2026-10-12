@@ -10,7 +10,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .config import Config
-from .llm import OllamaClient, ollama_probe
+from .llm import OllamaClient, ollama_probe, set_local_serial
 from .loop import Agent
 from .modelstore import ModelStore
 from .permissions import Guard
@@ -42,6 +42,9 @@ class CLI:
         self.cfg = cfg
         self.console = Console(highlight=False)
         self.client = OllamaClient(cfg.ollama_host, cfg.keep_alive, cfg.request_timeout)
+        # 本地模型串行执行开关（config.yaml 的 ollama.local_serial）：
+        # 让所有本地模型推理排成一条队，避免并发任务同时压 Ollama 互相拖累。
+        set_local_serial(getattr(cfg, "local_serial", True))
         self.hub = ClientHub(cfg, self.client)
         # 可用模型目录：本地模型 + 自动发现 + 用户添加的付费模型
         self.store = ModelStore(cfg)

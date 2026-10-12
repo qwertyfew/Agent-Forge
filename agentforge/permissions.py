@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextvars
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config import Config
@@ -70,3 +72,46 @@ class Guard:
         if self.approver is None:
             return False
         return bool(self.approver(tool_name, args))
+
+
+class _WriteClaims:
+    """并发写同一个文件时的串行闸（进程级、按绝对路径）。
+
+    多 agent 并行执行时，两个互不相关的任务仍可能恰好改到同一个文件：
+    谁先写完谁后写，后写的会盖掉先写的（丢失更新）。这里给每个文件一把锁，
+    同一个文件的写入排队进行；写入不同文件的任务互不影响，不损失并行度。
+    """
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._locks: dict[str, threading.Lock] = {}
+
+    def _lock_for(self, key: str) -> threading.Lock:
+        with self._guard:
+            lk = self._locks.get(key)
+            if lk is None:
+                lk = threading.Lock()
+                self._locks[key] = lk
+            return lk
+
+    @contextmanager
+    def hold(self, key: str):
+        lk = self._lock_for(key)
+        lk.acquire()
+        try:
+            yield
+        finally:
+            lk.release()
+
+
+WRITE_CLAIMS = _WriteClaims()
+
+
+@contextmanager
+def claim_write(path: str):
+    """给某个文件的写入排队；不同文件互不阻塞，path 为空时直接放行。"""
+    if not path:
+        yield
+        return
+    with WRITE_CLAIMS.hold(path):
+        yield

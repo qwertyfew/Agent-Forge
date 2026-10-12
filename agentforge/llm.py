@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any, Iterator
 
 import requests
@@ -213,6 +214,24 @@ def native_context(info: dict) -> int:
     return best
 
 
+# 本地模型串行锁：避免同一时刻两个任务都在跑本地（Ollama）模型而互相抢 GPU/显存，
+# 把彼此拖慢甚至挤爆显存。仅对本地模型生效——OllamaClient.chat_stream 会取这把锁；
+# 付费云端模型走各自的 Client（OpenAIClient / AnthropicClient），不受此锁影响，
+# 所以「一句话里两个不相关的任务」仍然可以让付费/在线模型并行，本地模型则排队。
+_LOCAL_LOCK = threading.Lock()
+_LOCAL_SERIAL = True
+
+
+def set_local_serial(on: bool) -> None:
+    """全局开关：本地模型是否串行执行（同一时刻只跑一个本地模型）。"""
+    global _LOCAL_SERIAL
+    _LOCAL_SERIAL = bool(on)
+
+
+def local_serial_on() -> bool:
+    return _LOCAL_SERIAL
+
+
 class OllamaClient:
     """Ollama 原生 /api/chat 客户端（含流式与工具调用）。"""
 
@@ -248,6 +267,21 @@ class OllamaClient:
             return r.json() or {}
         except requests.RequestException:
             return {}
+
+    def delete_model(self, name: str) -> bool:
+        """删除本地模型（等价于 `ollama rm`），释放磁盘上的权重文件。
+
+        供「可用模型管理」页的「移除本地模型」用：移除时除了把它从 AgentForge 的
+        可用目录里摘掉，还要让 Ollama 把它真正删掉——否则磁盘上的模型文件会一直
+        占着空间，下次刷新又会被自动发现、重新出现在列表里。
+        """
+        try:
+            r = requests.post(
+                f"{self.host}/api/delete", json={"model": name}, timeout=60
+            )
+            return r.status_code in (200, 204)
+        except requests.RequestException:
+            return False
 
     def chat_stream(
         self,
@@ -288,43 +322,56 @@ class OllamaClient:
                 result.thinking += hid
                 yield ("thinking", hid)
 
-        with requests.post(
-            f"{self.host}/api/chat", json=payload, stream=True, timeout=self.timeout
-        ) as resp:
-            resp.raise_for_status()
-            for line in resp.iter_lines(decode_unicode=True):
-                if not line:
-                    continue
-                if stop_check is not None and stop_check():
-                    raise GenerationStopped(result)
-                try:
-                    chunk = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                msg = chunk.get("message", {}) or {}
-                text = msg.get("content") or ""
-                if text:
-                    vis, hid = tf.feed(text)
-                    for ev in emit(vis, hid):
-                        yield ev
-                th = msg.get("thinking") or ""
-                if th:
-                    result.thinking += th
-                    yield ("thinking", th)
-                if msg.get("tool_calls"):
-                    _merge_tool_calls(acc, msg["tool_calls"])
-                if chunk.get("done"):
-                    result.prompt_eval_count = int(chunk.get("prompt_eval_count") or 0)
-                    result.eval_count = int(chunk.get("eval_count") or 0)
-                    result.eval_duration_ns = int(chunk.get("eval_duration") or 0)
-                    result.load_duration_ns = int(chunk.get("load_duration") or 0)
-                    break
+        # 本地模型串行锁：整个生成过程（含流式输出）独占，确保同一时刻只有一个
+        # 本地模型在跑。finally 保证无论是正常结束、被 stop_check 打断（抛
+        # GenerationStopped），还是调用方提前 close() 生成器，锁都会被释放。
+        serial = _LOCAL_SERIAL
+        if serial:
+            _LOCAL_LOCK.acquire()
+        try:
+            with requests.post(
+                f"{self.host}/api/chat", json=payload, stream=True, timeout=self.timeout
+            ) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+                    if stop_check is not None and stop_check():
+                        raise GenerationStopped(result)
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    msg = chunk.get("message", {}) or {}
+                    text = msg.get("content") or ""
+                    if text:
+                        vis, hid = tf.feed(text)
+                        for ev in emit(vis, hid):
+                            yield ev
+                    th = msg.get("thinking") or ""
+                    if th:
+                        result.thinking += th
+                        yield ("thinking", th)
+                    if msg.get("tool_calls"):
+                        _merge_tool_calls(acc, msg["tool_calls"])
+                    if chunk.get("done"):
+                        result.prompt_eval_count = int(chunk.get("prompt_eval_count") or 0)
+                        result.eval_count = int(chunk.get("eval_count") or 0)
+                        result.eval_duration_ns = int(chunk.get("eval_duration") or 0)
+                        result.load_duration_ns = int(chunk.get("load_duration") or 0)
+                        break
 
-        vis, hid = tf.flush()
-        for ev in emit(vis, hid):
-            yield ev
-        result.tool_calls = _finalize_tool_calls(acc)
-        yield ("result", result)
+            vis, hid = tf.flush()
+            for ev in emit(vis, hid):
+                yield ev
+            result.tool_calls = _finalize_tool_calls(acc)
+            yield ("result", result)
+        finally:
+            if serial:
+                try:
+                    _LOCAL_LOCK.release()
+                except RuntimeError:
+                    pass
 
     def chat(
         self,
