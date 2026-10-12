@@ -27,7 +27,7 @@ from typing import Iterable
 from .skills import tokenize
 from .tools.base import SAFE, make_tool
 
-# 无论什么任务都值得常驻的工具：读写文件、跑命令、找文件、查记忆、取技能用法。
+# 无论什么任务都值得常驻的工具：读写文件、跑命令、找文件、查记忆、记笔记、取技能用法。
 # 少一个都会让基本流程退化成"先查一次工具再干活"，得不偿失。
 DEFAULT_CORE: tuple[str, ...] = (
     "list_dir",
@@ -38,6 +38,7 @@ DEFAULT_CORE: tuple[str, ...] = (
     "search_code",
     "run_command",
     "remember",
+    "task_notes",
     "find_tools",
     "list_skills",
     "use_skill",

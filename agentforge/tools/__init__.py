@@ -7,7 +7,9 @@ from .base import EXEC, SAFE, WRITE, Tool
 from .ext import build_ext_tools
 from .fs import build_fs_tools
 from .git import build_git_tools
+from .graph import build_graph_tools
 from .memory import build_memory_tools
+from .notes import build_notes_tools
 from .novel import build_novel_tools
 from .remote import build_remote_tools
 from .search import build_search_tools
@@ -82,9 +84,11 @@ def build_registry(guard, cfg, enable_web: bool = True, skill_registry=None) -> 
     tools: list[Tool] = []
     tools += build_fs_tools(guard, cfg)
     tools += build_search_tools(guard, cfg)
+    tools += build_graph_tools(guard, cfg)
     tools += build_shell_tools(guard, cfg)
     tools += build_git_tools(guard, cfg)
     tools += build_memory_tools(guard, cfg)
+    tools += build_notes_tools(guard, cfg)
     tools += build_remote_tools(guard, cfg)
     tools += build_novel_tools(guard, cfg)
     if enable_web:

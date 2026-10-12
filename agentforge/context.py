@@ -12,6 +12,7 @@ tool 消息，否则 Ollama 会报协议错误。所以分割点一律选在"轮
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 SUMMARY_PROMPT = """请把下面这段较早的对话压缩成一段要点，供后续继续工作使用。
@@ -113,7 +114,12 @@ def _safe_cut(messages: list[dict], keep_chars: int) -> int:
 
 
 def truncate_tool_results(messages: list[dict], keep_recent: int) -> list[dict]:
-    """L1：把较早的工具返回压成一行，保留最近 keep_recent 条完整结果。"""
+    """L1：把较早的工具返回压成一行，保留最近 keep_recent 条完整结果。
+
+    **只改 content，其余字段一律原样保留**：role=tool 的消息必须带着
+    tool_call_id 指回前面 assistant 的 tool_calls，OpenAI 兼容接口对这个配对
+    是硬要求——重建时把它丢了（旧实现的 bug），下一轮请求直接 400。
+    """
     idx = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
     if len(idx) <= keep_recent:
         return messages
@@ -122,11 +128,62 @@ def truncate_tool_results(messages: list[dict], keep_recent: int) -> list[dict]:
     for i, m in enumerate(messages):
         if i in stale:
             body = str(m.get("content") or "").replace("\n", " ")
-            out.append(
-                {"role": "tool", "content": f"[已压缩] {body[:160]}{' ...' if len(body) > 160 else ''}"}
+            trimmed = dict(m)                       # 保留 tool_call_id / name 等字段
+            trimmed["content"] = (
+                f"[已压缩] {body[:280]}{' ...' if len(body) > 280 else ''}"
             )
+            out.append(trimmed)
         else:
             out.append(m)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# reasoning_content 回填（DeepSeek 等「思考模式」接口的硬要求）
+# ---------------------------------------------------------------------------
+
+def _call_signature(m: dict) -> str:
+    """给一条 assistant 消息算一个稳定指纹：优先用工具调用（名字+参数），
+    没有工具调用就退回正文前缀。压缩前后同一条消息的指纹不变，才能对上号。"""
+    sigs: list[str] = []
+    for tc in (m.get("tool_calls") or []):
+        fn = tc.get("function") or {}
+        args = fn.get("arguments")
+        if not isinstance(args, str):
+            try:
+                args = json.dumps(args or {}, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                args = str(args)
+        sigs.append(f"{fn.get('name', '')}|{args}")
+    if not sigs:
+        sigs.append(f"text|{str(m.get('content') or '')[:200]}")
+    return "\x1f".join(sigs)
+
+
+def rehydrate_reasoning(original: list[dict], compacted: list[dict]) -> list[dict]:
+    """压缩重建消息后，把丢掉的 reasoning_content 按指纹回填回去。
+
+    DeepSeek 思考模式要求把上一轮 assistant 的 reasoning_content 原样回传，
+    否则后续请求 400（"reasoning_content ... must be passed back"）。压缩会重建
+    消息列表，字段可能丢失，所以压缩完统一做一次回填。回填按指纹匹配，
+    找不到对应的就保持原样（宁可缺字段，也不张冠李戴）。
+    """
+    index: dict[str, str] = {}
+    for m in original:
+        if m.get("role") != "assistant":
+            continue
+        rc = m.get("reasoning_content")
+        if rc:
+            index.setdefault(_call_signature(m), rc)
+    if not index:
+        return compacted
+    out: list[dict] = []
+    for m in compacted:
+        if m.get("role") == "assistant" and not m.get("reasoning_content"):
+            rc = index.get(_call_signature(m))
+            if rc:
+                m = {**m, "reasoning_content": rc}
+        out.append(m)
     return out
 
 
@@ -222,6 +279,12 @@ class Compressor:
     ) -> CompactResult:
         """压缩历史。返回新列表与说明，原列表不被修改。"""
         before = measure(messages)
+
+        def _done(res: CompactResult) -> CompactResult:
+            # 所有压缩路径统一在这里回填 reasoning_content，避免长任务中途 400
+            res.messages = rehydrate_reasoning(messages, res.messages)
+            return res
+
         if not force and not self.over_budget(messages, model_key):
             return CompactResult(messages, "none", before, before)
 
@@ -230,20 +293,20 @@ class Compressor:
         step1 = truncate_tool_results(messages, keep_recent)
         after1 = measure(step1)
         if not force and not self.over_budget(step1, model_key):
-            return CompactResult(
+            return _done(CompactResult(
                 step1, "truncate", before, after1,
                 f"上下文 {before} → {after1} 字（截断较早工具返回）",
-            )
+            ))
 
         if not allow_summarize:
-            return CompactResult(step1, "truncate", before, after1,
-                                 f"上下文 {before} → {after1} 字（仅截断）")
+            return _done(CompactResult(step1, "truncate", before, after1,
+                                       f"上下文 {before} → {after1} 字（仅截断）"))
 
         # L2 摘要：切掉早期轮次，留给模型重写
         cut = _safe_cut(step1, self.keep_chars)
         if cut <= 0 or cut >= len(step1):
-            return CompactResult(step1, "truncate", before, after1,
-                                 f"上下文 {before} → {after1} 字（内容太新，无法再摘要）")
+            return _done(CompactResult(step1, "truncate", before, after1,
+                                       f"上下文 {before} → {after1} 字（内容太新，无法再摘要）"))
 
         chunk, tail = step1[:cut], step1[cut:]
         # 摘要用通用模型，快且省显存；当前是代码模型时尤其划算
@@ -251,16 +314,16 @@ class Compressor:
         summary = self._summarize(chunk, skey)
         if not summary:
             # 摘要没拿到就用截断的结果，至少比原样撑着强
-            return CompactResult(
+            return _done(CompactResult(
                 step1, "truncate", before, after1,
                 f"上下文 {before} → {after1} 字（摘要未生成，仅截断较早工具返回）",
-            )
+            ))
         merged = [
             {"role": "user", "content": f"[早期对话摘要]\n{summary}"},
             *tail,
         ]
         after = measure(merged)
-        return CompactResult(
+        return _done(CompactResult(
             merged, "summarize", before, after,
             f"上下文 {before} → {after} 字（已把前 {len(chunk)} 条消息重写为摘要）",
-        )
+        ))

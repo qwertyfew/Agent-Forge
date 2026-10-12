@@ -1,21 +1,26 @@
 from __future__ import annotations
 
+import json
+import os
 import platform
+import re
 from pathlib import Path
 from typing import Any, Iterator
 
 from .config import Config
-from .artifact import classify_tool_write
+from .artifact import FILE_TOOLS, classify_tool_write
 from .context import Compressor, measure
 from .llm import OllamaClient, parse_text_tool_calls
 from .memory import MemoryStore
 from .llm import GenerationStopped
-from .permissions import OUTSIDE_OK, Guard, PermissionDenied
+from .permissions import OUTSIDE_OK, Guard, PermissionDenied, claim_write
 from .pricing import cost_of, is_free
 from .providers import ClientHub
 from .router import Router
+from .runcontrol import current_task
 from .skills import SkillRegistry
 from .tools import ToolRegistry
+from .tools.base import SAFE
 
 SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。你的职责是**真正动手完成任务**，而不是描述该怎么做。
 
@@ -28,6 +33,8 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
 ## 工作方式
 1. **先看清现状**：不确定就先用 list_dir / find_files / search_code / read_file 获取真实信息，绝不凭猜测回答。
 2. **最小改动**：优先用 edit_file 做精确替换，不要用 write_file 整文件重写已有内容。
+   改代码前，先用 impact_of 看清「这个函数/类/文件被谁引用了」，评估波及范围再动手——
+   只改定义处、漏掉引用方，是回归最常见的来源。
 3. **改完要验证**：代码改动后用 run_command 跑测试或脚本，确认真的能跑通。
 4. **一次只做一步**：可以连续调用多个互不依赖的只读工具，但有依赖时必须等上一步结果。
 5. **交付前自检**：重要产出交付前对照原始要求核对一遍——要求是否都满足、有无编造的细节、
@@ -58,15 +65,50 @@ OUTSIDE_RULE = {
 # 长对话末端的语言提醒。系统提示开头明明写了「用中文回复」，但本地小模型
 # 在几十轮工具调用之后经常把它「忘」了，回复漂移成英文（实测 gemma4:12b，
 # 中文维度分只有 62）。把关键输出要求复述一份放在消息列表最末尾——
-# 那是生成时注意力离得最近的位置。system 角色放末尾对三家 provider 都安全
-# （Anthropic 的 _convert_messages 会把任意位置的 system 归拢进顶层参数）。
+# 那是生成时注意力离得最近的位置。
+#
+# 【为什么还是 system 角色】语言提醒必须贴在消息列表最末尾才有用（生成时
+# 注意力离得最近）。但严格 provider 要求 system 只能在开头，末尾追加会 400。
+# 解法不是换成 user——实测那样模型会把提醒当成一轮新对话去「回复」它，反而
+# 打断干活节奏、甚至在没写完文件时就收尾——而是维持在末尾追加 system，同时由
+# providers._convert_messages 在发出去前把所有 system 上提合并成一条。
+# 于是：本地 Ollama 保留「贴末尾」的注意力优势（它容忍任意位置的 system），
+# 在线严格 provider 拿到的是合法的「开头单条 system」。
 LANG_REMINDER = {"role": "system",
                  "content": "提醒：忽略过程中的语言，最终回复一律用简体中文。"}
 
 # 长期记忆注入时的标题。写成指令而不是资料，模型才会真的照做
 MEMORY_HEADER = """## 长期记忆（来自以往任务，继续遵守）
-以下是以前的任务记下来的结论与偏好，请在本轮工作中遵守：
+以下是以前的任务记下来的结论与偏好，请在本轮工作中遵守。记忆按层分组：
+「用户偏好」是硬要求、「项目约定」是工作方式、「事实与环境」是可核对的环境信息。
 """
+
+# 任务笔记的注入头。笔记是跨压缩持久的：每轮从磁盘现读现注入，
+# 旧工具结果被压成一行后，笔记里记下的发现仍然完整在场。
+TASK_NOTES_HEADER = """## 任务笔记（你自己记下的发现，不受上下文压缩影响）
+以下是本任务里你用 task_notes 记下的关键信息。注意：较早的工具返回可能已被
+压缩成一行摘要，但笔记是完整的——**先查笔记再决定要不要重新调用工具**。
+"""
+
+# 判断「这轮是不是在抠具体技术细节」。是的话，长期记忆优先给 L1 原子事实
+#（路径、端口、版本、依赖这类可精确执行的信息）；否则按常规对话处理，
+# 优先给 L3 偏好与 L2 约定。判据取任务文本里的路径/文件名/技术动词。
+_FACT_TASK = re.compile(
+    r"[A-Za-z]:\\|/[\w.-]+/"
+    r"|\S+\.(?:py|js|ts|tsx|jsx|json|ya?ml|toml|ini|cfg|sh|bat|md|txt|csv)\b"
+    r"|报错|错误|异常|堆栈|traceback|崩溃|失败|修复|调优|重构|编译|构建|测试"
+    r"|端口|配置|依赖|版本|接口|函数|类|模块|脚本|命令|性能|优化",
+    re.I,
+)
+
+
+def memory_scope(user_text: str) -> str:
+    """按任务类型决定长期记忆的检索深度：'facts'（抠细节）或 'wide'（常规）。
+
+    这就是 TencentDB 那套「平时用 L2/L3 进入语境、要具体事实时回到 L1」在本项目
+    的落地——单用户本地场景不需要向量检索，按任务类型换一下分层预算就够。
+    """
+    return "facts" if _FACT_TASK.search(str(user_text or "")) else "wide"
 
 # 工具索引：只给名字，不给说明。完整 schema 里 4000 tokens 大部分当轮用不上，
 # 但模型得知道"有这么个能力"，否则会说"我做不到"。要用时用 find_tools 现取。
@@ -108,6 +150,9 @@ class Agent:
         self.system_prompt = ""
         self.last_compact: str = ""
         self._skill_hint: str = ""
+        # 本轮长期记忆的检索深度（'wide' / 'facts'），每轮由 memory_scope(user_text)
+        # 重算；决定按哪几层、各给多少预算注入记忆。见 memory.py / memory_scope()
+        self._mem_scope: str = "wide"
         # 本轮实际下发的工具名集合：系统提示里的「工具索引」要把它们排除掉
         self._active_tool_names: set[str] = set()
         # 长期记忆：任务开始前读进来注入系统提示，任务结束后由 remember 工具追加
@@ -154,8 +199,9 @@ class Agent:
             idx = sel.index_text(exclude=self._active_tool_names)
             if idx:
                 base += "\n" + TOOL_INDEX_HEADER.format(names=idx)
-        # 长期记忆放在最后：它是「上一批任务留下的结论」，越靠后模型越容易当约束看
-        block = self.memory.prompt_block()
+        # 长期记忆放在最后：它是「上一批任务留下的结论」，越靠后模型越容易当约束看。
+        # 按本轮任务类型选检索深度：技术细节任务给 L1 事实，常规任务给 L3/L2。
+        block = self.memory.prompt_block(scope=self._mem_scope)
         if block:
             base += "\n" + MEMORY_HEADER + block + "\n"
         return base
@@ -164,7 +210,32 @@ class Agent:
         msgs = [{"role": "system", "content": self._system()}]
         if self._skill_hint:
             msgs.append({"role": "system", "content": self._skill_hint})
+        # 任务笔记：每轮重新读盘注入。它是模型在压缩风暴里唯一的「随身草稿纸」——
+        # 旧工具结果被压成一行后，笔记里记下的定义位置/结论仍然完整在场。
+        notes = self._task_notes_block()
+        if notes:
+            msgs.append({"role": "system", "content": TASK_NOTES_HEADER + notes})
         return [*msgs, *history]
+
+    # ---------- 任务笔记 ----------
+    def _task_notes_path(self) -> Path:
+        tid = str(current_task() or "adhoc")
+        safe = re.sub(r"[^\w.-]", "_", tid)[:64] or "adhoc"
+        return self.cfg.state() / "task-notes" / f"{safe}.md"
+
+    def _task_notes_block(self) -> str:
+        try:
+            p = self._task_notes_path()
+            if not p.is_file():
+                return ""
+            text = p.read_text(encoding="utf-8", errors="replace").strip()
+            if not text:
+                return ""
+            if len(text) > 2000:
+                text = "…（更早的笔记已截断）\n" + text[-2000:]
+            return text
+        except OSError:
+            return ""
 
     # ---------- 上下文压缩 ----------
     def _compact(self, messages: list[dict]) -> list[dict]:
@@ -254,6 +325,8 @@ class Agent:
         full = auto_approve is True or bool(getattr(self.guard, "auto_approve_all", False))
         self.permission_label = "完全访问权限" if full else "默认权限"
         self.full_access = full
+        # 本轮记忆检索深度：具体技术任务优先 L1 事实，常规对话优先 L3/L2
+        self._mem_scope = memory_scope(user_text)
 
         if auto_route and not self.model_pinned:
             picked = self.router.classify(user_text)
@@ -301,6 +374,18 @@ class Agent:
 
         spec = self.cfg.model(self.model_key)
 
+        # 连续「空轮次」计数：见下面遇到空回复时的处理
+        empty_turns = 0
+        # 任务内只读调用缓存：同样的（工具+参数）第二次出现时直接回放上次结果。
+        # 小模型忘了自己查过什么时会用一模一样的参数再查一遍（实测 40+ 轮任务里
+        # 同一个 search_code pattern 出现 3 次），重新执行毫无新信息，纯烧 GPU。
+        call_cache: dict[str, str] = {}
+        # 轮次预算：软预算起每轮催收敛；硬上限撤掉工具强制交卷。
+        # hard 相对 max_steps 留 3 轮余量，保证「强制交卷」自己有轮次可用。
+        soft = max(0, int(getattr(self.cfg, "rounds_soft", 30)))
+        hard = max(soft + 1, min(int(getattr(self.cfg, "rounds_hard", 60)),
+                                 self.cfg.max_steps - 3))
+
         for step in range(1, self.cfg.max_steps + 1):
             if stopped():
                 # 把已经累积的上下文一起带出去，调用方可以据此保存/回看
@@ -311,7 +396,20 @@ class Agent:
             # 每轮重算：这轮刚用过的工具、刚 find_tools 取过的工具，下一轮要常驻下发
             tools = self._active_tools(ctx)
             messages = self._compact(self.messages_with_system(ctx))
+            # 语言提醒以 system 贴在最后（本地保留注意力优势；在线由
+            # providers._convert_messages 上提合并，不会触发「system 必须在开头」的 400）
             messages.append(dict(LANG_REMINDER))
+            # 轮次预算：软提醒贴在语言提醒前面，同样借「离生成最近」的注意力位置
+            if soft and step >= soft:
+                if step >= hard:
+                    tools = []                      # 硬收敛：不再提供任何工具
+                    messages.append({"role": "system", "content": (
+                        "已达到轮次上限，从本轮起不再提供任何工具。请立刻基于已掌握的"
+                        "信息输出最终结果；没能完成的部分如实说明缺什么，不要编造。")})
+                else:
+                    messages.append({"role": "system", "content": (
+                        f"任务预算提醒：本步已进行 {step} 轮推理。已掌握的信息大概率足够，"
+                        "请尽快汇总产出（写文件或给出最终答复）；只有确有必要时才再发起新的探索。")})
 
             result = None
             try:
@@ -362,8 +460,36 @@ class Agent:
                     result.tool_calls = rescued
                     result.content = ""
 
+            # 空轮次：既没有工具调用、也没有正文。思考模型（gemma / GLM 等）
+            # 有时会把输出预算全花在 reasoning 上，最后正文和工具调用都为空。
+            # 这种情况下**绝不能当成「任务完成」**——否则界面显示成功、实际一个
+            # 字节都没产出（实测：小说任务读完素材后空回复，outline.md 没被写）。
+            # 给有限次重来的机会，并明确点一句「该动手了」。
+            if not result.tool_calls and not (result.content or "").strip():
+                empty_turns += 1
+                if empty_turns > 2:
+                    yield {"type": "error",
+                           "message": (f"模型连续 {empty_turns} 轮没有输出任何内容"
+                                       f"（既无工具调用也无正文），任务未完成。")}
+                    return
+                _push({"role": "user",
+                       "content": ("你上一轮没有输出任何内容。请继续完成当前任务："
+                                   "素材已经读完，就直接调用 write_file 把结果写出来；"
+                                   "否则给出最终的完整答复。不要只思考不产出。")})
+                continue
+            empty_turns = 0
+
+            # DeepSeek 等「思考模式」的接口要求把上一轮的 reasoning_content 原样回传，
+            # 否则下一轮请求直接 400（"reasoning_content ... must be passed back"）。
+            # Ollama 不需要，也就不往历史里塞，免得白占上下文。
+            replay_think = (
+                {"reasoning_content": result.thinking}
+                if result.thinking and getattr(spec, "provider", "ollama") != "ollama"
+                else {}
+            )
+
             if not result.tool_calls:
-                assistant_msg = {"role": "assistant", "content": result.content}
+                assistant_msg = {"role": "assistant", "content": result.content, **replay_think}
                 _push(assistant_msg)
                 yield {"type": "assistant", "content": result.content, "history": history}
                 return
@@ -373,7 +499,8 @@ class Agent:
                 {"function": {"name": tc.name, "arguments": tc.arguments}}
                 for tc in result.tool_calls
             ]
-            _push({"role": "assistant", "content": result.content or "", "tool_calls": tc_payload})
+            _push({"role": "assistant", "content": result.content or "",
+                   "tool_calls": tc_payload, **replay_think})
 
             for tc in result.tool_calls:
                 if stopped():
@@ -385,7 +512,20 @@ class Agent:
                            "reason": "用户停止（工具尚未执行）", "history": history}
                     return
                 yield {"type": "tool_start", "name": tc.name, "args": tc.arguments}
-                out = self._execute(tc.name, tc.arguments, auto_approve, file_log)
+                # 重复调用拦截：只读工具的（名字+参数）指纹在任务内出现过，
+                # 就直接回放上次结果并明说，不再执行。打断「忘了→重查→再忘」的循环。
+                tool_def = self.registry.get(tc.name)
+                sig = tc.name + "|" + json.dumps(
+                    tc.arguments or {}, ensure_ascii=False, sort_keys=True, default=str,
+                )
+                if tool_def is not None and tool_def.risk == SAFE and sig in call_cache:
+                    out = ("[重复调用] 这个调用本任务里已经执行过，下面是上次的结果，"
+                           "请直接利用；确实需要新信息就换参数，或把关键发现记进 task_notes：\n"
+                           + call_cache[sig])
+                else:
+                    out = self._execute(tc.name, tc.arguments, auto_approve, file_log)
+                    if tool_def is not None and tool_def.risk == SAFE:
+                        call_cache[sig] = out
                 yield {"type": "tool_result", "name": tc.name, "output": out}
                 _push({"role": "tool", "content": out})
 
@@ -422,12 +562,25 @@ class Agent:
         ):
             return f"[已拒绝] 用户拒绝了 {name} 的执行。请不要重试，改换方案或向用户说明。"
 
+        # 多 agent 并行时可能有两个任务恰好改同一个文件：这里给该文件的写入排队
+        # （见 permissions.claim_write）。只对写类工具生效，不同文件互不阻塞；
+        # key 用「绝对路径归一化」而不是 guard.resolve，免得受越界权限影响。
+        claim_key = ""
+        if name in FILE_TOOLS:
+            raw = str((args or {}).get("path") or "")
+            if raw:
+                p = Path(raw)
+                if not p.is_absolute():
+                    p = Path(self.cfg.workspace_root) / p
+                claim_key = os.path.normcase(os.path.abspath(str(p)))
+
         # 完全访问权限的任务里，这一次工具调用允许读写工作区之外的路径。
         # 判据与 run() 里的 full 保持一致：显式 auto_approve，或 Guard 全局自动批准。
         # 只放开「读写」；命令黑名单不随之放开（见 Guard.check_command）。
         token = OUTSIDE_OK.set(auto_approve is True or bool(getattr(self.guard, "auto_approve_all", False)))
         try:
-            out = str(tool.run(**(args or {})))
+            with claim_write(claim_key):
+                out = str(tool.run(**(args or {})))
         except PermissionDenied as e:
             return f"[已拒绝] {e}"
         except TypeError as e:
