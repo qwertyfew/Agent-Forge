@@ -2461,8 +2461,9 @@ function renderHistory(hist){
   log.innerHTML = '';
   history = hist || [];
   let pending = [];
+  let lastA = null;   // 最后一条有正文的回复：回看时也要有 复制/重新回答 工具条
   for(const m of history){
-    if(m.role === 'user'){ addUser(m.content || ''); pending = []; }
+    if(m.role === 'user'){ addUser(m.content || ''); pending = []; lastA = null; }
     else if(m.role === 'assistant'){
       if(m.content && m.content.trim()) curToolGroup = null;   // 有正文 = 一段输出结束，封组
       if(m.tool_calls && m.tool_calls.length){
@@ -2477,6 +2478,7 @@ function renderHistory(hist){
         const a = addAssistant();
         a.text = m.content;
         a.body.innerHTML = md(m.content);
+        lastA = a;
       }
     }else if(m.role === 'tool'){
       const t = pending.shift();
@@ -2494,6 +2496,7 @@ function renderHistory(hist){
     t.state.className = 'tool-state deny';
     toolHeadSummary(t.t);
   }
+  if(lastA){ lastStats = null; cur = lastA; attachMsgFoot(); cur = null; }
   updateContextMeter(history, threshold);
   updateCompactBtn();
 }
@@ -2584,7 +2587,6 @@ function addFilesCard(files){
     meta.appendChild(el('b','fc-name', name));
     meta.appendChild(el('i','fc-size', f.size != null ? fmtSize(f.size) : (ACTION_LABEL[f.action] || '')));
     btn.appendChild(meta);
-    btn.appendChild(el('span','fc-open','↗'));
     wrap.appendChild(btn);
   });
   if(list.length > 8){
@@ -2813,8 +2815,8 @@ function takeAIHead(host){
   needAIHead = false;
   (host || log).appendChild(aiHead());
 }
-/* 全局点击代理：凡是带 data-openpath 的元素（产出文件行/文件名），点击就用系统默认
-   程序打开。后端 /api/open_folder 校验路径必须在工作区内，越界一律拒绝。 */
+/* 全局点击代理：凡是带 data-openpath 的元素（产出文件卡片/清单行），点击就用系统默认
+   程序打开。后端 /api/open-folder 校验路径必须在工作区内，越界一律拒绝。 */
 document.addEventListener('click', e=>{
   const t = e.target.closest('[data-openpath]');
   if(!t || !t.dataset.openpath) return;
@@ -2827,6 +2829,7 @@ document.addEventListener('click', e=>{
     body: JSON.stringify(body)
   }).then(x=>x.json()).then(r=>{
     if(!r || r.ok === false) toast(null, (r && r.error) || '打开失败', 'bad');
+    else toast(null, r.note || '已用系统默认程序打开', 'ok');
   }).catch(()=> toast(null, '打开失败（服务未响应）', 'bad'))
    .finally(()=>{ t.style.opacity = prev; });
 });

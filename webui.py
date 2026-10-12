@@ -1538,6 +1538,14 @@ class _Handler(BaseHTTPRequestHandler):
                 opener = "open" if sys.platform == "darwin" else "xdg-open"
                 subprocess.Popen([opener, str(target)])  # noqa: S603
             self._json({"ok": True})
+        except OSError:
+            # 没有关联程序等打不开的情形：退一步在资源管理器里把文件定位出来，
+            # 至少让用户拿到文件位置，而不是点了没反应。
+            try:
+                subprocess.Popen(["explorer", "/select,", str(target)])  # noqa: S603
+                self._json({"ok": True, "note": "没有关联的打开方式，已在资源管理器中定位文件"})
+            except Exception as exc:  # noqa: BLE001
+                self._json({"ok": False, "error": str(exc)})
         except Exception as exc:  # noqa: BLE001
             self._json({"ok": False, "error": str(exc)})
 
