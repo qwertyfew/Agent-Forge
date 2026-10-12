@@ -462,6 +462,20 @@
   .mf-row.lk:hover{background:var(--hover)}
   .mf-row.lk .p{color:var(--accent)}
   .flk{cursor:pointer;color:var(--accent);text-decoration:underline dotted;text-underline-offset:3px}
+  /* 回复结尾的产出文件卡片（对齐主流 agent 的交付形态：图标+文件名+大小+打开） */
+  .file-cards{display:flex;flex-direction:column;gap:8px;margin:10px 0;max-width:440px}
+  .file-card{display:flex;align-items:center;gap:11px;padding:10px 13px;border:1px solid var(--line);
+    border-radius:12px;background:var(--card);cursor:pointer;text-align:left;
+    transition:border-color .15s ease, box-shadow .15s ease;font-family:inherit}
+  .file-card:hover{border-color:var(--accent);box-shadow:var(--shadow)}
+  .fc-ico{width:34px;height:34px;border-radius:8px;color:#fff;font-size:11.5px;font-weight:700;
+    display:inline-flex;align-items:center;justify-content:center;flex:none;letter-spacing:.5px}
+  .fc-meta{display:flex;flex-direction:column;line-height:1.3;min-width:0;flex:1}
+  .fc-name{font-size:13px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fc-size{font-size:11px;color:var(--ink3);font-style:normal}
+  .fc-open{color:var(--ink3);flex:none;font-size:14px}
+  .file-card:hover .fc-open{color:var(--accent)}
+  .fc-more{font-size:11px;color:var(--ink3);padding-left:2px}
   .files-list{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:2px 0}
   .file-btn{
     display:inline-flex;
@@ -2516,7 +2530,7 @@ function openTask(id){
     }else{
       if(task.summary){ const a = addAssistant(); a.text = task.summary; a.body.innerHTML = md(task.summary); }
     }
-    if((task.files || []).length) prependNote(filesNote(task.files));
+    if((task.files || []).length) addFilesCard(task.files);
     if(task.error) addError(task.error);
   }).catch(()=>{});
 }
@@ -2535,23 +2549,49 @@ function fileRow(f){
            path: f.outside ? '' : (f.path || '') };   // path 非空 = 可点击打开
 }
 
-/* 回看历史任务时，把它在磁盘上留下的文件也列出来（一句话形态） */
+/* 回复结尾的产出文件卡片：显眼、可点击打开（全局点击代理 → /api/open-folder 校验工作区）。
+   不再在回复开头挂「本次任务产出 N 个文件」的文字行——那行破坏阅读流且没有可操作性。 */
 function stripRoot(p){
   const r = workspaceRoot || '';
   let s = String(p || '');
   if(r && s.toLowerCase().startsWith(r.toLowerCase())) s = s.slice(r.length);
   return s.replace(/^[\\/]+/, '') || s;
 }
-function filesNote(files){
-  const shown = files.slice(0, 8).map(f=>{
-    const rel = f.rel || stripRoot(f.path);
-    const inner = f.outside ? esc(rel)
-      : `<span class="flk" data-openpath="${esc(f.path || '')}">${esc(rel)}</span>`;
-    return `${inner} <span style="color:var(--ink3)">(${ACTION_LABEL[f.action] || '改动'})</span>`;
+function fmtSize(n){
+  if(n == null) return '';
+  if(n < 1024) return n + ' B';
+  if(n < 1048576) return (n/1024).toFixed(1) + ' KB';
+  return (n/1048576).toFixed(1) + ' MB';
+}
+const FC_COLOR = {md:'#0f9d8f', markdown:'#0f9d8f', py:'#3572A5', js:'#e8c547', ts:'#3178c6',
+  html:'#e34c26', css:'#563d7c', json:'#8bc34a', yaml:'#cb171e', yml:'#cb171e',
+  sh:'#89e051', bat:'#a6a6a6', txt:'#9e9e9e'};
+function addFilesCard(files){
+  const list = (files || []).filter(f=>!f.outside && (f.path||f.rel));
+  if(!list.length) return;
+  const wrap = el('div','file-cards');
+  list.slice(0,8).forEach(f=>{
+    const name = f.rel || stripRoot(f.path);
+    const m = /\.([a-z0-9]+)$/i.exec(name||'');
+    const ext = m ? m[1].toLowerCase() : '';
+    const btn = el('button','file-card');
+    if(f.path) btn.dataset.openpath = f.path;
+    btn.title = '点击打开';
+    const ico = el('span','fc-ico',(ext || 'f').slice(0,4).toUpperCase());
+    ico.style.background = FC_COLOR[ext] || '#7a8290';
+    btn.appendChild(ico);
+    const meta = el('span','fc-meta');
+    meta.appendChild(el('b','fc-name', name));
+    meta.appendChild(el('i','fc-size', f.size != null ? fmtSize(f.size) : (ACTION_LABEL[f.action] || '')));
+    btn.appendChild(meta);
+    btn.appendChild(el('span','fc-open','↗'));
+    wrap.appendChild(btn);
   });
-  return `本次任务产出 ${files.length} 个文件：` + shown.join('、')
-    + (files.length > shown.length ? ` 等 ${files.length} 个` : '')
-    + '　<span style="color:var(--ink3)">（点侧栏「清空」可勾选一并清理）</span>';
+  if(list.length > 8){
+    wrap.appendChild(el('div','fc-more', `其余 ${list.length - 8} 个文件见侧栏「清空」清单`));
+  }
+  log.appendChild(wrap);
+  scrollBottom();
 }
 
 async function openClearDialog(){
@@ -3887,6 +3927,14 @@ function handleTaskEvent(ev, data){
       dropLanes();
       attachMsgFoot();
       hideShimmer(); closeThinking();
+      // 收尾把本任务的产出文件做成卡片挂在回复末尾（有产出才挂）
+      if(liveTask && liveTask.id){
+        fetch('/api/tasks?id=' + encodeURIComponent(liveTask.id))
+          .then(x=>x.json()).then(r=>{
+            const t = r && r.task;
+            if(t) addFilesCard(t.files);
+          }).catch(()=>{});
+      }
       updateContextMeter(history, threshold);
       setBusy(false);
       if(liveTask && liveTask.status === 'running') endLiveTask('done');

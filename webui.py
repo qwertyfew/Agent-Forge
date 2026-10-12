@@ -502,6 +502,17 @@ class _Handler(BaseHTTPRequestHandler):
             if task is None:
                 self._json({"error": "没有找到该任务"}, 404)
                 return
+            # 补充产出文件的体积：前端回复结尾的文件卡片要显示大小。
+            # 台账里的 path 可能是相对工作区的，先落到工作区再 stat。
+            root = Path(self.cfg.workspace_root).resolve()
+            for f in task.get("files") or []:
+                try:
+                    p = Path(str(f.get("path") or ""))
+                    if not p.is_absolute():
+                        p = root / p
+                    f["size"] = p.stat().st_size
+                except OSError:
+                    f["size"] = None
             self._json({"task": task})
             return
         payload = {
@@ -1503,10 +1514,14 @@ class _Handler(BaseHTTPRequestHandler):
             return
         # 安全：只允许打开工作区之内的文件/文件夹（工作区根目录也自然满足），
         # 越界路径一律 403。前端产出文件行点击后调这里。
-        root = str(Path(self.cfg.workspace_root).resolve())
+        # 台账/前端传来的可能是相对工作区的路径，先落到工作区再解析。
+        root = Path(self.cfg.workspace_root).resolve()
         wanted = str(req.get("path") or root)
         try:
-            target = Path(wanted).resolve()
+            p = Path(wanted)
+            if not p.is_absolute():
+                p = root / p
+            target = p.resolve()
             target.relative_to(root)          # 不在工作区内会抛 ValueError
         except (ValueError, OSError):
             self._json({"ok": False, "error": "只允许打开工作区内的文件"}, 403)
