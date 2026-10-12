@@ -14,6 +14,10 @@
               不经过模型的工具调用——模型谎报不影响这里的结果
     3. 核查   模型总结声称「验证通过」但任务里从没跑过 run_command 时，
               在答复后追加「未经系统确认」的声明，不给谎报留活口
+    4. 产物   任务书声明了交付文件（「报告写入 docs/x.md」「产出文件：x.md」）、
+              或总结声称「已写入 X」时，系统逐个 os.path.exists 核查，
+              缺失就在答复后追加系统侧声明（REA 测试抓到的盲区：
+              全程零 write_file 却谎报「报告已写入」，验证命令闸门管不到文件类交付）
 """
 
 from __future__ import annotations
@@ -53,6 +57,38 @@ _CLAIM_VERIFIED = re.compile(
     r"验证通过|验证已通过|测试通过|测试全部?通过|全部通过|断言通过|全部断言通过"
     r"|自检通过|护栏(?:全部)?(?:生效|通过)|all (?:tests |assertions )?passed"
     r"|tests? pass(?:ed)?",
+    re.I,
+)
+
+# ---------------------------------------------------------------------------
+# 声明产物存在性核查
+# ---------------------------------------------------------------------------
+# 路径 token：字母数字开头、可含 ./\_ -、以点扩展名结尾。中文/空格/括号一律不在
+# 字符集里，保证抓出来的是纯路径，不带「全过」「（含来源链接）」这类人话尾巴。
+_PATH_TOK = r"([A-Za-z0-9_][A-Za-z0-9._/\\-]*\.[A-Za-z0-9]{1,8})"
+
+# 任务书里的产物声明·动词式：「（报告）写入 docs/x.md」「保存到 x.json」「输出到 out/r.md」。
+# 前面紧邻「禁止/不要/勿/别/不」的不算（那是禁令，不是交付要求）。
+_ARTIFACT_WRITE = re.compile(
+    r"(?<!禁止)(?<!不要)(?<!勿)(?<!别)(?<!不)"
+    r"(?:写入|写至|保存(?:到|为|在)|存(?:到|为|入)|输出到|输出为|落盘(?:到|为)?)"
+    r"\s*[:：`]*\s*" + _PATH_TOK,
+)
+
+# 任务书里的产物声明·冒号式：「产出文件：docs/x.md」「输出路径：out/x.md」「交付物：x.md」。
+# 故意不收裸「报告：」「结果：」——那两类后面跟文件名时歧义太大，容易误伤。
+_ARTIFACT_COLON = re.compile(
+    r"(?:产出|输出|交付)(?:文件|路径|物)?\s*[:：]\s*`?" + _PATH_TOK,
+)
+
+# 总结里的「已写入 X」完成式声明。必须带完成语气（已/成功/完成/了/好），
+# 「接下来可写入 X」「将报告写入 X」这类将来时/转述不误伤。
+_ARTIFACT_CLAIM = re.compile(
+    r"(?:已(?:经)?|成功|完成)[^。\n；;]{0,12}?(?:写入|创建|保存到|保存在|生成|落盘|产出)(?:了|好)?"
+    r"\s*[:：`]*\s*" + _PATH_TOK +
+    r"|(?:写入|创建|保存到|保存在|生成|落盘|产出)(?:了|好)(?:一?份)?\s*[:：`]*\s*" + _PATH_TOK +
+    r"|(?:has been |have been )?(?:written to|saved to|saved as|created|generated)\s+`?"
+    + _PATH_TOK,
     re.I,
 )
 
@@ -185,6 +221,89 @@ def ran_verification(convo: list[dict] | None) -> bool:
     return False
 
 
+def _dedupe_cap(paths: list[str], cap: int = 8) -> list[str]:
+    """去重保序（大小写不敏感），限量防极端输入。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in paths:
+        k = p.lower()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(p)
+    return out[:cap]
+
+
+def extract_declared_artifacts(text: str) -> list[str]:
+    """从任务书提取声明的交付文件路径（「报告写入 docs/x.md」「产出文件：x.md」等）。
+
+    只认带扩展名的路径样 token；提取不出来就返回空表（此时退化为只查总结声明）。
+    """
+    text = str(text or "")
+    out = [m.group(1) for m in _ARTIFACT_WRITE.finditer(text)]
+    out += [m.group(1) for m in _ARTIFACT_COLON.finditer(text)]
+    return _dedupe_cap(out)
+
+
+def claimed_artifacts(summary: str) -> list[str]:
+    """模型总结里声称「已写入/已创建/已生成」的文件路径（完成语气才算）。
+
+    注意 _ARTIFACT_CLAIM 的三个分支各引用一次 _PATH_TOK，捕获组编号随分支
+    变化，所以取「第一个非空捕获组」而不是固定 group(1)。
+    """
+    out = []
+    for m in _ARTIFACT_CLAIM.finditer(str(summary or "")):
+        p = next((g for g in m.groups() if g), "")
+        if p:
+            out.append(p)
+    return _dedupe_cap(out)
+
+
+def find_missing_artifacts(entries: list[tuple[str, bool]],
+                           root: str | Path) -> list[dict]:
+    """逐个 os.path.exists 核查交付文件，返回缺失清单。
+
+    entries 是 (路径, 是否任务书声明) 对。相对路径按工作区根解析；
+    指向工作区之外的绝对路径不核查（不是本任务的交付物，无从判定）。
+    """
+    root = Path(root).resolve()
+    missing: list[dict] = []
+    seen: set[str] = set()
+    for raw, declared in entries:
+        p = str(raw).strip().strip("`'\"")
+        k = p.lower()
+        if not p or k in seen:
+            continue
+        seen.add(k)
+        f = Path(p)
+        try:
+            if f.is_absolute():
+                target = f.resolve()
+            else:
+                # 相对路径按工作区根解析；带 .. 逃出工作区的一律不核查
+                target = (root / f).resolve()
+        except (OSError, ValueError):
+            continue
+        if not target.is_relative_to(root):
+            continue
+        try:
+            exists = target.exists()
+        except OSError:
+            exists = False
+        if not exists:
+            missing.append({"path": p, "declared": bool(declared)})
+    return missing
+
+
+def artifact_missing_block(missing: list[dict]) -> str:
+    """附在最终答复末尾的产物核查声明。程序写的，模型只有解读权。"""
+    lines = ["【系统侧核查】以下产出文件经系统收尾核查**不存在**于工作区，应视为「未产出」："]
+    for c in missing:
+        tag = "任务书明确要求的交付物" if c.get("declared") else "总结声称已写入"
+        lines.append(f"- `{c['path']}`（{tag}）")
+    lines.append("此核查由程序完成，不依赖模型自报；若与本回复正文有出入，以本清单为准。")
+    return "\n".join(lines)
+
+
 def report_block(cmd: str, res: dict) -> str:
     """附在最终答复末尾的系统侧验证报告。模型只有解读权，这一段是程序写的。"""
     verdict = "通过" if res["ok"] else "失败"
@@ -214,3 +333,15 @@ CORRECTIVE_PROMPT = """【系统侧验证结果（权威，不可推翻）】
 验证失败时：如果你有能力修复，先修复问题，然后重新运行上面这条验证命令并看到通过结果；
 确实修不了的，就在最终总结里如实说明失败原因与现状。禁止在未修复的情况下声称通过。
 只输出修正后的最终总结（或修复动作的开始），不要寒暄。"""
+
+ARTIFACT_CORRECTIVE_PROMPT = """【系统侧核查结果（权威，不可推翻）】
+以下产出文件在收尾核查时不存在于工作区：
+{missing}
+
+【你此前的总结】
+{summary}
+
+【要求】
+如果这些文件确实应该产出：现在真实地创建并写入它们（write_file），写完再说完成；
+如果本就无需产出（例如核查误判或路径笔误），就在最终总结里如实说明原因。
+禁止再次声称已写入而不实际创建文件。只输出修正动作的开始或修正后的最终总结，不要寒暄。"""

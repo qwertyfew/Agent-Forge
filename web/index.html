@@ -3786,12 +3786,20 @@ function handleTaskEvent(ev, data){
         + (data.note ? ` —— ${esc(data.note)}` : ''), true);
     }
     else if(ev === 'verify'){
-      // 收尾验证闸门：系统在任务收尾时亲自运行验证命令的真实结果，
-      // 不是模型自报的结论；失败时最终答复末尾会附上系统侧报告
-      addPillNote(`系统侧验证 <b>${esc(data.cmd||'')}</b> → `
-        + (data.ok ? '<b>通过</b>' : '<b>失败</b>')
-        + `（退出码 ${esc(String(data.exit ?? '?'))}，耗时 ${esc(String(data.duration ?? '?'))}s）`
-        + (data.ok ? '' : '，详见最终答复附带的系统侧验证报告'), !data.ok);
+      if(Array.isArray(data.artifacts) && data.artifacts.length){
+        // 产物存在性核查：系统发现声称的交付文件实际不存在（不是模型自报的结论）
+        const paths = data.artifacts.map(a => `<b>${esc(a.path||'')}</b>`).join('、');
+        const tag = data.artifacts.some(a => a.declared) ? '任务书要求的交付物' : '总结声称已写入';
+        addPillNote(`系统侧产物核查：${tag} <b>${paths}</b> 不存在于工作区`
+          + '，详见最终答复附带的核查声明', true);
+      } else {
+        // 收尾验证闸门：系统在任务收尾时亲自运行验证命令的真实结果，
+        // 不是模型自报的结论；失败时最终答复末尾会附上系统侧报告
+        addPillNote(`系统侧验证 <b>${esc(data.cmd||'')}</b> → `
+          + (data.ok ? '<b>通过</b>' : '<b>失败</b>')
+          + `（退出码 ${esc(String(data.exit ?? '?'))}，耗时 ${esc(String(data.duration ?? '?'))}s）`
+          + (data.ok ? '' : '，详见最终答复附带的系统侧验证报告'), !data.ok);
+      }
     }
     else if(ev === 'skill'){
       if(data.auto){

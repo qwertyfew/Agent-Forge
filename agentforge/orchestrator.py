@@ -188,6 +188,10 @@ def _verify_gate(agent, message: str, holder: dict,
       之后无论模型总结说什么，都会在答复末尾附上程序写的系统侧验证报告。
     - 没声明验证命令、但模型总结声称「验证通过」且全程没跑过 run_command →
       在答复末尾追加「未经系统确认」声明。
+    - 独立第二道核查：任务书声明的交付文件（「报告写入 docs/x.md」）与总结声称
+      「已写入 X」的文件，系统逐个 os.path.exists 核查；缺失给一轮修正机会
+      （真写文件或如实说明），之后仍缺失就在答复末尾附上系统侧核查声明——
+      REA 测试里「零 write_file 却谎报报告已写入」这类谎报在此现形。
 
     holder 进出各带 {"summary", "convo"}：闸门可能改写总结（追加报告/被修正轮
     重写），调用方从 holder 里取最终值。
@@ -198,6 +202,7 @@ def _verify_gate(agent, message: str, holder: dict,
     convo = holder.get("convo") or []
     summary = holder.get("summary") or ""
     cmd = verify_gate.extract_verify_cmd(message, cfg.workspace_root)
+    corrected = False
     if cmd:
         res = verify_gate.run_verify_cmd(cmd, cfg.workspace_root)
         yield {
@@ -208,6 +213,7 @@ def _verify_gate(agent, message: str, holder: dict,
         if not res["ok"]:
             # 失败给一轮修正机会：能修就修（会重新跑验证看到真实通过），
             # 修不了就如实说明。修正轮的产出无论是什么，报告照附——裁定权在系统。
+            corrected = True
             prompt = verify_gate.CORRECTIVE_PROMPT.format(
                 cmd=cmd, verdict="失败", code=res["code"],
                 duration=res["duration"], output=res["output"],
@@ -227,6 +233,40 @@ def _verify_gate(agent, message: str, holder: dict,
     elif (verify_gate.claimed_verified(summary)
           and not verify_gate.ran_verification(convo)):
         summary = (summary + "\n\n---\n" + verify_gate.UNVERIFIED_NOTE).strip()
+
+    # 声明产物存在性核查（独立于验证命令的第二道核查）：验证命令闸门只管
+    # 「跑测试」，管不到「报告写好了没」——REA 测试里模型零 write_file 却
+    # 谎报「报告已写入」，连 read_file 撞上「文件不存在」后都不回头。
+    declared = verify_gate.extract_declared_artifacts(message)
+    dset = {d.lower() for d in declared}
+    claimed = [p for p in verify_gate.claimed_artifacts(summary)
+               if p.lower() not in dset]
+    if declared or claimed:
+        entries = [(p, True) for p in declared] + [(p, False) for p in claimed]
+        missing = verify_gate.find_missing_artifacts(entries, cfg.workspace_root)
+        if missing and not corrected:
+            # 给一轮修正机会：真去写文件，或如实说明；之后以复查结果为准
+            prompt = verify_gate.ARTIFACT_CORRECTIVE_PROMPT.format(
+                missing="\n".join(f"- {c['path']}" for c in missing),
+                summary=summary or "（无）",
+            )
+            for ev in agent.run(convo, prompt, auto_route=False,
+                                stop_check=stop_check, auto_approve=auto_approve):
+                k = ev.get("type")
+                if k in ("user", "route"):
+                    continue
+                if k == "assistant":
+                    convo = ev["history"]
+                    summary = (ev.get("content") or "").strip() or summary
+                yield ev
+            missing = verify_gate.find_missing_artifacts(entries, cfg.workspace_root)
+        if missing:
+            yield {"type": "verify", "cmd": "", "ok": False, "exit": "",
+                   "duration": "",
+                   "artifacts": [{"path": c["path"], "declared": c["declared"]}
+                                 for c in missing]}
+            summary = (summary + "\n\n---\n"
+                       + verify_gate.artifact_missing_block(missing)).strip()
     if summary != holder.get("summary"):
         holder["summary"] = summary
         holder["convo"] = convo
