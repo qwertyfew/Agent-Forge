@@ -46,6 +46,23 @@ def est_tokens(text: str) -> float:
     return cjk * 1.05 + (len(text) - cjk) / 3.8
 
 
+def _path_under(p: Path, base: Path) -> bool:
+    """p 是否在 base 目录之下（is_relative_to 的宽松版，异常时退到字符串前缀）。"""
+    try:
+        return p.is_relative_to(base)
+    except (ValueError, OSError):
+        return str(p).startswith(str(base))
+
+
+def _safe_resolve(p: Path) -> bool:
+    """resolve 是否成功（失败返回 False，供过滤用）。"""
+    try:
+        p.resolve()
+        return True
+    except OSError:
+        return False
+
+
 class TaskBus:
     """任务事件广播器：让多个 SSE 订阅者看到同一条任务流。
 
@@ -432,7 +449,28 @@ class _Handler(BaseHTTPRequestHandler):
         files = artifact.describe(self.tasks.files_of(ids), self.cfg.workspace_root)
         # 记忆文件本身不进「文件」清单，它由独立的「记忆」勾选项管
         mem_file = str(self.mem.path.resolve()).lower()
+        # skills/ 目录也不进清理清单：技能是项目资产而不是任务产出，删它
+        # 该走技能管理面板（那里有整目录备份）。实测教训：借鉴任务新建了
+        # skills/<名字>/SKILL.md，被默认勾选的「任务新建的文件」顺手删掉，
+        # 技能面板里就凭空消失了。所有挂进来的技能目录（含用户级）一并保护。
+        skills_roots: list[Path] = []
+        for d in [self._skills_root(), *(Path(x) for x in (self.cfg.skill_dirs or []))]:
+            try:
+                rp = Path(d).resolve()
+            except OSError:
+                continue
+            if all(rp != s for s in skills_roots):
+                skills_roots.append(rp)
+
+        def _in_skills(p: dict) -> bool:
+            try:
+                rp = Path(p["path"]).resolve()
+            except OSError:
+                return False
+            return any(_path_under(rp, sr) for sr in skills_roots)
+
         files = [f for f in files if str(Path(f["path"]).resolve()).lower() != mem_file]
+        files = [f for f in files if not _in_skills(f)]
         created = [f for f in files if f["action"] == "created" and f["exists"]]
         modified = [f for f in files if f["action"] == "modified" and f["exists"]]
 
@@ -549,6 +587,13 @@ class _Handler(BaseHTTPRequestHandler):
                 continue
             if resolved.is_dir():
                 skipped.append({"path": str(raw), "why": "是目录，不删"})
+                continue
+            # 第二道防线：技能目录里的文件永远不从这里删（哪怕台账里混进来了）。
+            # 技能的删除入口是技能管理面板，那里删除前有整目录备份。
+            skill_roots = [self._skills_root(), *(Path(x) for x in (self.cfg.skill_dirs or []))]
+            if any(_path_under(resolved, sr.resolve()) for sr in skill_roots
+                   if self._safe_resolve(sr)):
+                skipped.append({"path": str(raw), "why": "属于技能目录，不在这里删（去技能管理面板）"})
                 continue
             try:
                 resolved.unlink()

@@ -54,6 +54,29 @@ _BRIEF = re.compile(
     r"|[:：]\s*$"
 )
 
+# 消息级任务书特征：整条消息是「派活」而不是「闲聊/交代偏好」时，里面所有
+# 弱信号句（禁止/不要/必须…）都是**本次任务的约束**，不是长期偏好——
+# 句子级的 _BRIEF 看不到这个上下文（实测把「禁止修改任何 Python 代码」「不适配
+# 的不要硬凑」这种任务约束原样收进了记忆）。只对长消息启用，避免误伤短句。
+_MSG_BRIEF = re.compile(
+    r"任务[：:]|任务背景|步骤[：:]|要求[：:]|纪律[：:]|验收|禁止修改"
+    r"|完成后|最终回复|回归通过|只新增|本轮|不得|不适配"
+)
+_MSG_BRIEF_MIN = 120   # 短于这个长度不认为是任务书（偏好交代通常就一两句）
+
+
+def _is_task_brief(content: str) -> bool:
+    """这条用户消息整体上是不是一份任务书。
+
+    判据：够长（任务书必然多句），且带任务书结构词，或带编号分条。
+    """
+    text = str(content or "")
+    if len(text) < _MSG_BRIEF_MIN:
+        return False
+    if _MSG_BRIEF.search(text):
+        return True
+    return bool(re.search(r"\n\s*[\(（]?\d+[\)）.、)]", text))
+
 NOTE_MIN = 6        # 太短的一句话没有信息量
 NOTE_MAX = 300      # 单条上限（MemoryStore 自己还会再截断）
 MAX_RULES = 3       # 规则抽取最多条数
@@ -81,6 +104,10 @@ _TASKISH = re.compile(
     r"本次|这次|该任务|本任务|已落盘|已写入|已保存|交接"
     r"|[A-Za-z]:\\|/[\w.-]+/|\S+\.(txt|md|py|json|ya?ml|csv|docx?|xlsx?)\b"
     r"|约\s*\d+\s*[万千]字|第\s*\d+\s*行"
+    # 工具名与任务约束句（实测漏过「web_search 之前重复调用过多…」「禁止修改
+    # 任何 Python 代码」这类把任务指令当结论的条目）
+    r"|web_search|search_code|fetch_url|run_command|read_file|edit_file|write_file"
+    r"|use_skill|task_notes|GitHub API|禁止修改|不要使用任何|不要写文件|不要硬凑"
 )
 
 # 模型输出里的层前缀：[L1] / （L2） / 【L3】 / L1: / L1- ，大小写都认。
@@ -108,6 +135,10 @@ MODEL_PROMPT = """下面是一段智能体任务的对话记录。请只提炼**
 规则：
 - 每行一条，以「- [层] 」开头（如「- [L1] ...」），正文不超过 40 字，不要写过程、不要写这次的临时结果
 - 不要记录任务步骤指令（如「只完成本步」「不要重复已完成的操作」），那些不是长期结论
+- **绝对不要记录本次任务里的约束和指令**——「不要写文件」「禁止修改 X」「先查笔记再搜」
+  「不适配的不要硬凑」这类话只对这一次任务有效，是任务书的一部分，不是长期结论
+- 只提炼对**以后任何类似任务**都成立的持久信息：用户明确说的偏好、项目的固定约定、
+  环境事实、会重复踩的坑；拿不准是不是一次性的，就别记
 - 最多 2 条；如果没有值得长期保留的信息，只输出 NONE
 - 用中文，直接输出，不要任何解释
 """
@@ -151,23 +182,29 @@ def _sentences(text: str) -> list[str]:
 def rule_notes(messages: Iterable[dict]) -> list[str]:
     """规则抽取：从用户消息里挑出「要求记住」的句子。
 
-    强信号直接收；弱信号（必须/不要这类任务书里也高发的词）还要再过一道
-    「像不像任务书」的判断——不分强弱的话，用户每次贴任务要求都会往长期记忆里
-    灌一条过程指令，记忆文件很快就被这次任务的内容淹掉。
+    强信号直接收；弱信号（必须/不要这类任务书里也高发的词）还要再过两道
+    「像不像任务书」的判断——句子级一道、消息级一道。不分强弱的话，用户每次
+    贴任务要求都会往长期记忆里灌一条过程指令，记忆文件很快就被这次任务的
+    内容淹掉。消息级是兜底：整条消息就是任务书时，里面的弱信号句一律不收
+    （强信号「记住/以后/偏好」仍然生效——用户明说要记住的东西绝不能漏）。
     """
     out: list[str] = []
     for m in messages:
         if (m or {}).get("role") != "user":
             continue
-        for s in _sentences(m.get("content") or ""):
+        content = m.get("content") or ""
+        msg_is_brief = _is_task_brief(content)
+        for s in _sentences(content):
             if not (NOTE_MIN <= len(s) <= NOTE_MAX):
                 continue
             if _noisy(s):
                 continue
             if any(k in s for k in SIGNALS):
                 pass                      # 强信号：无条件收
-            elif any(k in s for k in WEAK_SIGNALS) and not _BRIEF.search(s):
-                pass                      # 弱信号：确认不像任务书才收
+            elif (not msg_is_brief
+                  and any(k in s for k in WEAK_SIGNALS)
+                  and not _BRIEF.search(s)):
+                pass                      # 弱信号：整条消息不是任务书，且这句不像任务书才收
             else:
                 continue
             if s not in out:
