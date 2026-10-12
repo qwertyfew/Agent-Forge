@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import queue
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1500,16 +1501,27 @@ class _Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._json({"error": "invalid json"}, 400)
             return
-        # 安全：只允许打开工作区根目录本身，别的路径一律拒绝
+        # 安全：只允许打开工作区之内的文件/文件夹（工作区根目录也自然满足），
+        # 越界路径一律 403。前端产出文件行点击后调这里。
         root = str(Path(self.cfg.workspace_root).resolve())
         wanted = str(req.get("path") or root)
-        if Path(wanted).resolve() != Path(root):
-            self._json({"ok": False, "error": "只允许打开工作区根目录"}, 403)
+        try:
+            target = Path(wanted).resolve()
+            target.relative_to(root)          # 不在工作区内会抛 ValueError
+        except (ValueError, OSError):
+            self._json({"ok": False, "error": "只允许打开工作区内的文件"}, 403)
+            return
+        if not target.exists():
+            self._json({"ok": False, "error": "文件不存在（可能已被清理）"}, 404)
             return
         try:
             import os
-
-            os.startfile(root)  # noqa: S606 - Windows 资源管理器
+            import subprocess
+            if hasattr(os, "startfile"):
+                os.startfile(str(target))  # noqa: S606 - Windows 系统默认程序
+            else:
+                opener = "open" if sys.platform == "darwin" else "xdg-open"
+                subprocess.Popen([opener, str(target)])  # noqa: S603
             self._json({"ok": True})
         except Exception as exc:  # noqa: BLE001
             self._json({"ok": False, "error": str(exc)})

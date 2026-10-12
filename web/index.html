@@ -418,23 +418,31 @@
   @keyframes sh{to{background-position:-200% 0}}
 
   /* 工具卡片 */
-  .tool{border:1px solid var(--line);border-radius:12px;background:var(--card);overflow:hidden;margin:4px 0}
-  .tool-head{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;font-size:12.5px;min-width:0}
+  /* 工具调用：无框时间线。连续调用合并为一组，竖线把每次调用串起来 */
+  .toolrun{margin:6px 0}
+  .tool-head{display:flex;align-items:center;gap:8px;padding:5px 8px;cursor:pointer;
+    font-size:12.5px;min-width:0;border-radius:8px}
   .tool-head:hover{background:var(--hover)}
+  .tool-ico{display:inline-flex;flex:none;color:var(--ink3)}
+  .tool-ico.spin svg{animation:afspin .9s linear infinite}
+  @keyframes afspin{to{transform:rotate(360deg)}}
   .tool-name{font-weight:600;color:var(--accent);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
   .tool-arg{color:var(--ink3);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
   .tool-state{font-size:11px;color:var(--ink3);flex:none}
   .tool-state.ok{color:var(--ok)}
   .tool-state.deny{color:var(--err)}
-  .tool-body{display:none;padding:10px 14px;border-top:1px solid var(--line);
-    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.55;
-    color:var(--ink2);white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto;background:var(--panel)}
-  .tool.open .tool-body{display:block}
-  .tool.open .chev{transform:rotate(180deg)}
-  .chev{transition:transform .18s ease;color:var(--ink3)}
-  .tool.denied{border-color:var(--err-soft)}
-  .tool.denied .tool-head{background:var(--err-soft)}
-  .tool.denied .tool-name{color:var(--err)}
+  /* 组内逐次调用：左竖线时间线过渡 */
+  .tool-items{display:none;margin:2px 0 4px 15px;padding-left:14px;border-left:2px solid var(--line)}
+  .toolrun.open .tool-items{display:block}
+  .tool-item{margin:7px 0}
+  .tool-item-head{display:flex;align-items:center;gap:8px;font-size:12px;min-width:0}
+  .tool-item-head .tool-name{font-size:11.5px}
+  .tool-item .tool-body{display:block;margin:4px 0 0;white-space:pre-wrap;word-break:break-word;
+    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--ink2);
+    background:var(--hover);border-radius:8px;padding:8px 10px;max-height:260px;overflow:auto}
+  .tool-item.denied .tool-name{color:var(--err)}
+  .toolrun .chev{transition:transform .18s ease;color:var(--ink3)}
+  .toolrun.open .tool-head .chev{transform:rotate(180deg)}
 
   /* 提示 pill */
   .pillnote{display:flex;justify-content:center;padding:4px 0;}
@@ -442,6 +450,18 @@
   .pillnote b{font-weight:600;color:var(--ink2)}
   .pillnote.warn span{color:#9a5b00;}
   .theme-dark .pillnote.warn span{color:#ffce85;}
+  /* AI 回复头像行：用户气泡 → 头像+名称+时间 → 回复内容 */
+  .ai-head{display:flex;align-items:center;gap:8px;margin:12px 0 2px}
+  .ai-ava{width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;
+    justify-content:center;color:#fff;background:linear-gradient(135deg,#5b8cff,#9b5cff);flex:none}
+  .ai-id{display:flex;flex-direction:column;line-height:1.25}
+  .ai-name{font-size:12.5px;font-weight:600;color:var(--ink2)}
+  .ai-time{font-size:11px;color:var(--ink3)}
+  /* 可点击的产出文件：清空弹窗清单行 + 历史任务里的文件名 */
+  .mf-row.lk{cursor:pointer;border-radius:8px}
+  .mf-row.lk:hover{background:var(--hover)}
+  .mf-row.lk .p{color:var(--accent)}
+  .flk{cursor:pointer;color:var(--accent);text-decoration:underline dotted;text-underline-offset:3px}
   .files-list{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:2px 0}
   .file-btn{
     display:inline-flex;
@@ -499,7 +519,7 @@
   .lane-badge.error{background:var(--err-soft);border-color:transparent;color:var(--err)}
   .lane-body{display:flex;flex-direction:column;gap:6px;max-height:520px;overflow:auto}
   .lane-body .msg-ai{max-width:100%}
-  .lane-body .think-plain,.lane-body .tool{font-size:12px}
+  .lane-body .think-plain,.lane-body .toolrun{font-size:12px}
 
   /* 执行分隔（子任务接力） */
   .divider{display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--ink3);padding:2px 0}
@@ -1160,7 +1180,10 @@ document.querySelectorAll('[data-theme-set]').forEach(b=>{
 const SVG = {
   chev : '<svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
   gear : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10l2.1 2.1M4.9 19.1L7 17m10-10l2.1-2.1"/><circle cx="12" cy="12" r="3.2"/></svg>',
-  spark: '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg>'
+  spark: '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg>',
+  spinner: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9"/></svg>',
+  okico: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 7"/></svg>',
+  errico: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>'
 };
 function el(tag, cls, text){
   const n = document.createElement(tag);
@@ -1168,7 +1191,14 @@ function el(tag, cls, text){
   if(text !== undefined) n.textContent = text;
   return n;
 }
+/* 用户向上翻看历史时暂停「贴底」：离底部超过 160px 视为在回看，
+   期间流式输出不再把视口拽到底部；回到底部附近自动恢复。 */
+let threadPinned = false;
+thread.addEventListener('scroll', ()=>{
+  threadPinned = thread.scrollHeight - thread.scrollTop - thread.clientHeight > 160;
+},{passive:true});
 function scrollBottom(){
+  if(threadPinned) return;   // 用户在回看，别拽
   // 有消息进来就以「贴底」为准：撤销可能还排队等着的那次滚动恢复
   cancelAnimationFrame(threadScrollRAF);
   threadScrollRAF = 0;
@@ -1879,7 +1909,9 @@ function openModal(cfg){
     const bd = el('div','mf-body');
     for(const it of items){
       const r = el('div','mf-row');
-      r.appendChild(el('span','p', it.text));
+      const p = el('span','p', it.text);
+      if(it.path) { r.classList.add('lk'); r.dataset.openpath = it.path; r.title = '点击打开'; }
+      r.appendChild(p);
       if(it.tag) r.appendChild(el('span','tag ' + (it.cls || ''), it.tag));
       bd.appendChild(r);
     }
@@ -2418,6 +2450,7 @@ function renderHistory(hist){
   for(const m of history){
     if(m.role === 'user'){ addUser(m.content || ''); pending = []; }
     else if(m.role === 'assistant'){
+      if(m.content && m.content.trim()) curToolGroup = null;   // 有正文 = 一段输出结束，封组
       if(m.tool_calls && m.tool_calls.length){
         pending = m.tool_calls.map(tc=>{
           const fn = tc.function || {};
@@ -2434,9 +2467,10 @@ function renderHistory(hist){
     }else if(m.role === 'tool'){
       const t = pending.shift();
       if(t){
-        t.t.querySelector('.tool-body').textContent = m.content || '';
+        t.body.textContent = m.content || '';
         t.state.textContent = '完成';
         t.state.className = 'tool-state ok';
+        toolHeadSummary(t.t);
       }
     }
   }
@@ -2444,6 +2478,7 @@ function renderHistory(hist){
   for(const t of pending){
     t.state.textContent = '未执行';
     t.state.className = 'tool-state deny';
+    toolHeadSummary(t.t);
   }
   updateContextMeter(history, threshold);
   updateCompactBtn();
@@ -2496,7 +2531,8 @@ function fileRow(f){
   const tag = f.outside ? '工作区外 · 跳过'
     : (f.via === 'scan' ? '命令副作用 · ' + (ACTION_LABEL[f.action] || '改动')
                         : (ACTION_LABEL[f.action] || '改动'));
-  return { text: f.rel || f.path, tag, cls: f.outside ? 'out' : (f.via === 'scan' ? 'scan' : '') };
+  return { text: f.rel || f.path, tag, cls: f.outside ? 'out' : (f.via === 'scan' ? 'scan' : ''),
+           path: f.outside ? '' : (f.path || '') };   // path 非空 = 可点击打开
 }
 
 /* 回看历史任务时，把它在磁盘上留下的文件也列出来（一句话形态） */
@@ -2509,7 +2545,9 @@ function stripRoot(p){
 function filesNote(files){
   const shown = files.slice(0, 8).map(f=>{
     const rel = f.rel || stripRoot(f.path);
-    return `${esc(rel)} <span style="color:var(--ink3)">(${ACTION_LABEL[f.action] || '改动'})</span>`;
+    const inner = f.outside ? esc(rel)
+      : `<span class="flk" data-openpath="${esc(f.path || '')}">${esc(rel)}</span>`;
+    return `${inner} <span style="color:var(--ink3)">(${ACTION_LABEL[f.action] || '改动'})</span>`;
   });
   return `本次任务产出 ${files.length} 个文件：` + shown.join('、')
     + (files.length > shown.length ? ` 等 ${files.length} 个` : '')
@@ -2709,9 +2747,49 @@ function addUser(text){
   m.appendChild(userCopyBtn(text));            // 先按钮后气泡，气泡右对齐时按钮落在其左下角
   m.appendChild(el('div','bub', text));
   log.appendChild(m);
+  needAIHead = true;                            // 下一个 AI 元素前要带头像行（输出→头像→时间→内容）
+  curToolGroup = null;                          // 新一轮对话：上一轮的工具组封组
   scrollBottom();
   rebuildRail();
 }
+/* AI 回复的头像行：圆形 logo + 名称 + 时间（对齐用户气泡之后，像聊天软件那样） */
+let needAIHead = false;
+function aiHead(){
+  const h = el('div','ai-head');
+  const ava = el('span','ai-ava');
+  ava.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg>';
+  h.appendChild(ava);
+  const col = el('div','ai-id');
+  const name = (lastStats && lastStats.model) ? lastStats.model : 'AgentForge';
+  col.appendChild(el('b','ai-name', name));
+  const now = new Date();
+  col.appendChild(el('span','ai-time', now.getHours() + ':' + String(now.getMinutes()).padStart(2,'0')));
+  h.appendChild(col);
+  return h;
+}
+function takeAIHead(host){
+  // 每轮回复只在第一个 AI 元素前插一次头像行
+  if(!needAIHead) return;
+  needAIHead = false;
+  (host || log).appendChild(aiHead());
+}
+/* 全局点击代理：凡是带 data-openpath 的元素（产出文件行/文件名），点击就用系统默认
+   程序打开。后端 /api/open_folder 校验路径必须在工作区内，越界一律拒绝。 */
+document.addEventListener('click', e=>{
+  const t = e.target.closest('[data-openpath]');
+  if(!t || !t.dataset.openpath) return;
+  e.preventDefault();
+  const body = { path: t.dataset.openpath };
+  const prev = t.style.opacity;
+  t.style.opacity = '.5';
+  fetch('/api/open-folder',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  }).then(x=>x.json()).then(r=>{
+    if(!r || r.ok === false) toast(null, (r && r.error) || '打开失败', 'bad');
+  }).catch(()=> toast(null, '打开失败（服务未响应）', 'bad'))
+   .finally(()=>{ t.style.opacity = prev; });
+});
 /* 右侧回溯导航：把当前对话里每次提问列成小横杠，悬停显示原文，点击跳回那条消息 */
 function rebuildRail(){
   const rail = $('rail');
@@ -2736,6 +2814,7 @@ function rebuildRail(){
 /* parent 给定时挂到它下面（并行任务的每一列各自渲染），否则进主对话流 */
 function addAssistant(parent){
   const m = el('div','msg-ai');
+  if(!parent) takeAIHead(log);                 // 主对话流：本轮回复的第一个元素前插头像行
   const body = el('div','body');
   m.appendChild(body);
   (parent || log).appendChild(m);
@@ -2816,6 +2895,7 @@ function fmtThinkDur(ms){
 }
 function addThinking(){
   if(thinkBox) return thinkBox;
+  takeAIHead(log);                             // 先思考后动笔时，头像行插在思考块前
   const d = el('div','think-plain open');
   const head = el('div','think-head');
   head.appendChild(el('span','chev','▾'));
@@ -2901,22 +2981,75 @@ function addDivider(text){
   log.appendChild(d);
   scrollBottom();
 }
+/* 工具调用：连续的调用合并进同一组（.toolrun），组头聚合显示「N 次工具调用 · 工具 ×次数」，
+   展开后是时间线式的逐次调用（spinner→✓/✗ + 参数 + 输出）。正式输出（delta）到来即断组，
+   下一批工具另起一组——「纯罗列工具卡」的观感问题靠合并解决。 */
+let curToolGroup = null;
+function toolHeadSummary(g){
+  const items = [...g.querySelectorAll('.tool-item')];
+  if(!items.length) return;
+  const counts = {};
+  items.forEach(i=>{
+    const n = i.querySelector('.tool-name').textContent;
+    counts[n] = (counts[n]||0) + 1;
+  });
+  const running = items.some(i=>i.querySelector('.tool-state').textContent === '运行中');
+  const denied  = items.some(i=>/已拒绝|未执行/.test(i.querySelector('.tool-state').textContent));
+  const head = g.querySelector('.tool-head');
+  const ico = head.querySelector('.tool-ico');
+  ico.innerHTML = running ? SVG.spinner : (denied ? SVG.errico : SVG.okico);
+  ico.classList.toggle('spin', running);
+  const nameEl = head.querySelector('.tool-name');
+  const argEl  = head.querySelector('.tool-arg');
+  if(items.length === 1){
+    nameEl.textContent = items[0].querySelector('.tool-name').textContent;
+    argEl.textContent  = items[0].querySelector('.tool-arg').textContent;
+  }else{
+    nameEl.textContent = items.length + ' 次工具调用';
+    argEl.textContent  = Object.entries(counts).map(([n,c])=> n + (c>1 ? ' ×'+c : '')).join(' · ');
+  }
+  const st = head.querySelector('.tool-state');
+  st.textContent = running ? '运行中' : (denied ? '有异常' : '完成');
+  st.className = 'tool-state ' + (running ? '' : (denied ? 'deny' : 'ok'));
+}
 function addTool(name, args, parent){
   closeThinking(); hideShimmer();
-  const t = el('div','tool');
-  const head = el('div','tool-head');
-  head.innerHTML = SVG.gear;
-  head.appendChild(el('span','tool-name', name));
-  head.appendChild(el('span','tool-arg', shortArgs(args)));
+  const host = parent || log;
+  let g = (!parent && curToolGroup && curToolGroup.parentNode === host) ? curToolGroup : null;
+  if(!g){
+    if(!parent) takeAIHead(log);              // 一上来就是工具（先做后想），头像行插在组前
+    g = el('div','toolrun');
+    const head = el('div','tool-head');
+    head.appendChild(el('span','tool-ico', ''));
+    head.appendChild(el('span','tool-name', name));
+    head.appendChild(el('span','tool-arg', shortArgs(args)));
+    const state = el('span','tool-state','运行中');
+    head.appendChild(state);
+    head.insertAdjacentHTML('beforeend', SVG.chev);
+    const items = el('div','tool-items');
+    g.appendChild(head); g.appendChild(items);
+    head.onclick = ()=> g.classList.toggle('open');
+    host.appendChild(g);
+    if(!parent) curToolGroup = g;
+  }
+  const item = el('div','tool-item');
+  const ih = el('div','tool-item-head');
+  const ico = el('span','tool-ico');
+  ico.innerHTML = SVG.spinner;
+  ico.classList.add('spin');
+  ih.appendChild(ico);
+  ih.appendChild(el('span','tool-name', name));
+  ih.appendChild(el('span','tool-arg', shortArgs(args)));
   const state = el('span','tool-state','运行中');
-  head.appendChild(state);
-  head.insertAdjacentHTML('beforeend', SVG.chev);
+  ih.appendChild(state);
+  item.appendChild(ih);
   const body = el('div','tool-body');
-  t.appendChild(head); t.appendChild(body);
-  head.onclick = ()=> t.classList.toggle('open');
-  (parent || log).appendChild(t);
+  body.textContent = '…';
+  item.appendChild(body);
+  g.querySelector('.tool-items').appendChild(item);
+  toolHeadSummary(g);
   scrollBottom();
-  return { t, state };
+  return { t:g, item, body, state };
 }
 function shortArgs(args){
   const v = args && (args.path || args.command || args.pattern || args.url || args.name);
@@ -3610,6 +3743,7 @@ function handleTaskEvent(ev, data){
     }
     else if(ev === 'thinking'){
       hideShimmer();
+      curToolGroup = null;                      // 新一轮思考开始：之前的工具组封组
       const ln = laneOf(data.task_id);
       if(ln){ addLaneThinking(ln).push(data.text); }
       else{
@@ -3636,6 +3770,7 @@ function handleTaskEvent(ev, data){
       }else{
         const tb = closeThinking();
         if(!cur) cur = addAssistant();
+        curToolGroup = null;                    // 正式输出断开工具组：下一批工具另起一组
         cur.text += data.text;
         cur.body.innerHTML = md(cur.text);
         // 思考挪到本段正式输出之后：输出 → 思考 → (下一次操作)
@@ -3661,15 +3796,16 @@ function handleTaskEvent(ev, data){
       const ln = laneOf(data.task_id);
       const card = ln ? ln.tool : curTool;
       if(card){
-        card.t.querySelector('.tool-body').textContent = data.output;
+        card.body.textContent = data.output;
         if(/^\[已拒绝\]/.test(data.output)){
-          card.t.classList.add('denied');
+          card.item.classList.add('denied');
           card.state.textContent = '已拒绝';
           card.state.className = 'tool-state deny';
         }else{
           card.state.textContent = '完成';
           card.state.className = 'tool-state ok';
         }
+        toolHeadSummary(card.t);
         if(ln) ln.tool = null; else curTool = null;
       }
     }
