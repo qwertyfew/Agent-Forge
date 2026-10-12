@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import re
+import time
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -26,6 +27,8 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
 
 ## 工作环境
 - 操作系统：{os}
+- 今天的日期：{today}
+  凡是要写「取数时间 / 当前时间 / 截至日期」的地方，一律以此为准；禁止自己编造或猜测日期。
 - 工作区根目录：{root}
 - 相对路径一律相对工作区根目录解析；{outside_rule}
 - 当前使用的模型：{model}（{model_desc}）
@@ -213,6 +216,9 @@ class Agent:
         spec = self.cfg.model(self.model_key)
         base = SYSTEM_TEMPLATE.format(
             os=f"{platform.system()} {platform.release()}",
+            # 当前日期注入系统提示：REA 三/四测里模型连续把取数时间编成
+            # 「2024-05-2x」——它不知道今天是几号，只好幻觉一个
+            today=time.strftime("%Y-%m-%d %H:%M %A"),
             root=self.cfg.workspace_root,
             model=spec.display,
             model_desc=spec.desc,

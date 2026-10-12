@@ -445,8 +445,10 @@
   .toolrun.open .tool-head .chev{transform:rotate(180deg)}
 
   /* 提示 pill */
-  .pillnote{display:flex;justify-content:flex-start;padding:4px 0;text-align:left;}
-  .pillnote span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink3);}
+  .pillnote{display:block;padding:4px 0;text-align:left;}
+  /* span 必须是普通 inline：之前用 inline-flex，<b> 会变成独立 flex 项，
+     窄列下各 fragment 各自换行，长提示句被拆得七零八落 */
+  .pillnote span{display:inline;font-size:12px;line-height:1.6;color:var(--ink3);}
   .pillnote b{font-weight:600;color:var(--ink2)}
   .pillnote.warn span{color:#9a5b00;}
   .theme-dark .pillnote.warn span{color:#ffce85;}
@@ -499,13 +501,12 @@
   }
   .file-btn:active{transform:translateY(0)}
 
-  /* 任务计划卡片 */
-  .plan{border:1px solid var(--line);border-radius:14px;background:var(--card);overflow:hidden}
-  .plan-head{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
+  /* 任务计划卡片：无框流排，与思考块/工具时间线同一视觉语言，不再突兀 */
+  .plan{padding:2px 0}
+  .plan-head{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px}
   .plan-head b{font-weight:600}
   .plan-head .plan-sum{margin-left:auto;font-size:11.5px;color:var(--ink3)}
-  .pstep{display:flex;align-items:flex-start;gap:10px;padding:8px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
-  .pstep:last-child{border-bottom:none}
+  .pstep{display:flex;align-items:flex-start;gap:10px;padding:5px 0;font-size:12.5px}
   .pstep .pidx{width:18px;height:18px;border-radius:50%;background:var(--bar);color:var(--ink2);
     font-size:10.5px;display:flex;align-items:center;justify-content:center;flex:none;margin-top:1px}
   .pstep .pbody{min-width:0;flex:1}
@@ -516,12 +517,11 @@
   .pstep.done .pidx{background:var(--ok);color:#fff}
   .pstep.error .pidx{background:var(--err);color:#fff}
 
-  /* 并行任务：互不相关的任务各占一列，流式输出互不串行 */
-  .lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:10px}
-  .lane{border:1px solid var(--line);border-radius:14px;background:var(--card);
-    padding:10px 12px;min-width:0;overflow:hidden}
-  .lane-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;
-    padding-bottom:7px;border-bottom:1px dashed var(--line2)}
+  /* 并行任务：互不相关的任务各占一列，流式输出互不串行。
+     列本身不加框——泳道只是分栏布局，不是卡片，框起来喧宾夺主 */
+  .lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px}
+  .lane{min-width:0;overflow:hidden}
+  .lane-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
   .lane-title{font-size:12.5px;font-weight:650;color:var(--ink);min-width:0}
   .lane-model{margin-left:auto;font-size:10.5px;padding:1px 7px;border-radius:999px;
     background:var(--accent-soft);color:var(--accent);font-weight:600;
@@ -2816,6 +2816,7 @@ function addUser(text){
   m.appendChild(el('div','bub', text));
   log.appendChild(m);
   needAIHead = true;                            // 下一个 AI 元素前要带头像行（输出→头像→时间→内容）
+  lastSeg = null;                               // 新一轮：上一轮的「最后一段」作废
   curToolGroup = null;                          // 新一轮对话：上一轮的工具组封组
   scrollBottom();
   rebuildRail();
@@ -2892,8 +2893,10 @@ function addAssistant(parent){
   return { m, body, text:'' };
 }
 
-/* 当前正在流式输出的回复与工具卡；lastStats/lastAssign 汇总本条回复的消耗与模型 */
-let cur = null, curTool = null, lastStats = null, lastAssign = null;
+/* 当前正在流式输出的回复与工具卡；lastStats/lastAssign 汇总本条回复的消耗与模型。
+   lastSeg 跟踪本轮回复最后一段有正文的输出（主对话流或泳道），complete 时把
+   复制/重新回答工具条挂在它上面——只挂一次、只在收尾时挂。 */
+let cur = null, curTool = null, lastStats = null, lastAssign = null, lastSeg = null;
 
 /* ============ 并行任务分行渲染 ============
    parallel 模式下后端会同时推多路 delta/tool 事件，用 task_id 区分。这里给每个
@@ -2901,6 +2904,7 @@ let cur = null, curTool = null, lastStats = null, lastAssign = null;
 let lanes = null;      // {taskId: {body, badge, cur, tool, think}}
 function addTaskLanes(tasks){
   closeThinking(); hideShimmer();
+  takeAIHead(log);               // 并行泳道可能是本轮回复的第一个元素，头像行在最顶
   const wrap = el('div','lanes');
   lanes = {};
   for(const t of tasks){
@@ -3004,6 +3008,7 @@ function hideShimmer(){ if(shimmerEl){ shimmerEl.remove(); shimmerEl = null; } }
 
 function addPillNote(html, warn){
   closeThinking(); hideShimmer();
+  takeAIHead(log);               // 提示行可能是本轮回复的第一个元素（如窗口跨度注意），头像行要在它之上
   const n = el('div','pillnote' + (warn ? ' warn' : ''));
   const s = el('span');
   s.innerHTML = html;
@@ -3016,6 +3021,7 @@ function addPillNote(html, warn){
 let planEl = null, planSteps = [];
 function addPlan(subtasks, summary){
   closeThinking(); hideShimmer();
+  takeAIHead(log);               // 计划卡可能是本轮回复的第一个元素，头像行在最顶
   planEl = el('div','plan');
   const head = el('div','plan-head');
   head.appendChild(el('b','','任务拆解'));
@@ -3165,9 +3171,13 @@ async function copyToClipboard(text){
   }catch(e){ return false; }
 }
 
-function attachMsgFoot(){
-  if(!cur || cur.foot) return;
-  const text = cur.text;
+function attachMsgFoot(seg){
+  /* 复制/重新回答/朗读工具条：只属于「完整回复」——只在回复真正收尾时挂
+     （complete/stopped/历史回看）。之前挂在 history 事件上，而 webui 对每轮
+     assistant 都发 history，导致回答中途就冒出工具条。 */
+  const c = seg || cur;
+  if(!c || c.foot) return;
+  const text = c.text;
   if(!text || !text.trim()) return;      // 纯工具轮次没有正文，不加工具条
   const foot = el('div','msg-foot');
 
@@ -3220,8 +3230,8 @@ function attachMsgFoot(){
   meta.title = '本条回复的预估 token 消耗与所用模型';
   foot.appendChild(meta);
 
-  cur.foot = foot;
-  cur.m.appendChild(foot);
+  c.foot = foot;
+  c.m.appendChild(foot);
   lastStats = null;                      // 本条已入账，累计器清零给下一条用
   scrollBottom();
 }
@@ -3850,6 +3860,7 @@ function handleTaskEvent(ev, data){
         if(!ln.cur) ln.cur = addAssistant(ln.body);
         ln.cur.text += data.text;
         ln.cur.body.innerHTML = md(ln.cur.text);
+        lastSeg = ln.cur;                        // 泳道内容也算本轮回复的正文段
         // 分栏内同样遵守「输出在前、思考在后」
         if(tb && !tb.moved && tb.d.parentNode){
           ln.cur.m.insertAdjacentElement('afterend', tb.d);
@@ -3861,6 +3872,7 @@ function handleTaskEvent(ev, data){
         curToolGroup = null;                    // 正式输出断开工具组：下一批工具另起一组
         cur.text += data.text;
         cur.body.innerHTML = md(cur.text);
+        lastSeg = cur;                           // 记住最后一段有正文的输出，complete 时挂工具条
         // 思考挪到本段正式输出之后：输出 → 思考 → (下一次操作)
         if(tb && !tb.moved && tb.d.parentNode){
           cur.m.insertAdjacentElement('afterend', tb.d);
@@ -3958,12 +3970,15 @@ function handleTaskEvent(ev, data){
     }
     else if(ev === 'history'){
       dropLanes();   // 各任务的结果已由汇总答复收口，后续 delta 回主对话流
-      history = data.messages; attachMsgFoot(); updateCompactBtn(); updateContextMeter(history, threshold);
+      // 注意：这里不挂复制/重新回答工具条——history 在多步任务的步骤边界也会触发，
+      // 挂了就会出现「回答还没完，工具条先出来了」。工具条只在 done/stopped/回看时挂。
+      history = data.messages; updateCompactBtn(); updateContextMeter(history, threshold);
     }
     else if(ev === 'error'){ dropLanes(); addError(data.message); }
     else if(ev === 'stopped'){
       dropLanes();
-      attachMsgFoot();               // 已生成的部分回复也带上工具条
+      attachMsgFoot(lastSeg || undefined);   // 已生成的部分回复也带上工具条
+      lastSeg = null;
       cur = null; curTool = null;
       addPillNote(`已停止：${esc(data.reason || '用户停止')}`
         + (data.total > 1 ? `（完成 ${data.steps}/${data.total} 步，已完成的产出保留在上下文里）` : ''));
@@ -3971,6 +3986,10 @@ function handleTaskEvent(ev, data){
     }
     else if(ev === 'complete'){
       dropLanes();
+      // 回复真正收尾：复制/重新回答工具条挂在本轮最后一段有正文的输出上。
+      // 只在这里挂一次——回答过程中绝不出现（history 事件不再挂）。
+      attachMsgFoot(lastSeg);
+      lastSeg = null;
       cur = null;
       if(data.multi) for(let i=1;i<=data.steps;i++) markPlanStep(i,'done');
       if(liveTask) liveTask.stepIndex = data.steps, liveTask.stepTotal = data.steps;
