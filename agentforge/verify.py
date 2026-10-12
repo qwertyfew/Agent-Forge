@@ -15,9 +15,13 @@
     3. 核查   模型总结声称「验证通过」但任务里从没跑过 run_command 时，
               在答复后追加「未经系统确认」的声明，不给谎报留活口
     4. 产物   任务书声明了交付文件（「报告写入 docs/x.md」「产出文件：x.md」）、
-              或总结声称「已写入 X」时，系统逐个 os.path.exists 核查，
-              缺失就在答复后追加系统侧声明（REA 测试抓到的盲区：
-              全程零 write_file 却谎报「报告已写入」，验证命令闸门管不到文件类交付）
+              或总结声称「已写入 X」时，系统逐个核查——不只查存在，还查
+              「本轮是否真的写过」：
+                missing  文件不存在（REA 一测：零 write_file 谎报已写入）
+                stale    文件存在但 mtime 与任务开始快照一致——本轮从未更新，
+                         吃了上一轮的老本（REA 三测：报告是上轮旧文件）
+                ghost    文件存在但全程零写操作——它不可能是本轮写出的
+              任一命中先给一轮修正机会，复查仍不过就在答复后追加系统侧声明
 """
 
 from __future__ import annotations
@@ -67,28 +71,32 @@ _CLAIM_VERIFIED = re.compile(
 # 字符集里，保证抓出来的是纯路径，不带「全过」「（含来源链接）」这类人话尾巴。
 _PATH_TOK = r"([A-Za-z0-9_][A-Za-z0-9._/\\-]*\.[A-Za-z0-9]{1,8})"
 
+# 路径前的分隔符：冒号/反引号之外还要容忍 markdown 强调符号——REA 三测里总结写的是
+# 「已写入：**`docs/x.md`**」，** 把声明提取挡死了，闸门因此整个漏判。
+_SEP = r"\s*[:：`*_~\s]*\s*"
+
 # 任务书里的产物声明·动词式：「（报告）写入 docs/x.md」「保存到 x.json」「输出到 out/r.md」。
 # 前面紧邻「禁止/不要/勿/别/不」的不算（那是禁令，不是交付要求）。
 _ARTIFACT_WRITE = re.compile(
     r"(?<!禁止)(?<!不要)(?<!勿)(?<!别)(?<!不)"
     r"(?:写入|写至|保存(?:到|为|在)|存(?:到|为|入)|输出到|输出为|落盘(?:到|为)?)"
-    r"\s*[:：`]*\s*" + _PATH_TOK,
+    + _SEP + _PATH_TOK,
 )
 
 # 任务书里的产物声明·冒号式：「产出文件：docs/x.md」「输出路径：out/x.md」「交付物：x.md」。
 # 故意不收裸「报告：」「结果：」——那两类后面跟文件名时歧义太大，容易误伤。
 _ARTIFACT_COLON = re.compile(
-    r"(?:产出|输出|交付)(?:文件|路径|物)?\s*[:：]\s*`?" + _PATH_TOK,
+    r"(?:产出|输出|交付)(?:文件|路径|物)?\s*[:：]" + _SEP + _PATH_TOK,
 )
 
 # 总结里的「已写入 X」完成式声明。必须带完成语气（已/成功/完成/了/好），
 # 「接下来可写入 X」「将报告写入 X」这类将来时/转述不误伤。
 _ARTIFACT_CLAIM = re.compile(
     r"(?:已(?:经)?|成功|完成)[^。\n；;]{0,12}?(?:写入|创建|保存到|保存在|生成|落盘|产出)(?:了|好)?"
-    r"\s*[:：`]*\s*" + _PATH_TOK +
-    r"|(?:写入|创建|保存到|保存在|生成|落盘|产出)(?:了|好)(?:一?份)?\s*[:：`]*\s*" + _PATH_TOK +
-    r"|(?:has been |have been )?(?:written to|saved to|saved as|created|generated)\s+`?"
-    + _PATH_TOK,
+    + _SEP + _PATH_TOK +
+    r"|(?:写入|创建|保存到|保存在|生成|落盘|产出)(?:了|好)(?:一?份)?" + _SEP + _PATH_TOK +
+    r"|(?:has been |have been )?(?:written to|saved to|saved as|created|generated)"
+    + _SEP + _PATH_TOK,
     re.I,
 )
 
@@ -221,6 +229,180 @@ def ran_verification(convo: list[dict] | None) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# 产物核查·第二轮升级：不只查存在，还查「本轮是否真的写过」
+# ---------------------------------------------------------------------------
+# 会产出/修改文件的写类工具。总结声称「已写入」而任务里一个都没出现过，
+# 就是幽灵声明的判定依据（REA 三测：零 write_file 却声称报告已写入）。
+WRITE_TOOLS = ("write_file", "edit_file")
+
+# mtime 比较容差：同一文件未修改时 stat 返回值应完全一致，留一点余量
+# 防文件系统时间精度差异造成的误判。
+_MTIME_EPS = 0.002
+
+
+def _tool_names(convo: list[dict] | None):
+    for m in convo or []:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        for tc in (m.get("tool_calls") or []):
+            name = ((tc.get("function") or {}).get("name")
+                    or tc.get("name") or "")
+            if name:
+                yield name
+
+
+def ran_writes(convo: list[dict] | None) -> bool:
+    """任务过程中是否调用过写类工具（write_file / edit_file）。"""
+    return any(n in WRITE_TOOLS for n in _tool_names(convo))
+
+
+def produced_possible(convo: list[dict] | None) -> bool:
+    """任务里是否出现过任何可能产出文件的操作（写类工具或 run_command——
+    命令也可能合法地产出文件，比如跑脚本生成报告；两者都没有时，
+    「已写入 X」才板上钉钉是假的）。"""
+    return any(n in WRITE_TOOLS or n == "run_command" for n in _tool_names(convo))
+
+
+def _resolve_inside(path: str, root: Path) -> Path | None:
+    """把声明/声称的路径解析到工作区内；逃出工作区或解析失败返回 None。"""
+    f = Path(path)
+    try:
+        target = f if f.is_absolute() else root / f
+        target = target.resolve()
+    except (OSError, ValueError):
+        return None
+    if not target.is_relative_to(root):
+        return None
+    return target
+
+
+def snapshot_artifacts(text: str, root: str | Path) -> dict[str, float]:
+    """任务开始时调用：记录任务书声明交付文件的 mtime（不存在的不记录）。
+
+    收尾核查用它判断「本轮是否真的更新过」——REA 三测里 agent 没重写
+    声明的报告，上一轮的旧文件原样躺在那里，单纯的存在性核查被糊弄过去了。
+    """
+    root = Path(root).resolve()
+    snap: dict[str, float] = {}
+    for p in extract_declared_artifacts(text):
+        target = _resolve_inside(p, root)
+        if target is None:
+            continue
+        try:
+            if target.is_file():
+                snap[p.lower()] = target.stat().st_mtime
+        except OSError:
+            continue
+    return snap
+
+
+def path_mtime(path: str, root: str | Path) -> float | None:
+    """单个文件的当前 mtime；不存在/不可读/工作区外返回 None（修正轮复查用）。"""
+    target = _resolve_inside(str(path).strip().strip("`'\""), Path(root).resolve())
+    if target is None:
+        return None
+    try:
+        return target.stat().st_mtime if target.is_file() else None
+    except OSError:
+        return None
+
+
+def find_artifact_issues(entries: list[tuple[str, bool]],
+                         root: str | Path,
+                         snapshot: dict[str, float] | None = None,
+                         produced: bool | None = None) -> list[dict]:
+    """产物核查的主判定：返回问题清单，每项 {path, declared, status}。
+
+    - missing  文件不存在（原 find_missing_artifacts 的行为）
+    - stale    文件存在、任务书声明为交付物、mtime 与任务开始快照一致——
+               本轮从未更新，吃老本（REA 三测主形态）
+    - ghost    文件存在、总结声称已写入、但任务全程没有任何可能产出文件的
+               操作——现有内容不可能是本轮写的
+
+    produced 三态：True/False = 任务里是否出现过写类工具或 run_command；
+    None = 无法判定，跳过 ghost。snapshot 为 None 时跳过 stale（没做起点
+    快照）；对声明文件只要给了快照就以 mtime 为准（变了/本轮新建都算数），
+    不再看 produced——mtime 比工具调用清单更权威。
+    """
+    root = Path(root).resolve()
+    issues: list[dict] = []
+    seen: set[str] = set()
+    for raw, declared in entries:
+        p = str(raw).strip().strip("`'\"")
+        k = p.lower()
+        if not p or k in seen:
+            continue
+        seen.add(k)
+        target = _resolve_inside(p, root)
+        if target is None:
+            continue
+        try:
+            exists = target.exists()
+        except OSError:
+            exists = False
+        if not exists:
+            issues.append({"path": p, "declared": bool(declared),
+                           "status": "missing"})
+            continue
+        if declared and snapshot is not None:
+            # 快照是权威：mtime 变了或任务开始时还不存在，都说明本轮动过
+            m0 = snapshot.get(k)
+            if m0 is not None:
+                try:
+                    now = target.stat().st_mtime
+                except OSError:
+                    now = None
+                if now is not None and now <= m0 + _MTIME_EPS:
+                    issues.append({"path": p, "declared": True,
+                                   "status": "stale"})
+            continue
+        if produced is False:
+            issues.append({"path": p, "declared": bool(declared),
+                           "status": "ghost"})
+    return issues
+
+
+def artifact_fixed(issue: dict, pre: dict[str, float | None],
+                   root: str | Path) -> bool:
+    """修正轮之后复查单个问题是否已解决。
+
+    missing → 文件现在存在即可；stale/ghost → mtime 比修正前记录变大了
+    （pre 里是 None 说明核查时文件还不存在，现在存在就算修好）。
+    """
+    now = path_mtime(issue["path"], root)
+    if now is None:
+        return False
+    if issue["status"] == "missing":
+        return True
+    m0 = pre.get(issue["path"].lower())
+    if m0 is None:
+        return True
+    return now > m0 + _MTIME_EPS
+
+
+_STATUS_TEXT = {
+    "missing": "不存在于工作区",
+    "stale": "存在，但修改时间与任务开始时的快照一致——本轮从未更新，现有内容不是本轮产出",
+    "ghost": "存在，但整个任务没有任何写文件/执行命令的操作——它不是本轮写出的",
+}
+
+
+def issue_line(c: dict) -> str:
+    """问题清单里的一行：修正轮提示与最终核查声明共用，保证口径一致。"""
+    tag = "任务书明确要求的交付物" if c.get("declared") else "总结声称已写入"
+    return f"`{c['path']}`（{tag}；{_STATUS_TEXT.get(c['status'], c['status'])}）"
+
+
+def artifact_issue_block(issues: list[dict]) -> str:
+    """附在最终答复末尾的产物核查声明。程序写的，模型只有解读权。"""
+    lines = ["【系统侧核查】以下产出文件经系统收尾核查**不是本轮产出**："]
+    for c in issues:
+        lines.append(f"- {issue_line(c)}")
+    lines.append("此核查由程序完成，不依赖模型自报；若与本回复正文有出入，以本清单为准。")
+    return "\n".join(lines)
+
+
 def _dedupe_cap(paths: list[str], cap: int = 8) -> list[str]:
     """去重保序（大小写不敏感），限量防极端输入。"""
     seen: set[str] = set()
@@ -335,13 +517,14 @@ CORRECTIVE_PROMPT = """【系统侧验证结果（权威，不可推翻）】
 只输出修正后的最终总结（或修复动作的开始），不要寒暄。"""
 
 ARTIFACT_CORRECTIVE_PROMPT = """【系统侧核查结果（权威，不可推翻）】
-以下产出文件在收尾核查时不存在于工作区：
-{missing}
+以下产出文件经系统核查不是本轮产出：
+{issues}
 
 【你此前的总结】
 {summary}
 
 【要求】
-如果这些文件确实应该产出：现在真实地创建并写入它们（write_file），写完再说完成；
+如果这些文件确实应该由本任务产出：现在真实地创建/更新它们（write_file），写完再说完成；
 如果本就无需产出（例如核查误判或路径笔误），就在最终总结里如实说明原因。
-禁止再次声称已写入而不实际创建文件。只输出修正动作的开始或修正后的最终总结，不要寒暄。"""
+禁止再次声称已写入而不实际写文件——系统会复查文件是否真的在本轮被写过。
+只输出修正动作的开始或修正后的最终总结，不要寒暄。"""

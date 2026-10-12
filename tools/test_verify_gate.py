@@ -184,7 +184,8 @@ def main() -> None:
         def run(self, convo, prompt, **kw):
             FixingAgent.corrective_calls += 1
             seg = prompt.split("【你此前的总结】")[0]
-            for m in re.finditer(r"^- (.+)$", seg, re.M):
+            # 问题行格式：- `path`（标签；状态说明），抓反引号里的路径
+            for m in re.finditer(r"`([^`]+)`", seg):
                 f = Path(StubCfg.workspace_root) / m.group(1).strip()
                 f.parent.mkdir(parents=True, exist_ok=True)
                 f.write_text("real content\n", encoding="utf-8")
@@ -213,7 +214,8 @@ def main() -> None:
     check("G 谎报：仍触发一轮修正", StubAgent.corrective_calls == 1)
     art_evs = [e for e in evs if e["type"] == "verify" and e.get("artifacts")]
     check("G 谎报：发产物 verify 事件", len(art_evs) == 1
-          and art_evs[0]["artifacts"] == [{"path": "docs/ghost2.md", "declared": True}],
+          and art_evs[0]["artifacts"] == [{"path": "docs/ghost2.md",
+                                           "declared": True, "status": "missing"}],
           repr(art_evs))
     check("G 谎报：总结附系统侧核查声明",
           "【系统侧核查】" in holder["summary"] and "docs/ghost2.md" in holder["summary"]
@@ -229,14 +231,174 @@ def main() -> None:
           and "solo_notes.md" in holder["summary"]
           and "总结声称已写入" in holder["summary"], holder["summary"])
 
-    # ---------- 闸门路径 I：声明的文件真实存在 → 不介入 ----------
+    # ---------- 闸门路径 I：声明的文件真实存在且任务确实写过 → 不介入 ----------
     ag = StubAgent()
     StubAgent.corrective_calls = 0
-    holder = {"summary": "明细已写入 sub/out.json，全部完成", "convo": []}
+    convo_w = [{"role": "assistant", "content": "", "tool_calls": [
+        {"function": {"name": "write_file", "arguments": {}}}]}]
+    holder = {"summary": "明细已写入 sub/out.json，全部完成", "convo": convo_w}
     evs = list(_verify_gate(ag, "任务：产出明细，产出文件：sub/out.json", holder))
-    check("I 真存在：零介入",
+    check("I 真存在且写过：零介入",
           StubAgent.corrective_calls == 0 and evs == []
           and holder["summary"] == "明细已写入 sub/out.json，全部完成")
+
+    # ---------- markdown 强调符不再挡声明提取（REA 三测盲区 2） ----------
+    s3 = "完成。报告已写入：**`docs/REA_EVAL_AGENT.md`**，请查阅。"
+    check("Q1 中文加粗+反引号不挡提取",
+          vg.claimed_artifacts(s3) == ["docs/REA_EVAL_AGENT.md"],
+          repr(vg.claimed_artifacts(s3)))
+    check("Q2 英文加粗不挡提取",
+          vg.claimed_artifacts("report written to **`docs/b.md`**")
+          == ["docs/b.md"], repr(vg.claimed_artifacts("report written to **`docs/b.md`**")))
+    brief_md = "任务：写报告，报告写入 **docs/md_bold.md**，回复给摘要"
+    check("Q3 任务书声明同样容忍加粗",
+          vg.extract_declared_artifacts(brief_md) == ["docs/md_bold.md"],
+          repr(vg.extract_declared_artifacts(brief_md)))
+
+    # ---------- 写操作核查（ghost 判定依据） ----------
+    convo_edit = [{"role": "assistant", "content": "", "tool_calls": [
+        {"function": {"name": "edit_file", "arguments": {}}}]}]
+    check("R1 识别 write_file", vg.ran_writes(convo_w))
+    check("R2 识别 edit_file", vg.ran_writes(convo_edit))
+    check("R3 只读历史不算写", not vg.ran_writes(convo_no))
+    check("R4 run_command 也算可能产出", vg.produced_possible(convo_yes))
+    check("R5 纯只读任务不可能产出", not vg.produced_possible(convo_no))
+
+    # ---------- mtime 起点快照 ----------
+    (tmp / "docs").mkdir(exist_ok=True)
+    (tmp / "docs" / "snap_a.md").write_text("v1\n", encoding="utf-8")
+    snap = vg.snapshot_artifacts("报告写入 docs/snap_a.md，明细写入 docs/snap_b.md", tmp)
+    check("S1 快照只记已存在的声明文件",
+          list(snap) == ["docs/snap_a.md"], repr(snap))
+    check("S2 快照值是正数 mtime", snap["docs/snap_a.md"] > 0)
+
+    # ---------- 三类问题判定 ----------
+    (tmp / "docs" / "ghost_exist.md").write_text("old content\n", encoding="utf-8")
+    (tmp / "docs" / "fresh.md").write_text("new\n", encoding="utf-8")
+    issues = vg.find_artifact_issues(
+        [("docs/snap_a.md", True),        # 存在 + 快照 mtime 未变 → stale
+         ("docs/nope.md", True),          # 不存在 → missing
+         ("docs/fresh.md", False),        # 存在、非声明、produced=True → 无问题
+         ("docs/ghost_exist.md", False),  # 存在、声称写入、produced=True → 不冤枉
+         ("../escape.md", True),          # 逃出工作区 → 不核查
+         (str(tmp.parent / "outside.md"), True)],  # 工作区外 → 不核查
+        tmp, snapshot=snap, produced=True)
+    got = {(i["path"], i["status"]) for i in issues}
+    check("T1 stale/missing 各就各位，有写操作不判 ghost",
+          got == {("docs/snap_a.md", "stale"), ("docs/nope.md", "missing")},
+          repr(got))
+
+    issues_g = vg.find_artifact_issues([("docs/ghost_exist.md", False)], tmp,
+                                       produced=False)
+    check("T1b 零写操作才判 ghost",
+          issues_g == [{"path": "docs/ghost_exist.md", "declared": False,
+                        "status": "ghost"}], repr(issues_g))
+
+    issues2 = vg.find_artifact_issues([("docs/ghost_exist.md", False)], tmp,
+                                      produced=None)
+    check("T2 produced 未知时跳过 ghost", issues2 == [], repr(issues2))
+
+    time.sleep(0.02)   # 保证 mtime 前进
+    (tmp / "docs" / "snap_a.md").write_text("v2\n", encoding="utf-8")
+    issues3 = vg.find_artifact_issues([("docs/snap_a.md", True)], tmp,
+                                      snapshot=snap, produced=False)
+    check("T3 快照后文件变过 → 不算 stale 也不算 ghost", issues3 == [], repr(issues3))
+
+    (tmp / "docs" / "new_born.md").write_text("born this task\n", encoding="utf-8")
+    issues4 = vg.find_artifact_issues([("docs/new_born.md", True)], tmp,
+                                      snapshot=snap, produced=False)
+    check("T4 快照里没有 → 本轮新建 → 不误判", issues4 == [], repr(issues4))
+
+    # ---------- path_mtime / artifact_fixed（修正轮复查） ----------
+    pm = vg.path_mtime("docs/snap_a.md", tmp)
+    check("U1 path_mtime 取到值", pm is not None and pm > 0)
+    check("U2 未修复：mtime 没变", not vg.artifact_fixed(
+        {"path": "docs/snap_a.md", "status": "stale"},
+        {"docs/snap_a.md": pm}, tmp))
+    time.sleep(0.02)
+    (tmp / "docs" / "snap_a.md").write_text("v3\n", encoding="utf-8")
+    check("U3 已修复：mtime 变了", vg.artifact_fixed(
+        {"path": "docs/snap_a.md", "status": "stale"},
+        {"docs/snap_a.md": pm}, tmp))
+    check("U4 missing 修复=文件出现", vg.artifact_fixed(
+        {"path": "docs/now_exists.md", "status": "missing"}, {}, tmp) is False)
+    (tmp / "docs" / "now_exists.md").write_text("x\n", encoding="utf-8")
+    check("U5 missing 修复后判定通过", vg.artifact_fixed(
+        {"path": "docs/now_exists.md", "status": "missing"}, {}, tmp))
+    check("U6 文件不存在 → 未修好", not vg.artifact_fixed(
+        {"path": "docs/late.md", "status": "ghost"},
+        {"docs/late.md": None}, tmp))
+    (tmp / "docs" / "late.md").write_text("late\n", encoding="utf-8")
+    check("U7 pre 为 None 但现在存在 → 算修好", vg.artifact_fixed(
+        {"path": "docs/late.md", "status": "ghost"},
+        {"docs/late.md": None}, tmp))
+
+    block_i = vg.artifact_issue_block(
+        [{"path": "docs/snap_a.md", "declared": True, "status": "stale"}])
+    check("T5 核查声明带状态说明",
+          "docs/snap_a.md" in block_i and "本轮从未更新" in block_i
+          and "【系统侧核查】" in block_i, block_i)
+
+    # ---------- 闸门路径 V：吃老本（声明文件是上轮旧文件，本轮没碰） ----------
+    (tmp / "docs" / "old_report.md").write_text("stale v1\n", encoding="utf-8")
+    snap_v = vg.snapshot_artifacts("报告写入 docs/old_report.md", tmp)
+    ag = StubAgent()
+    StubAgent.corrective_calls = 0
+    holder = {"summary": "评估报告已写入 docs/old_report.md", "convo": []}
+    evs = list(_verify_gate(ag, "任务：更新评估报告，报告写入 docs/old_report.md",
+                            holder, snapshot=snap_v))
+    check("V1 吃老本：触发修正轮", StubAgent.corrective_calls == 1)
+    v_evs = [e for e in evs if e["type"] == "verify" and e.get("artifacts")]
+    check("V2 吃老本：事件标 stale",
+          v_evs and v_evs[0]["artifacts"] == [{"path": "docs/old_report.md",
+                                               "declared": True, "status": "stale"}],
+          repr(v_evs))
+    check("V3 吃老本：附系统侧核查声明",
+          "【系统侧核查】" in holder["summary"] and "本轮从未更新" in holder["summary"],
+          holder["summary"])
+
+    # ---------- 闸门路径 W：加粗声称 + 文件缺失（复现 REA 三测盲区 2） ----------
+    ag = StubAgent()
+    StubAgent.corrective_calls = 0
+    holder = {"summary": "完成。报告已写入：**`docs/bold_claim.md`**，请查阅", "convo": []}
+    evs = list(_verify_gate(ag, "帮我写个总结", holder))
+    check("W1 加粗声称：提取生效触发核查", StubAgent.corrective_calls == 1)
+    check("W2 加粗声称：缺失照常附声明",
+          "bold_claim.md" in holder["summary"] and "【系统侧核查】" in holder["summary"],
+          holder["summary"])
+
+    # ---------- 闸门路径 X：幽灵声明（文件在但全程零写操作） ----------
+    ag = StubAgent()
+    StubAgent.corrective_calls = 0
+    holder = {"summary": "明细已写入 docs/ghost_exist.md", "convo": []}
+    evs = list(_verify_gate(ag, "帮我整理明细", holder))
+    check("X1 幽灵声明：触发修正轮", StubAgent.corrective_calls == 1)
+    x_evs = [e for e in evs if e["type"] == "verify" and e.get("artifacts")]
+    check("X2 幽灵声明：事件标 ghost",
+          x_evs and x_evs[0]["artifacts"] == [{"path": "docs/ghost_exist.md",
+                                               "declared": False, "status": "ghost"}],
+          repr(x_evs))
+    check("X3 幽灵声明：核查声明说明缘由",
+          "不是本轮写出的" in holder["summary"], holder["summary"])
+
+    # ---------- 闸门路径 Y：真写过/本轮更新过 → 零介入 ----------
+    ag = StubAgent()
+    StubAgent.corrective_calls = 0
+    holder = {"summary": "明细已写入 docs/ghost_exist.md", "convo": convo_w}
+    evs = list(_verify_gate(ag, "帮我整理明细", holder))
+    check("Y1 任务里真写过 → 不冤枉",
+          StubAgent.corrective_calls == 0 and evs == []
+          and holder["summary"] == "明细已写入 docs/ghost_exist.md")
+    (tmp / "docs" / "touched.md").write_text("v1\n", encoding="utf-8")
+    snap_t = vg.snapshot_artifacts("产出文件：docs/touched.md", tmp)
+    time.sleep(0.02)
+    (tmp / "docs" / "touched.md").write_text("v2\n", encoding="utf-8")
+    holder = {"summary": "明细已写入 docs/touched.md", "convo": []}
+    evs = list(_verify_gate(ag, "任务：产出明细，产出文件：docs/touched.md",
+                            holder, snapshot=snap_t))
+    check("Y2 快照后真更新过 → 零介入",
+          StubAgent.corrective_calls == 0 and evs == []
+          and holder["summary"] == "明细已写入 docs/touched.md")
 
     print("\n全部断言通过。")
 

@@ -181,7 +181,8 @@ def _worth_dispatch(message: str, pool_size: int) -> bool:
 
 
 def _verify_gate(agent, message: str, holder: dict,
-                 auto_approve=None, stop_check=None, read_cache=None):
+                 auto_approve=None, stop_check=None, read_cache=None,
+                 snapshot: dict[str, float] | None = None):
     """收尾验证闸门（系统侧强制）：模型只有解读权，没有裁定权。
 
     - 任务书里声明了验证命令（如「验证：python tools/x.py」）→ 程序亲自运行，
@@ -189,10 +190,11 @@ def _verify_gate(agent, message: str, holder: dict,
       之后无论模型总结说什么，都会在答复末尾附上程序写的系统侧验证报告。
     - 没声明验证命令、但模型总结声称「验证通过」且全程没跑过 run_command →
       在答复末尾追加「未经系统确认」声明。
-    - 独立第二道核查：任务书声明的交付文件（「报告写入 docs/x.md」）与总结声称
-      「已写入 X」的文件，系统逐个 os.path.exists 核查；缺失给一轮修正机会
-      （真写文件或如实说明），之后仍缺失就在答复末尾附上系统侧核查声明——
-      REA 测试里「零 write_file 却谎报报告已写入」这类谎报在此现形。
+    - 独立第二道核查：任务书声明的交付文件与总结声称「已写入 X」的文件，
+      系统核查三类问题——不存在（missing）/ 本轮未更新（stale，mtime 与任务
+      开始快照一致，吃老本）/ 幽灵声明（ghost，全程零写操作却说已写入）；
+      命中给一轮修正机会，复查仍不过就在答复末尾附上系统侧核查声明。
+      snapshot 由调用方在任务开始时用 verify_gate.snapshot_artifacts 生成。
 
     holder 进出各带 {"summary", "convo"}：闸门可能改写总结（追加报告/被修正轮
     重写），调用方从 holder 里取最终值。
@@ -236,20 +238,29 @@ def _verify_gate(agent, message: str, holder: dict,
           and not verify_gate.ran_verification(convo)):
         summary = (summary + "\n\n---\n" + verify_gate.UNVERIFIED_NOTE).strip()
 
-    # 声明产物存在性核查（独立于验证命令的第二道核查）：验证命令闸门只管
-    # 「跑测试」，管不到「报告写好了没」——REA 测试里模型零 write_file 却
-    # 谎报「报告已写入」，连 read_file 撞上「文件不存在」后都不回头。
+    # 声明产物核查（独立于验证命令的第二道核查）：三类问题——
+    #   missing 文件不存在（REA 一测：零 write_file 谎报「已写入」）
+    #   stale   文件在但 mtime 与任务开始快照一致——本轮从未更新，吃老本
+    #           （REA 三测：没重写声明的报告，上一轮的旧文件糊弄了存在性核查）
+    #   ghost   文件在但全程零写操作——它不可能是本轮写出的
+    # 任一命中先给一轮修正机会（真写文件或如实说明），复查仍不过就在答复
+    # 末尾附上系统侧核查声明——模型只有解读权。
     declared = verify_gate.extract_declared_artifacts(message)
     dset = {d.lower() for d in declared}
     claimed = [p for p in verify_gate.claimed_artifacts(summary)
                if p.lower() not in dset]
     if declared or claimed:
         entries = [(p, True) for p in declared] + [(p, False) for p in claimed]
-        missing = verify_gate.find_missing_artifacts(entries, cfg.workspace_root)
-        if missing and not corrected:
-            # 给一轮修正机会：真去写文件，或如实说明；之后以复查结果为准
+        produced = (verify_gate.ran_writes(convo)
+                    or verify_gate.ran_verification(convo))
+        issues = verify_gate.find_artifact_issues(
+            entries, cfg.workspace_root, snapshot=snapshot, produced=produced)
+        if issues and not corrected:
+            # 修正前先记下这些文件的 mtime：复查就看它本轮有没有真的变
+            pre = {c["path"].lower(): verify_gate.path_mtime(c["path"], cfg.workspace_root)
+                   for c in issues}
             prompt = verify_gate.ARTIFACT_CORRECTIVE_PROMPT.format(
-                missing="\n".join(f"- {c['path']}" for c in missing),
+                issues="\n".join(verify_gate.issue_line(c) for c in issues),
                 summary=summary or "（无）",
             )
             for ev in agent.run(convo, prompt, auto_route=False,
@@ -262,14 +273,15 @@ def _verify_gate(agent, message: str, holder: dict,
                     convo = ev["history"]
                     summary = (ev.get("content") or "").strip() or summary
                 yield ev
-            missing = verify_gate.find_missing_artifacts(entries, cfg.workspace_root)
-        if missing:
+            issues = [c for c in issues
+                      if not verify_gate.artifact_fixed(c, pre, cfg.workspace_root)]
+        if issues:
             yield {"type": "verify", "cmd": "", "ok": False, "exit": "",
                    "duration": "",
-                   "artifacts": [{"path": c["path"], "declared": c["declared"]}
-                                 for c in missing]}
+                   "artifacts": [{"path": c["path"], "declared": c["declared"],
+                                  "status": c["status"]} for c in issues]}
             summary = (summary + "\n\n---\n"
-                       + verify_gate.artifact_missing_block(missing)).strip()
+                       + verify_gate.artifact_issue_block(issues)).strip()
     if summary != holder.get("summary"):
         holder["summary"] = summary
         holder["convo"] = convo
@@ -363,6 +375,10 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
 
     state = SharedState(message)
     state.register(ordered)
+
+    # 产物核查的起点快照：任务书声明交付文件的 mtime 在此刻定格，收尾时
+    # 拿它判断「本轮是否真的更新过」——上一轮的旧文件糊弄不了这关。
+    snap = verify_gate.snapshot_artifacts(message, agent.cfg.workspace_root)
 
     # 整任务共享的只读调用缓存：所有泳道/子任务 + 收尾修正轮共用一份。
     # REA 二测里 t2/t3/t4 各自 list_dir docs、各读一遍 HANDOFF.md——
@@ -617,7 +633,7 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
             holder = {"summary": final, "convo": final_convo}
             yield from _verify_gate(agent, message, holder,
                                     auto_approve=auto_approve, stop_check=stopped,
-                                    read_cache=read_cache)
+                                    read_cache=read_cache, snapshot=snap)
             final = holder["summary"]
             final_convo = holder["convo"]
             final_convo = [*final_convo, {"role": "assistant", "content": final}]
@@ -628,7 +644,7 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
         holder = {"summary": _last_assistant(final_convo), "convo": final_convo}
         yield from _verify_gate(agent, message, holder,
                                 auto_approve=auto_approve, stop_check=stopped,
-                                read_cache=read_cache)
+                                read_cache=read_cache, snapshot=snap)
         if holder["summary"] and holder["summary"] != _last_assistant(final_convo):
             final_convo = holder["convo"]
             yield {"type": "assistant", "content": holder["summary"],
@@ -665,6 +681,9 @@ def run_task(
     本任务写过的文件，两者都透传给每一步的 Agent.run。
     """
     stopped = stop_check or (lambda: False)
+    # 产物核查的起点快照：任务书声明交付文件的 mtime 此刻定格，收尾时用它
+    # 判断「本轮是否真的更新过」，上一轮的旧文件糊弄不了核查
+    gate_snap = verify_gate.snapshot_artifacts(message, agent.cfg.workspace_root)
     pinned_key = (model_key or "").strip()
     pinned: dict | None = None
     # 任务池 = 「勾选且本机能跑」。一个都没有时退回到所有能跑的模型——
@@ -876,7 +895,7 @@ def run_task(
     holder = {"summary": summary, "convo": hist}
     yield from _verify_gate(agent, message, holder,
                             auto_approve=auto_approve, stop_check=stopped,
-                            read_cache=read_cache)
+                            read_cache=read_cache, snapshot=gate_snap)
     if holder["summary"] != summary:
         summary, hist = holder["summary"], holder["convo"]
         yield {"type": "assistant", "content": summary, "history": hist}

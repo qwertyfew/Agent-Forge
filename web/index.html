@@ -3787,10 +3787,12 @@ function handleTaskEvent(ev, data){
     }
     else if(ev === 'verify'){
       if(Array.isArray(data.artifacts) && data.artifacts.length){
-        // 产物存在性核查：系统发现声称的交付文件实际不存在（不是模型自报的结论）
-        const paths = data.artifacts.map(a => `<b>${esc(a.path||'')}</b>`).join('、');
+        // 产物核查：系统发现交付文件缺失/本轮未更新/非本轮写出（不是模型自报的结论）
+        const ST = {missing:'不存在', stale:'存在但本轮未更新', ghost:'存在但非本轮写出'};
+        const paths = data.artifacts.map(a =>
+          `<b>${esc(a.path||'')}</b>（${esc(ST[a.status] || '异常')}）`).join('、');
         const tag = data.artifacts.some(a => a.declared) ? '任务书要求的交付物' : '总结声称已写入';
-        addPillNote(`系统侧产物核查：${tag} <b>${paths}</b> 不存在于工作区`
+        addPillNote(`系统侧产物核查：${tag} ${paths}`
           + '，详见最终答复附带的核查声明', true);
       } else {
         // 收尾验证闸门：系统在任务收尾时亲自运行验证命令的真实结果，
