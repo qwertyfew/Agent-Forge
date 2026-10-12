@@ -43,6 +43,19 @@ class Skill:
     body: str = ""
     _loaded: bool = False
     _keywords: list[str] = field(default_factory=list)
+    # ---- 来源追溯：区分「Agent 自己提取的」和「装进来的」 ----
+    # auto_learned 由自检机制写进 frontmatter；learned_at 是提取那一刻的时间戳，
+    # 供「技能管理」页显示「什么时候提取的」。装进来的技能没有这两个字段。
+    auto_learned: bool = False
+    learned_at: str = ""
+    # ---- 资产元数据（借鉴 TencentDB Agent Memory 的 Skill 定义模型）----
+    # 一个可复用技能不只是一段正文，还得能说清「哪一版、有哪些附带资源、
+    # 什么情况下该用/不该用」。触发边界尤其重要：它让自动匹配不只在"关键词
+    # 命中"时加载，还能在"命中但明显不该用"时主动退让（见 match()）。
+    version: str = ""
+    when_to_use: str = ""          # 触发边界：什么场景该用
+    when_not_to_use: str = ""      # 触发边界：什么场景不该用
+    _avoid: set[str] = field(default_factory=set)   # when_not_to_use 的词集
 
     # ---- Tier 2：按需读入正文 ----
     def load(self) -> str:
@@ -78,15 +91,30 @@ class Skill:
             raise FileNotFoundError(f"资源不存在: {rel}")
         return target.read_text(encoding="utf-8", errors="replace")
 
-    def instructions(self) -> str:
-        """Tier 2 正文全量 + 可用资源清单。"""
-        body = self.load()
-        res = self.resources()
+    def meta_lines(self) -> list[str]:
+        """版本与触发边界，注入时附在 skill 头部。"""
+        out: list[str] = []
+        if self.version:
+            out.append(f"版本：{self.version}")
+        if self.when_to_use:
+            out.append(f"适用场景：{self.when_to_use}")
+        if self.when_not_to_use:
+            out.append(f"不适用：{self.when_not_to_use}")
+        return out
+
+    def _head(self) -> str:
         head = f"[skill: {self.name}]\n"
+        for line in self.meta_lines():
+            head += line + "\n"
+        res = self.resources()
         if res:
             head += "可用资源（需要时用 read_skill_resource 读取）：\n"
             head += "\n".join(f"  - {r}" for r in res[:30]) + "\n"
-        return head + "\n" + body
+        return head
+
+    def instructions(self) -> str:
+        """Tier 2 正文全量 + 资产元数据 + 可用资源清单。"""
+        return self._head() + "\n" + self.load()
 
     def brief(self, max_chars: int = 1600) -> str:
         """Tier 2 精简版：只注入正文开头若干个**完整小节**，附上取全文的指引。
@@ -95,11 +123,7 @@ class Skill:
         按小节切而不是硬截断：半句话的指令比没有指令更坏。
         """
         body = self.load()
-        head = f"[skill: {self.name}]\n"
-        res = self.resources()
-        if res:
-            head += "可用资源（需要时用 read_skill_resource 读取）：\n"
-            head += "\n".join(f"  - {r}" for r in res[:30]) + "\n"
+        head = self._head()
         if len(body) <= max_chars:
             return head + "\n" + body
         cut = _cut_at_section(body, max_chars)
@@ -139,6 +163,15 @@ def split_frontmatter(text: str) -> tuple[dict, str]:
     except yaml.YAMLError:
         meta = {}
     return meta, m.group(2)
+
+
+def _as_text(value) -> str:
+    """frontmatter 的值可能是字符串、也可能是 YAML 列表，统一压成一句话。"""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return "；".join(str(x).strip() for x in value if str(x).strip())
+    return " ".join(str(value).split())
 
 
 _ASCII_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_\-\.]{1,}")
@@ -194,14 +227,26 @@ class SkillRegistry:
         if not desc:
             desc = md.parent.name
         sk = Skill(name=name, description=desc, dirpath=md.parent)
+        sk.auto_learned = bool(meta.get("auto_learned"))
+        sk.learned_at = str(meta.get("learned_at") or "").strip()
+        # 资产元数据：版本与触发边界。缺字段就留空，不影响旧技能。
+        sk.version = _as_text(meta.get("version"))
+        sk.when_to_use = _as_text(meta.get("when_to_use") or meta.get("when"))
+        sk.when_not_to_use = _as_text(
+            meta.get("when_not_to_use") or meta.get("when_not")
+        )
         # 英文 description 对中文提问天然召回率低，所以额外支持
-        # frontmatter 里的 keywords（可写中文触发词）作为补充信号
+        # frontmatter 里的 keywords（可写中文触发词）作为补充信号；
+        # when_to_use 里描述的适用场景同样是有效的触发信号，一并计入。
         extra = meta.get("keywords") or meta.get("keywords_zh") or []
         if isinstance(extra, str):
             extra = [extra]
         sk._keywords = sorted(
             tokenize(f"{name} {desc}") | tokenize(" ".join(str(x) for x in extra))
+            | tokenize(sk.when_to_use)
         )
+        # 「不适用」的词集单独存：命中它不该加载，而不是该加载（见 match()）
+        sk._avoid = tokenize(sk.when_not_to_use)
         # 同名以先扫到的为准（前面的目录优先级更高）
         self.skills.setdefault(name, sk)
 
@@ -220,7 +265,8 @@ class SkillRegistry:
             d = " ".join((s.description or "").split())
             if len(d) > CATALOG_DESC_MAX:
                 d = d[: CATALOG_DESC_MAX - 3] + "..."
-            lines.append(f"  - {s.name}: {d}")
+            tag = f" (v{s.version})" if s.version else ""
+            lines.append(f"  - {s.name}{tag}: {d}")
         return "\n".join(lines)
 
     def names(self) -> list[str]:
@@ -228,7 +274,12 @@ class SkillRegistry:
 
     # ---------- 匹配 ----------
     def match(self, user_text: str, top_k: int = 3) -> list[tuple[Skill, int]]:
-        """按关键词重合度给 skill 打分。命中太少就返回空，避免乱加载。"""
+        """按关键词重合度给 skill 打分。命中太少就返回空，避免乱加载。
+
+        除了正向命中，还要看**负向边界**：skill 自己在 when_not_to_use 里声明了
+        「这些场景别用我」，如果当前任务文本明显落在那个范围里（负向词命中 >= 2 个
+        且不少于正向命中），就不把它算作匹配——避免「关键词撞车但场景不对」的误加载。
+        """
         q = tokenize(user_text)
         if not q:
             return []
@@ -237,8 +288,13 @@ class SkillRegistry:
             if not s._keywords:
                 continue
             hit = len(q & set(s._keywords))
-            if hit:
-                scored.append((s, hit))
+            if not hit:
+                continue
+            if s._avoid:
+                avoid = len(q & s._avoid)
+                if avoid >= 2 and avoid >= hit:
+                    continue
+            scored.append((s, hit))
         scored.sort(key=lambda x: -x[1])
         return scored[:top_k]
 

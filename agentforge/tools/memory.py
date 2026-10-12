@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..autonote import dupe_of
-from ..memory import MemoryStore
+from ..memory import LAYER_LABEL, MemoryStore
 from ..runcontrol import current_task
 from .base import WRITE, make_tool
 
@@ -21,7 +21,7 @@ def memory_path(cfg) -> Path:
 def build_memory_tools(guard, cfg):
     store = MemoryStore(memory_path(cfg))
 
-    def remember(note: str) -> str:
+    def remember(note: str, layer: str = "") -> str:
         text = str(note or "").strip()
         if not text:
             return "[错误] note 为空，没有写入任何内容。"
@@ -29,11 +29,13 @@ def build_memory_tools(guard, cfg):
         dup = dupe_of(store, text)
         if dup:
             return f"这条已经记过了，没有重复写入：{dup[:120]}"
-        entry = store.append(text, current_task())
+        # layer 留空时由 MemoryStore 自动判定（偏好→L3 / 事实→L1 / 其余→L2）
+        entry = store.append(text, current_task(), layer=layer)
         if not entry:
             return "[错误] 记忆写入失败。"
+        tag = f"{entry['layer']} {LAYER_LABEL.get(entry['layer'], '')}".strip()
         return (
-            f"已写入长期记忆：{entry['text'][:120]}\n"
+            f"已写入长期记忆（{tag}）：{entry['text'][:120]}\n"
             f"（文件 {store.path}，后续任务会自动读到；只写结论与偏好，不要写过程）"
         )
 
@@ -49,7 +51,14 @@ def build_memory_tools(guard, cfg):
                     "note": {
                         "type": "string",
                         "description": "一句话结论，建议以「用户偏好：」「项目约定：」「注意：」等前缀开头",
-                    }
+                    },
+                    "layer": {
+                        "type": "string",
+                        "enum": ["L1", "L2", "L3"],
+                        "description": "记忆的语义层：L1 事实与环境（路径/端口/版本等可核对信息）、"
+                                       "L2 项目约定（工作方式、流程约定）、L3 用户偏好（稳定的个人偏好与习惯）。"
+                                       "留空则自动判定。",
+                    },
                 },
                 "required": ["note"],
             },

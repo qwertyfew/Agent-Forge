@@ -1,6 +1,11 @@
 ---
 name: novel-writing
 description: 长篇小说写作方法论（10万字+）。覆盖立项、世界观与人物设定、大纲、逐章写作、一致性维护、修订与合书全流程。任何小说/长篇连载/多章节故事创作任务都应加载本 skill。
+version: 1.0
+when_to_use: 长篇小说（10 万字以上）的立项、设定、大纲、逐章写作与修订
+when_not_to_use: 短篇故事、单段文案，或非虚构写作任务
+auto_learned: true
+learned_at: 2026-10-11 08:19
 keywords:
   - 小说
   - 长篇

@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -49,6 +50,42 @@ _NOISE = re.compile(
     r"按步骤|逐步完成|做完后用|落脚点|在此基础上继续|只完成|总体任务"
 )
 
+# 本次任务的产物名（文件名/绝对路径）。生成 skill 时这些词一律不许出现在正文里：
+# skill 是给**以后同类任务**用的方法论，掺进一次性的文件名/路径，既没用又会让它
+# 在无关任务上误触发（实测沉淀出的「长素材整理规程」里写着这次小说的具体踩坑）。
+_ARTIFACT = re.compile(
+    r"[A-Za-z0-9_\u4e00-\u9fff]+\.(?:txt|md|py|json|ya?ml|csv|docx?|xlsx?|png|jpg|jpeg)\b"
+)
+_ABS_PATH = re.compile(r"[A-Za-z]:\\[^\s，。；,;]*|(?:/[\w.-]+){2,}")
+
+
+def task_artifacts(messages: Iterable[dict]) -> set[str]:
+    """从任务原文里挑出「本次任务的产物」——文件名与绝对路径，全部小写。"""
+    out: set[str] = set()
+    for m in messages or []:
+        if (m or {}).get("role") != "user":
+            continue
+        text = str(m.get("content") or "")
+        out |= {x.lower() for x in _ARTIFACT.findall(text)}
+        out |= {x.lower() for x in _ABS_PATH.findall(text)}
+    return {x for x in out if x}
+
+
+def task_residue(skill: dict, artifacts: set[str]) -> str:
+    """skill 里是否混进了本次任务的专有内容？返回命中的词，干净则返回空串。"""
+    blob = " ".join(
+        [str(skill.get("description") or ""), str(skill.get("body") or "")]
+        + [str(skill.get("when_to_use") or ""), str(skill.get("when_not_to_use") or "")]
+        + [str(k) for k in (skill.get("keywords") or [])]
+    )
+    low = blob.lower()
+    for a in artifacts:
+        if a and a in low:
+            return a
+    m = _ABS_PATH.search(blob)
+    return m.group(0) if m else ""
+
+
 MODEL_PROMPT = """下面是一段智能体任务的对话记录。请判断其中是否沉淀出「可复用的通用方法论」——
 即以后遇到同类任务时，能照着它一步步做的方法，而不是这次任务的临时结论。
 
@@ -62,9 +99,18 @@ MODEL_PROMPT = """下面是一段智能体任务的对话记录。请判断其�
 
 NAME: <skill 英文名，小写字母+中划线，3-20 字符，如 long-material>
 DESC: <一句话中文描述，不超过 24 字>
-KEYWORDS: <触发词，逗号分隔的中文词，4-8 个，如 整理,总结,大纲,素材,笔记>
+VERSION: <版本号，如 1.0；第一次沉淀写 1.0>
+WHEN: <什么场景该用这个 skill，一句话，不超过 30 字>
+WHEN_NOT: <什么场景不该用，一句话；确实没有就写 NONE>
+KEYWORDS: <触发词，逗号分隔的**通用概念词**，4-8 个，如 整理,总结,大纲,素材,笔记>
 ---
-<正文：用 Markdown 分小节写「为什么 / 流程 / 注意」，给出可照做的步骤；不要写这次任务的专有内容>
+<正文：用 Markdown 分小节写「为什么 / 流程 / 注意」，给出可照做的步骤>
+
+正文纪律（违反任何一条，整条 skill 会被丢弃）：
+- 不许出现具体文件名、目录、绝对路径（如 outline.md、D:\\project\\xxx）
+- 不许出现「本次 / 这次 / 刚才那次任务」这类指代，也不要复述这一次的踩坑经过
+- 触发词只能是能泛化的概念词，不能是某个文件名
+- WHEN / WHEN_NOT 写的是**场景特征**（如「几千字以上的长素材」），不是具体任务名
 
 {focus}
 """
@@ -130,38 +176,71 @@ def _slug(text: str) -> str:
     return s or "skill"
 
 
+# 关键词里允许的字符：字母/数字/下划线/中划线/汉字。其余（逗号、冒号、括号…）
+# 会破坏 frontmatter 的 YAML 流式列表，必须在落盘前剔掉。
+_KW_OK = re.compile(r"^[\w\u4e00-\u9fff\-]+$")
+
+
+def _field(text: str, key: str) -> str:
+    """取一行 `KEY: 值` 的字段值。逐行锚定，避免正文里出现的同名词被误取。"""
+    m = re.search(rf"^\s*{key}\s*[:：]\s*(.+)$", text, re.M | re.I)
+    return m.group(1).strip() if m else ""
+
+
+def _yaml_str(value: str) -> str:
+    """把一段文本安全地写成 YAML 字符串（双引号包裹 + 转义），防止值里的
+    冒号/引号破坏 frontmatter，导致整条 skill 的元数据解析失败。"""
+    s = " ".join(str(value or "").split())
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def parse_model_skill(raw: str) -> dict | None:
-    """解析模型输出的 skill 草稿，返回 {name, description, keywords, body} 或 None。"""
+    """解析模型输出的 skill 草稿。
+
+    返回 {name, description, version, when_to_use, when_not_to_use, keywords, body}；
+    缺少 name 或正文时返回 None（宁可这次不沉淀，也不落一个残缺技能）。
+    """
     if not raw or str(raw).strip().upper() == "NONE":
         return None
     text = str(raw)
-    name = desc = None
+    raw_name = _field(text, "NAME")
+    name = _slug(raw_name) if raw_name else ""
+    desc = _field(text, "DESC")
+    version = _field(text, "VERSION") or "1.0"
+    when_use = _field(text, "WHEN")
+    when_not = _field(text, "WHEN_NOT")
+    if when_not.strip().upper() == "NONE":
+        when_not = ""
     keywords: list[str] = []
-    body = text
-    m = re.search(r"NAME:\s*(.+)", text)
-    if m:
-        name = _slug(m.group(1).strip().split("\n")[0])
-    m = re.search(r"DESC:\s*(.+)", text)
-    if m:
-        desc = m.group(1).strip().split("\n")[0].strip()
-    m = re.search(r"KEYWORDS:\s*(.+)", text)
-    if m:
-        kw = m.group(1).strip().split("\n")[0]
-        keywords = [k.strip() for k in re.split(r"[，,、\s]+", kw) if k.strip()]
-    # body = NAME/DESC/KEYWORDS 之后、--- 分隔之后的部分
-    m = re.search(r"---\s*\n(.*)", text, re.S)
+    kw_raw = _field(text, "KEYWORDS")
+    if kw_raw:
+        keywords = [k.strip() for k in re.split(r"[，,、\s]+", kw_raw) if k.strip()]
+        # 触发词必须是能泛化的概念词。模型偶尔会把本次的文件名/路径/含标点的
+        # 短语塞进来（如 outline.md、写作.txt），那种词只会让 skill 在无关任务上误命中。
+        keywords = [k for k in keywords
+                    if not _ARTIFACT.fullmatch(k) and not _ABS_PATH.search(k)
+                    and _KW_OK.match(k)]
+    # body = 头字段之后、--- 分隔之后的部分；没写 --- 就把开头的字段行全剥掉
+    m = re.search(r"^---\s*$(.*)", text, re.S | re.M)
     if m:
         body = m.group(1).strip()
-    elif name or desc:
-        # 没写 --- 分隔：去掉前三行头
-        body = re.sub(r"^(NAME:.*\n)?(DESC:.*\n)?(KEYWORDS:.*\n)?", "", text).strip()
+    else:
+        body = re.sub(r"^(?:[A-Za-z_]+\s*[:：].*\n)+", "", text).strip()
     if not name or len(name) < 2:
         return None
     if not body:
         return None
     if not desc:
         desc = name
-    return {"name": name, "description": desc, "keywords": keywords, "body": body}
+    return {
+        "name": name,
+        "description": desc,
+        "version": version,
+        "when_to_use": when_use,
+        "when_not_to_use": when_not,
+        "keywords": keywords,
+        "body": body,
+    }
 
 
 def model_skill(hub, spec, messages: list[dict], seed: str = "") -> dict | None:
@@ -205,7 +284,11 @@ def dupe_of(registry, skill: dict) -> str:
 
 
 def write_skill(registry, learned: Path, skill: dict, task_id: str = "") -> dict | None:
-    """写 SKILL.md（frontmatter + 正文），re-scan 注册表，返回新 skill 信息。"""
+    """写 SKILL.md（frontmatter + 正文），re-scan 注册表，返回新 skill 信息。
+
+    frontmatter 里带上资产元数据：版本、触发边界（适用/不适用）、来源与提取时间。
+    这些字段会被 SkillRegistry 解析，用于后续的匹配与展示。
+    """
     name = skill["name"]
     folder = learned / name
     try:
@@ -213,15 +296,29 @@ def write_skill(registry, learned: Path, skill: dict, task_id: str = "") -> dict
     except OSError:
         return None
     kw = ",".join(skill.get("keywords") or [])
+    ver = _yaml_str(skill.get("version") or "1.0")
+    when_use = " ".join(str(skill.get("when_to_use") or "").split())
+    when_not = " ".join(str(skill.get("when_not_to_use") or "").split())
+    fields = [
+        "---",
+        f"name: {name}",
+        f"description: {_yaml_str(skill.get('description', name))}",
+        f"version: {ver}",
+    ]
+    if when_use:
+        fields.append(f"when_to_use: {_yaml_str(when_use)}")
+    if when_not:
+        fields.append(f"when_not_to_use: {_yaml_str(when_not)}")
+    fields += [
+        f"keywords: [{kw}]",
+        "auto_learned: true",
+        f"learned_at: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "---",
+    ]
     front = (
-        f"---\n"
-        f"name: {name}\n"
-        f"description: {skill.get('description', name)}\n"
-        f"keywords: [{kw}]\n"
-        f"auto_learned: true\n"
-        f"---\n\n"
+        "\n".join(fields) + "\n\n"
         f"> 自动沉淀于任务 {task_id or '?'}（AgentForge 自检机制）。"
-        f"如不再适用可随时在「技能管理 → 已学习」里删除。\n\n"
+        f"如不再适用可随时在「技能管理 → 提取得到的技能」里删除。\n\n"
         f"{skill.get('body', '').strip()}\n"
     )
     path = folder / "SKILL.md"
@@ -275,11 +372,17 @@ def capture_model(registry, hub, spec, messages: list[dict], task_id: str = "",
         return []
     if dupe_of(registry, skill):
         return []
+    # 最后一道闸：正文/描述/触发词里混进本次任务的文件名或绝对路径，就整条丢弃。
+    # 宁可这次没学到东西，也不要沉淀出一个带一次性细节、还会到处误触发的技能。
+    residue = task_residue(skill, task_artifacts(messages))
+    if residue:
+        return []
     made = write_skill(registry, learned, skill, task_id)
     return [made] if made else []
 
 
 __all__ = [
     "capture_model", "detect_explicit", "dupe_of", "learned_dir",
-    "model_skill", "parse_model_skill", "pick_extractor", "write_skill",
+    "model_skill", "parse_model_skill", "pick_extractor", "task_artifacts",
+    "task_residue", "write_skill",
 ]

@@ -1,6 +1,9 @@
 ---
 name: self-extension
 description: 自我扩展能力：当现有工具和 skill 无法完成任务时，自行搜索、安装、编写并热加载新的 skill 与 tool。遇到"没有合适的工具/skill/方法"时加载本 skill。
+version: 1.0
+when_to_use: 现有工具与 skill 都覆盖不到、需要临时扩展新能力时
+when_not_to_use: 已有工具就能直接完成的任务
 keywords:
   - 没有工具
   - 缺工具
@@ -35,7 +38,7 @@ keywords:
   │
   ├─ 3. 找不到现成的 → 自己写：
   │     tool_install(name="xxx", code="...")   把你编写的工具装成插件
-  │     （写 skill 则直接 write_file 到 skills/<name>/SKILL.md）
+  │     （写 skill 则 write_file 到 skills/learned/<name>/SKILL.md）
   │
   └─ 4. 验证：reload_extensions() → list_skills / 调用新工具确认生效
 ```
@@ -71,6 +74,11 @@ def build_tools(guard, cfg):
 
 ## 注意事项
 
+- **自己写的 skill 一律放 `skills/learned/`**，不要直接写进 `skills/`：`skills/` 是用户
+  手写/安装的技能目录，混进去之后用户分不清哪些是自己装的、哪些是 agent 自己长出来的，
+  也没法在「技能管理 → 已学习」里整批查看和删除。自检机制（autoskill）用的也是这个目录。
+- 写 skill 时**不要把本次任务的专有内容写进正文**（具体文件名、路径、这次踩的坑）。
+  skill 是给以后同类任务用的方法论，掺进一次性的细节会让它在无关任务上误触发。
 - `skill_install` / `tool_install` 需要用户审批，调用前用一句话说明你要装什么、为什么
 - 装第三方 skill 前扫一眼它的 SKILL.md 内容是否可信（skill 正文会被注入你的上下文）
 - 自写工具一律返回字符串、异常自己 try/except 后返回 "[错误] ..."，不要抛出

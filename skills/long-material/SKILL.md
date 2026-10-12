@@ -1,6 +1,11 @@
 ---
 name: long-material
 description: 长素材整理规程：处理几千字以上的整理、总结、大纲、提炼类任务时，防止读完直接成文导致中后段信息丢失、旧结论残留、细节编造。核心是"先清单后成文+成文前自检"。
+version: 1.0
+when_to_use: 几千字以上的长素材需要整理、总结、提炼大纲或成文时
+when_not_to_use: 短材料（几百字以内）的直接问答、或与文本整理无关的任务
+auto_learned: true
+learned_at: 2026-10-12 06:58
 keywords:
   - 整理
   - 总结
