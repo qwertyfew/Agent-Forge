@@ -25,6 +25,7 @@ from typing import Any, Iterator
 from .dispatcher import Dispatcher, SharedState, TaskSpec
 from .loop import Agent
 from .planner import KIND_DIM, KIND_LABEL, Subtask, kind_of, make_plan, needs_plan, plan_summary
+from .readcache import ReadCache
 from . import verify as verify_gate
 
 # 首步与后续步骤的提示词模板。都强调"只做这一步"，否则模型会越界把后面的活也干了。
@@ -180,7 +181,7 @@ def _worth_dispatch(message: str, pool_size: int) -> bool:
 
 
 def _verify_gate(agent, message: str, holder: dict,
-                 auto_approve=None, stop_check=None):
+                 auto_approve=None, stop_check=None, read_cache=None):
     """收尾验证闸门（系统侧强制）：模型只有解读权，没有裁定权。
 
     - 任务书里声明了验证命令（如「验证：python tools/x.py」）→ 程序亲自运行，
@@ -220,7 +221,8 @@ def _verify_gate(agent, message: str, holder: dict,
                 summary=summary or "（无）",
             )
             for ev in agent.run(convo, prompt, auto_route=False,
-                                stop_check=stop_check, auto_approve=auto_approve):
+                                stop_check=stop_check, auto_approve=auto_approve,
+                                read_cache=read_cache):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -251,7 +253,8 @@ def _verify_gate(agent, message: str, holder: dict,
                 summary=summary or "（无）",
             )
             for ev in agent.run(convo, prompt, auto_route=False,
-                                stop_check=stop_check, auto_approve=auto_approve):
+                                stop_check=stop_check, auto_approve=auto_approve,
+                                read_cache=read_cache):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -361,6 +364,12 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
     state = SharedState(message)
     state.register(ordered)
 
+    # 整任务共享的只读调用缓存：所有泳道/子任务 + 收尾修正轮共用一份。
+    # REA 二测里 t2/t3/t4 各自 list_dir docs、各读一遍 HANDOFF.md——
+    # 各泳道私有缓存互相看不见，同参数只读调用被白跑多遍。写类工具执行后
+    # 缓存全量作废（在 loop.py 里做），所以共享是安全的。
+    read_cache = ReadCache()
+
     weak_cn = {e["key"]: int((e.get("scores") or {}).get("chinese", 100)) for e in entries}
     translate_on = bool(getattr(agent.cfg, "dispatcher_translate", True))
     cn_threshold = int(getattr(agent.cfg, "dispatcher_bridge_threshold", BRIDGE_CN_THRESHOLD))
@@ -437,7 +446,8 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
         convo = list(convo_in)
         try:
             for ev in ag.run(convo, prompt, auto_route=False, stop_check=stopped,
-                             auto_approve=auto_approve, file_log=local_log):
+                             auto_approve=auto_approve, file_log=local_log,
+                             read_cache=read_cache):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue                       # 用户气泡本地渲染；路由由编排层决定
@@ -606,7 +616,8 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
             # 收尾验证闸门在语言闸门之后：附上的系统侧报告随最终答复一起出去
             holder = {"summary": final, "convo": final_convo}
             yield from _verify_gate(agent, message, holder,
-                                    auto_approve=auto_approve, stop_check=stopped)
+                                    auto_approve=auto_approve, stop_check=stopped,
+                                    read_cache=read_cache)
             final = holder["summary"]
             final_convo = holder["convo"]
             final_convo = [*final_convo, {"role": "assistant", "content": final}]
@@ -616,7 +627,8 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
         # 的末条助手正文当总结。
         holder = {"summary": _last_assistant(final_convo), "convo": final_convo}
         yield from _verify_gate(agent, message, holder,
-                                auto_approve=auto_approve, stop_check=stopped)
+                                auto_approve=auto_approve, stop_check=stopped,
+                                read_cache=read_cache)
         if holder["summary"] and holder["summary"] != _last_assistant(final_convo):
             final_convo = holder["convo"]
             yield {"type": "assistant", "content": holder["summary"],
@@ -756,6 +768,8 @@ def run_task(
 
     # 展示/回看用的全量历史（一路接力，内容完整）
     hist = list(history)
+    # 单路径多步接力的只读共享缓存（跨步骤复用；写类工具执行后自动作废）
+    read_cache = ReadCache()
     # 接力省法：每一步单独记「做了什么、动了哪些文件」，下一步只看这份简报
     brief_relay = bool(getattr(agent.cfg, "relay_brief", True)) and multi
     done: list[dict] = []
@@ -820,7 +834,7 @@ def run_task(
         halted = False
         for ev in agent.run(hist, prompt, auto_route=False, stop_check=stopped,
                             auto_approve=auto_approve, file_log=file_log,
-                            relay=relay):
+                            relay=relay, read_cache=read_cache):
             t = ev.get("type")
             if t == "user":
                 continue                      # 用户气泡由前端本地渲染
@@ -861,7 +875,8 @@ def run_task(
     # 收尾验证闸门：验证命令系统亲自跑，谎报在这里现形（见 _verify_gate）
     holder = {"summary": summary, "convo": hist}
     yield from _verify_gate(agent, message, holder,
-                            auto_approve=auto_approve, stop_check=stopped)
+                            auto_approve=auto_approve, stop_check=stopped,
+                            read_cache=read_cache)
     if holder["summary"] != summary:
         summary, hist = holder["summary"], holder["convo"]
         yield {"type": "assistant", "content": summary, "history": hist}

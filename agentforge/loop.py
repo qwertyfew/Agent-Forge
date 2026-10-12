@@ -328,6 +328,7 @@ class Agent:
         auto_approve: bool | None = None,
         file_log: list | None = None,
         relay: list[dict] | None = None,
+        read_cache=None,
     ) -> Iterator[dict[str, Any]]:
         """跑一轮完整任务。
 
@@ -346,6 +347,11 @@ class Agent:
         省法：只带计划 + 摘要 + 文件路径，而不是把前面每一步的工具输出全带上）。
         注意它只影响"模型看到什么"：yield 出去的 history 仍是全量，界面回看与
         任务台账不受影响。
+
+        read_cache 是编排层传进来的整任务共享只读缓存（agentforge.readcache.
+        ReadCache，跨并行泳道/子任务共用）：同参数只读调用第二次起直接回放缓存
+        结果并明说。不传就退回本 run 私有的 call_cache（行为同旧版）。任何
+        非只读工具执行后缓存全量作废，防止「读了→改了→再读」拿到旧内容。
         """
         stopped = stop_check or (lambda: False)
         # 完全访问 = 本次调用显式传入 auto_approve=True，或 Guard 的全局自动批准
@@ -408,6 +414,7 @@ class Agent:
         # 任务内只读调用缓存：同样的（工具+参数）第二次出现时直接回放上次结果。
         # 小模型忘了自己查过什么时会用一模一样的参数再查一遍（实测 40+ 轮任务里
         # 同一个 search_code pattern 出现 3 次），重新执行毫无新信息，纯烧 GPU。
+        # 编排层传进 read_cache 时用共享版（跨泳道/子任务），否则用这份私有的。
         call_cache: dict[str, str] = {}
         # 轮次预算：软预算起每轮催收敛；硬上限撤掉工具强制交卷。
         # hard 相对 max_steps 留 3 轮余量，保证「强制交卷」自己有轮次可用。
@@ -543,18 +550,38 @@ class Agent:
                 yield {"type": "tool_start", "name": tc.name, "args": tc.arguments}
                 # 重复调用拦截：只读工具的（名字+参数）指纹在任务内出现过，
                 # 就直接回放上次结果并明说，不再执行。打断「忘了→重查→再忘」的循环。
+                # 只缓存 SAFE 只读调用；任何非只读工具执行后缓存全量作废
+                # （文件系统可能变了），之后的重复读取必须真执行。
                 tool_def = self.registry.get(tc.name)
                 sig = tc.name + "|" + json.dumps(
                     tc.arguments or {}, ensure_ascii=False, sort_keys=True, default=str,
                 )
-                if tool_def is not None and tool_def.risk == SAFE and sig in call_cache:
-                    out = ("[重复调用] 这个调用本任务里已经执行过，下面是上次的结果，"
-                           "请直接利用；确实需要新信息就换参数，或把关键发现记进 task_notes：\n"
-                           + call_cache[sig])
+                safe = tool_def is not None and tool_def.risk == SAFE
+                hit = None
+                if safe:
+                    if read_cache is not None:
+                        hit = read_cache.get(sig)
+                    elif sig in call_cache:
+                        hit = (call_cache[sig], 1)
+                if hit is not None:
+                    n = hit[1]
+                    times = f"（第 {n} 次重复）" if n > 1 else ""
+                    out = (f"[重复调用]{times} 这个只读调用本任务里已经执行过，"
+                           "下面是上次的结果，请直接利用；确实需要新信息就换参数，"
+                           "或把关键发现记进 task_notes：\n" + hit[0])
                 else:
                     out = self._execute(tc.name, tc.arguments, auto_approve, file_log)
-                    if tool_def is not None and tool_def.risk == SAFE:
-                        call_cache[sig] = out
+                    if safe:
+                        if read_cache is not None:
+                            read_cache.put(sig, out)
+                        else:
+                            call_cache[sig] = out
+                    else:
+                        # 写类/命令类工具可能改了文件系统：只读缓存整体作废
+                        if read_cache is not None:
+                            read_cache.invalidate_all()
+                        else:
+                            call_cache.clear()
 
                 # 失败结果强呈现：错误/拒绝不能混在普通输出里被无视。
                 # [错误] 附上两条禁令（不许无视失败继续、不许未验证声称完成）；
