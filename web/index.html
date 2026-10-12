@@ -2616,7 +2616,8 @@ async function openClearDialog(){
   const rect = btn ? btn.getBoundingClientRect() : null;
   const r = await fetch('/api/tasks?cleanup=1').then(x=>x.json()).catch(()=>({}));
   const c = r.cleanup || {};
-  const created = c.created || {count:0, items:[]};
+  const created = c.created || {count:0, items:[]};   // 过渡/中间文件（tmp/草稿/命令副作用…）
+  const finalOut = c.final || {count:0, items:[]};    // 最终产出（默认保留）
   const modified = c.modified || {count:0, items:[]};
   const mem = c.memory || {count:0, items:[]};
 
@@ -2634,8 +2635,12 @@ async function openClearDialog(){
 
   const sections = [];
   if(created.items.length){
-    // key 与上方勾选项对应：勾选「任务新建的文件」才显示这份清单
-    sections.push({key:'created', title:'将删除 · 任务新建的文件', items: created.items.map(fileRow), more: created.count});
+    // key 与上方勾选项对应：勾选「过渡/中间文件」才显示这份清单
+    sections.push({key:'created', title:'将删除 · 过渡 / 中间文件', items: created.items.map(fileRow), more: created.count});
+  }
+  if(finalOut.items.length){
+    // 无 key = 不随勾选联动，常显：让用户看清哪些结果会留下来，删得放心
+    sections.push({title:'将保留 · 最终产出（不会被删除）', items: finalOut.items.map(fileRow), more: finalOut.count});
   }
   if(modified.items.length){
     sections.push({key:'modified', title:'将删除 · 任务修改过的文件', items: modified.items.map(fileRow), more: modified.count});
@@ -2656,10 +2661,10 @@ async function openClearDialog(){
       },
       {
         key:'created', checked:created.count > 0, disabled: !created.count,
-        label:'任务新建的文件', count: created.count + ' 个',
+        label:'过渡 / 中间文件（保留最终产出）', count: created.count + ' 个',
         desc: created.count
-          ? '这些文件在任务开始前并不存在，是任务产出的结果/中间文件。'
-          : '没有记录到任务新建的文件。'
+          ? '临时文件、草稿、命令副产物这类过程产物。最终产出（报告/代码/文档）不受本项影响，始终保留。'
+          : '没有记录到过渡 / 中间文件。'
       },
       {
         key:'modified', checked:false, disabled: !modified.count,

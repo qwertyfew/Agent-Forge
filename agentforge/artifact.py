@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 # 扫描时直接跳过的目录：要么是依赖/缓存，要么是工具自身的运行痕迹，
@@ -156,6 +157,28 @@ def merge(records: list[dict]) -> list[dict]:
     return list(out.values())
 
 
+# 中间/过渡文件特征（清空任务时只删这类、保留最终产出）：
+#   - 名字带临时语义：tmp/temp/draft/scratch/debug/cache 开头或独立成分
+#     （要求后面跟边界，避免误伤 template / temporary 里的 "temp"）
+#   - 名字带中文临时语义：草稿/中间/过渡/临时/备份
+#   - 明显的临时扩展名：.tmp/.bak/.orig/.part/.swp/.log
+# 命令副作用（via=scan）也算中间文件：用户没有点名要它，多半是脚本/构建的副产品。
+_INTERMEDIATE_NAME = re.compile(
+    r"(^|[/\\])(tmp|temp|drafts?|scratch|debug|cache)([/\\\-_.\d ]|$)"
+    r"|[/\\][^/\\]*?(?:草稿|中间|过渡|临时|备份)[^/\\]*$"
+    r"|\.(tmp|bak|orig|part|swp|log)$",
+    re.I,
+)
+
+
+def is_intermediate(rec: dict) -> bool:
+    """这条文件记录是不是「过渡 / 中间文件」（清空任务时默认清理的那类）。"""
+    if (rec.get("via") or "scan") == "scan":
+        return True
+    name = str(rec.get("rel") or rec.get("path") or "").replace("\\", "/")
+    return bool(_INTERMEDIATE_NAME.search("/" + name))
+
+
 def describe(records: list[dict], root: str | Path) -> list[dict]:
     """转成给界面用的形态：相对路径 + 动作 + 是否存在。"""
     out = []
@@ -182,6 +205,7 @@ __all__ = [
     "diff_snapshot",
     "merge",
     "describe",
+    "is_intermediate",
     "rel_to_root",
     "norm",
     "SKIP_DIRS",

@@ -471,15 +471,21 @@ class _Handler(BaseHTTPRequestHandler):
 
         files = [f for f in files if str(Path(f["path"]).resolve()).lower() != mem_file]
         files = [f for f in files if not _in_skills(f)]
-        created = [f for f in files if f["action"] == "created" and f["exists"]]
+        created_all = [f for f in files if f["action"] == "created" and f["exists"]]
         modified = [f for f in files if f["action"] == "modified" and f["exists"]]
+        # 任务新建的文件分两类：过渡/中间文件（tmp/草稿/命令副作用…，默认清理）
+        # 与最终产出（报告/代码/文档…，默认保留）。用户说清空时别再把结果一起带走。
+        created = [f for f in created_all if artifact.is_intermediate(f)]
+        final = [f for f in created_all if not artifact.is_intermediate(f)]
 
         mem_items = [e for e in self.mem.entries() if e.get("task") in set(ids)]
 
         return {
             "tasks": len(finished),
             "running": self.tasks.running_count(),
+            # 「created」键沿用旧名，但语义收窄为「过渡/中间文件」；最终产出单列
             "created": {"count": len(created), "items": created[:200]},
+            "final": {"count": len(final), "items": final[:200]},
             "modified": {"count": len(modified), "items": modified[:200]},
             "memory": {
                 "count": len(mem_items),
@@ -649,12 +655,13 @@ class _Handler(BaseHTTPRequestHandler):
             snap = self._cleanup_snapshot()
             targets = []
             if wipe_created:
+                # 只清过渡/中间文件（「created」键已收窄为这一类），最终产出保留
                 targets += [f["path"] for f in snap["created"]["items"]]
             if wipe_modified:
                 targets += [f["path"] for f in snap["modified"]["items"]]
             removed_files = self._purge_files(targets)
-            # 文件已经删了，台账里的清单要跟着清，免得界面还列着幽灵文件
-            self.tasks.drop_files(ids)
+            # 只把已删除文件的记录从台账摘掉；保留的最终产出继续跟着任务走
+            self.tasks.drop_file_paths(removed_files["removed"])
 
         dropped_mem = self.mem.drop_tasks(ids) if wipe_memory else 0
         removed_tasks = self.tasks.clear() if history else 0
@@ -1355,10 +1362,12 @@ class _Handler(BaseHTTPRequestHandler):
             runcontrol.release(task_id)   # 摘掉停止标志，避免越攒越多
             runcontrol.clear_current_task()
 
-            # 记忆自动沉淀：规则抽取立刻做（不花算力、用户明说要记的绝不漏），
-            # 模型抽取放后台线程，不拖慢任务的收尾反馈。
+            # 记忆自动沉淀（可用 memory_autonote: false 关闭）：规则抽取立刻做
+            # （不花算力、用户明说要记的绝不漏），模型抽取放后台线程，不拖慢收尾。
+            # 任务里模型自己调 remember 写记忆的通道不在这里，不受本开关影响。
             try:
-                added = autonote.capture(self.mem, final_history or [], task_id)
+                added = autonote.capture(self.mem, final_history or [], task_id) \
+                    if self.cfg.memory_autonote else []
                 # 任务里模型自己调用 remember 写进去的也算这次沉淀的（工具侧已判重）
                 by_tool = any(
                     isinstance(m, dict) and m.get("role") == "tool"
@@ -1375,7 +1384,8 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception:  # noqa: BLE001
                 pass
             try:
-                spec = autonote.pick_extractor(self.store, self.cfg)
+                spec = autonote.pick_extractor(self.store, self.cfg) \
+                    if self.cfg.memory_autonote else None
                 if spec is not None and final_history:
                     hist = list(final_history)
                     # 记忆：后台提炼长期结论

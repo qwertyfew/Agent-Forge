@@ -291,6 +291,35 @@ class TaskStore:
                 self._save()
         return n
 
+    def drop_file_paths(self, paths: list[str]) -> int:
+        """按路径精确清掉文件记录（其余记录保留）。
+
+        清空任务只删中间文件、保留最终产出时用：被删的文件从清单里摘掉
+        （免得清单变成幽灵），保留的产出继续跟着任务走。
+        """
+        import os as _os
+
+        def _key(p: str) -> str:
+            try:
+                return _os.path.normcase(_os.path.abspath(str(p or "")))
+            except OSError:
+                return str(p or "")
+
+        wanted = {_key(p) for p in paths}
+        if not wanted:
+            return 0
+        n = 0
+        with self._lock:
+            for t in self._tasks:
+                files = t.files or []
+                kept = [f for f in files if _key(f.get("path") or "") not in wanted]
+                if len(kept) != len(files):
+                    n += len(files) - len(kept)
+                    t.files = kept
+            if n:
+                self._save()
+        return n
+
     def finished(self) -> list[Task]:
         """已结束（非 running）的任务，按时间倒序。"""
         with self._lock:
