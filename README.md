@@ -18,6 +18,9 @@
   它建好虚拟环境、登记开机自启，再起一个**无窗口**的保姆进程：端口没人服务就补位拉起，
   只补位不抢占、不杀进程（跑着任务时重启的代价远大于等它自己好）。
   服务本身不占任务栏、没有窗口可以误关，开机自启也随之装好——换台机器 clone 完即可复现。
+- **点一下就到位**：侧栏的工作区路径、回复末尾的产出文件卡片，点一下就用系统默认程序打开，
+  并把窗口**直接带到前台**。Windows 默认不许后台进程抢焦点，所以「打开」之后还得再点一次任务栏
+  才看得见——`agentforge/reveal.py` 替它借一次前台资格、用完立刻还回去，省掉那一步。
 - **任务台账**：每个任务记录状态、耗时、token 与预估费用、产出文件、对话历史，重启后自动把遗留的
   「执行中」标记为已中断。
 - **产出追踪**：写文件工具精确记录 + 任务前后工作区快照对比，任务产出了哪些文件一目了然。
@@ -171,7 +174,10 @@ start.bat --remove-autostart    # 卸载开机自启
 - **只补位，不抢占**：端口上已经有人（比如你手动开过一次 `run.py --web`）就什么都不做；
   **绝不杀进程**——杀掉可能正在跑的任务，代价远大于等它自己好；
 - 发现 8787 没人服务就立刻拉起来，连续失败按指数退避，日志在 `.run/service.log`；
-- 每约 1 分钟顺带复查一次 Ollama（见下节），掉了同样拉回来。
+- 每约 1 分钟顺带复查一次 Ollama（见下节），掉了同样拉回来；
+- **页面打不开时先跑 `start.bat --status`**。若本机设了 `http_proxy` / `HTTP_PROXY` 环境变量，
+  对 `http://127.0.0.1:8787` 的请求会被代理接走、返回 502，看着像服务挂了——其实服务是好的，
+  验证本机服务要绕过代理（Python 里用 `urllib.request.build_opener(ProxyHandler({}))`）。
 
 #### 为什么不占任务栏
 
@@ -315,8 +321,11 @@ agentforge/
 skills/                内置技能（frontend-design / novel-writing / web-browsing / remote-ops /
                        self-verification / first-party-source / self-extension ...）
 tools/                 开发/运维工具（bench.py 模型性能基准、fastpull.py 模型拉取与体检、
-                       test_readcache.py / test_verify_gate.py / test_sources_gate.py 常驻回归、
-                       test_tool_panel.mjs 前端工具面板回归）
+                       test_readcache.py / test_verify_gate.py / test_sources_gate.py /
+                       test_reveal.py 常驻回归、test_tool_panel.mjs 前端工具面板回归）
+docs/                  参考资料（foreign-models.md 外部模型说明、ref/ 外部仓库快照、
+                       legacy-ui.png 旧界面存档）
+examples/              示例工作区（demo-excel、novel-sample）
 ```
 
 ### 跨平台脚本的行尾与编码
@@ -603,7 +612,7 @@ agent 没读工具返回的错误信息、也没重跑测试，就在总结里�
    现在由入口脚本 `start.bat` / `scripts/start.sh` 现场生成启动项，clone 完点一次就复现整套
    「随时打得开」，卸载留一条 `--remove-autostart`。
 
-**第 14 步：入口收敛与「不占任务栏」（10-13）**
+### 第 14 步：入口收敛与「不占任务栏」（10-13）
 
 1. **四个看着重名的启动脚本收成一个**。`start-web`、`start-service`、`install-autostart`
    各有 `.bat` / `.sh` 一对，Windows 默认隐藏扩展名，于是根目录看着像四个同名文件，
@@ -630,7 +639,7 @@ Python 的 `os.kill` 对非 CTRL_* 会直接调 `TerminateProcess`，「查一�
 但那些用例当时写在工作区临时目录、**没有随仓库留下**——留下的是上面这些结论本身。
 仓库里可执行的自测见「能力的契约」第 5 节。
 
-**第 15 步：检索的来源等级——一手来源优先（10-13）**
+### 第 15 步：检索的来源等级——一手来源优先（10-13）
 
 一次检索实测暴露的病：让它查 GitHub 上的 REA 项目，**流程全绿**（51 秒 / 3 次调用 / 全免费），
 但结论里的数字**差一个数量级**——摘要写「Star 已达 **1w+**」，GitHub API 实测是 **17 万**；
@@ -672,7 +681,7 @@ Python 的 `os.kill` 对非 CTRL_* 会直接调 `TerminateProcess`，「查一�
 一律落定为「未执行 / 中断」——任务已经结束，就不该还有东西在转圈。这四条一起锁进了前端回归
 `tools/test_tool_panel.mjs`（21 项，用 jsdom 加载真实页面驱动 `renderHistory`，找不到 jsdom 会自动跳过）。
 
-**第 16 步：点一下就要看到窗口——绕开 Windows 的前台锁（10-13）**
+### 第 16 步：点一下就要看到窗口——绕开 Windows 的前台锁（10-13）
 
 用户反馈：「点侧栏的工作区路径 `D:\AI_develop\project\agent-forge` 之后，还要再点一次任务栏上那个
 文件资源管理器窗口才能看到它。」这种事不能靠猜，先量：写了 `EnumWindows` + `GetForegroundWindow`
