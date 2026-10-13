@@ -4320,7 +4320,14 @@ function handleTaskEvent(ev, data){
         + (data.note ? ` —— ${esc(data.note)}` : ''), true);
     }
     else if(ev === 'verify'){
-      if(Array.isArray(data.artifacts) && data.artifacts.length){
+      if(Array.isArray(data.unverified_local) && data.unverified_local.length){
+        // 本机事实核查：答复描述了工作区文件/目录，但全程没读过工作区（编的）
+        addPillNote('系统侧核查：本回复描述了工作区里的文件 / 目录，但整个任务'
+          + '<b>没有读取过工作区</b>——'
+          + data.unverified_local.map(t => `<b>${esc(t)}</b>`).join('、')
+          + ' 未经核实，详见最终答复附带的核查声明', true);
+      }
+      else if(Array.isArray(data.artifacts) && data.artifacts.length){
         // 产物核查：系统发现交付文件缺失/本轮未更新/非本轮写出（不是模型自报的结论）
         const ST = {missing:'不存在', stale:'存在但本轮未更新', ghost:'存在但非本轮写出'};
         const paths = data.artifacts.map(a =>

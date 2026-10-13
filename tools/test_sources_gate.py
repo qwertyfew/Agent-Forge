@@ -128,6 +128,9 @@ def test_gate_wiring() -> None:
     class FakeCfg:
         verify_gate = True
         sources_gate = True
+        # 本机事实核查是另一个契约，另有 tools/test_local_facts.py 专测；
+        # 这里显式关掉，免得两个闸门在一个文件里互相牵连（判据串味最难查）。
+        local_facts_gate = False
         workspace_root = str(tmp)
 
     class FakeAgent:

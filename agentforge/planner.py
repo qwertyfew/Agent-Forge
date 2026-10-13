@@ -7,7 +7,7 @@
 流程三步，全部走规则，不额外调用模型（省 token、不引入不确定性）：
 
     1. 拆解   按连接词（然后 / 接着 / 最后…）与编号切分子任务
-    2. 定性   按信号词判断每个子任务属于 编码 / 写作 / 数学 / 分析 / 通用
+    2. 定性   按信号词判断每个子任务属于 编码 / 检视 / 写作 / 数学 / 分析 / 通用
     3. 分配   在该性质对应的评分维度上，挑池子里得分最高的模型
 
 只做「明显需要拆」的拆解：单个动作的请求不会被切碎，避免把简单任务复杂化。
@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 
 KIND_LABEL = {
     "coding": "编码",
+    "inspect": "检视",
     "writing": "写作",
     "math": "数学",
     "analysis": "分析",
@@ -31,6 +32,7 @@ KIND_LABEL = {
 # 子任务性质 → 评分维度（分配模型时看哪个维度）
 KIND_DIM = {
     "coding": "coding",
+    "inspect": "reasoning",
     "writing": "writing",
     "math": "math",
     "analysis": "reasoning",
@@ -45,6 +47,18 @@ KIND_SIGNALS: dict[str, list[str]] = {
         r"\.css\b", r"\.sql\b", r"正则", r"接口", r"api\b", r"数据库", r"部署",
         r"code", r"function", r"refactor", r"implement", r"debug", r"fix",
     ],
+    # 「先去看一眼现场」类：要读现有目录 / 文件 / 实现才能答。
+    # 单独成一类是因为它选模型时该看**推理**而不是**文风**——实测教训：
+    # 「先列出工作区根目录下的文件，再用一句话说明你都做了什么」被"说明"判成了写作，
+    # 交给一个擅长长文的模型，它没去读，直接编了一份目录清单。
+    "inspect": [
+        r"列出", r"列一下", r"罗列", r"有哪些", r"哪些文件", r"文件列表", r"目录列表",
+        r"目录结构", r"项目结构", r"文件结构", r"文件夹结构", r"目录下", r"文件夹?里",
+        r"工作区", r"根目录", r"项目里", r"仓库里", r"里面有什么", r"包含哪些",
+        r"看一下", r"看看", r"查看", r"查阅", r"读一下", r"读读", r"打开", r"显示",
+        r"现状", r"当前实现", r"现有的", r"已有的",
+        r"list", r"look at", r"show me", r"inspect",
+    ],
     "writing": [
         r"写", r"撰写", r"起草", r"文案", r"文档", r"说明", r"注释", r"总结", r"摘要",
         r"大纲", r"报告", r"周报", r"邮件", r"翻译", r"润色", r"改写", r"起名",
@@ -56,7 +70,7 @@ KIND_SIGNALS: dict[str, list[str]] = {
     ],
     "analysis": [
         r"分析", r"梳理", r"调研", r"评估", r"对比", r"比较", r"排查", r"诊断",
-        r"定位", r"规划", r"设计", r"架构", r"方案", r"拆解", r"看看", r"检查",
+        r"定位", r"规划", r"设计", r"架构", r"方案", r"拆解", r"检查",
         r"analy", r"review", r"diagnose", r"design", r"plan",
     ],
 }
@@ -143,8 +157,18 @@ def split_task(text: str) -> list[str]:
 
 
 def kind_of(text: str) -> str:
-    """判断一个片段属于哪种性质，取信号命中数最多的那一类。"""
+    """判断一个片段属于哪种性质，取信号命中数最多的那一类。
+
+    两条刻意写死的优先级，都是实测误判逼出来的：
+
+    1. **编码优先于写作**：写作信号里的「写」「说明」「介绍」太泛，几乎任何请求都会
+       命中一两个；而「写个脚本」里的那个"写"是"实现"，不是"写文章"。
+    2. **检视优先于写作/通用**：要读现场的任务，读不到就无从写起，所以先按「检视」定性。
+       实测：「先列出工作区根目录下的文件（不要读内容），然后用一句话说明你都做了什么」
+       原本会被"说明"判成写作 → 交给擅长长文的模型 → 它没去读、直接编了份目录清单。
+    """
     scores = {k: 0 for k in KIND_SIGNALS}
+    text = str(text or "")          # None / 非字符串一律当空文本，别在定型这一步炸掉
     for kind, patterns in KIND_SIGNALS.items():
         for p in patterns:
             if re.search(p, text, re.I):
@@ -152,9 +176,11 @@ def kind_of(text: str) -> str:
     best = max(scores, key=lambda k: scores[k])
     if scores[best] == 0:
         return "general"
-    # 编码 + 写作同时命中时，以编码优先（写作信号里"写"太泛）
     if scores["coding"] > 0 and best == "writing" and scores["coding"] >= scores["writing"] - 1:
         return "coding"
+    if (scores["inspect"] > 0 and best in ("writing", "general")
+            and scores["inspect"] >= scores[best] - 1):
+        return "inspect"
     return best
 
 

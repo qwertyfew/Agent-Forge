@@ -139,6 +139,10 @@ class Config:
     # （fetch_url / fetch_json / browser_snapshot），而总结里又出现数字 / 版本 / 日期
     # 这类外部事实时，由程序在答复末尾追加「转述 · 未经核实」声明。
     sources_gate: bool = True
+    # 本机事实核查（同一模块的第二路）：任务要的是「工作区里现在有什么」，模型却一次
+    # 读取类工具都没调，答复里却列着具体文件名时——先给一轮修正机会去真看一眼，
+    # 仍然没看就由程序在答复末尾追加「未经核实」声明。治「凭空编一份目录清单」。
+    local_facts_gate: bool = True
 
     # ---- 多 agent 调度（Dispatcher）----
     # 由一个本地决策模型把请求拆成【语义独立】的任务、指派执行 agent、维护共享进度，
@@ -252,6 +256,8 @@ class Config:
         cfg.verify_gate = bool(a.get("verify_gate", True))
         # 一手来源核查：只用过搜索没抓过一手来源、总结里又有数字时，附「未经核实」声明
         cfg.sources_gate = bool(a.get("sources_gate", True))
+        # 本机事实核查：要列工作区现状却没读过工作区时，先修正一轮、仍然没看就附声明
+        cfg.local_facts_gate = bool(a.get("local_facts_gate", True))
         relay = str(a.get("relay", "brief" if cfg.relay_brief else "full")).strip().lower()
         cfg.relay_brief = relay != "full"
 

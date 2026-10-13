@@ -1,14 +1,11 @@
-"""一手来源核查（收尾闸门第三道）。
+"""来源核查（收尾闸门第三、四道）：结论必须有来源。
 
-背景（REA 检索实测）：给 agent 一个外部检索任务，它只调了 `web_search`，把搜索
-结果摘要里的「star 已达 1w+」写进结论——GitHub API 实测是 **17 万**，差一个数量级；
-「最近更新」写成「2026 年 7 月」，实际是当天。工具没坏，坏在**来源性质**：
-「搜索摘要（转述）」和「一手来源（实测）」在它眼里没有区别。
+同一个病的两种表现——**拿没查过的东西当查过的写出来**。
 
-第一道防线是提示词（`loop.py` 的结论纪律）与工具输出上的来源标签（`web.py` 的
-`[搜索摘要 · 转述 · 未核实]` / `[实测 · 网页]` / `[实测 · API]`）。但那是「劝」——
-模型可以不听。所以再加一道系统侧核查，与收尾验证闸门同一思路：
-**模型只有解读权，没有裁定权**。
+**第三道 · 外部事实**（背景：REA 检索实测）：给 agent 一个外部检索任务，它只调了
+`web_search`，把搜索结果摘要里的「star 已达 1w+」写进结论——GitHub API 实测是
+**17 万**，差一个数量级；「最近更新」写成「2026 年 7 月」，实际是当天。工具没坏，
+坏在**来源性质**：「搜索摘要（转述）」和「一手来源（实测）」在它眼里没有区别。
 
 判定（三个条件同时成立才出手）：
 
@@ -16,9 +13,26 @@
     2. 任务里**从未**抓过一手来源（fetch_url / fetch_json / browser_snapshot）
     3. 最终总结里出现了外部事实的量化或时效性措辞（数字、版本、日期、star/fork…）
 
-命中就在答复末尾追加程序写的声明：这些内容属「转述 · 未经核实」。**不改写正文、
-不阻塞收尾**——只是把证据等级写清楚，让读的人知道该不该采信。要真正采信，得先抓
-一手来源，那不归这一层管（这一层只负责把话说清楚）。
+**第四道 · 本机事实**（背景：端到端实测）：让它「列出工作区根目录下的文件」，
+25 秒、**0 次工具调用**，答复里凭空列着 `agent-forge.json` / `core/` / `ui/` /
+`venv/`——这些在工作区里都不存在。外部检索有闸门，本机检索却没有。
+
+判定（同样三条同时成立）：
+
+    1. 任务要的就是「工作区里现在有什么」（列目录 / 有哪些文件 / 看现状…），
+       且不是在让它造东西（造东西时出现的文件名是它自己起的，不算对现状的陈述）
+    2. 总结里陈述了工作区现状——明确的列举标记，或 ≥2 个文件 / 目录名
+    3. 整个任务**没有调用过任何能读工作区的工具**（list_dir / read_file /
+       find_files / search_code…，跑过命令也算读过）
+
+两道都在命中后由程序在答复末尾追加声明：内容属「未经核实」。**不改写正文、
+不阻塞收尾**——只是把证据等级写清楚，让读的人知道该不该采信。要真正采信，得先
+去查，那不归这一层管（这一层只负责把话说清楚）。
+
+第一道防线是提示词（`loop.py` 的结论纪律）与工具输出上的来源标签（`web.py` 的
+`[搜索摘要 · 转述 · 未核实]` / `[实测 · 网页]` / `[实测 · API]`）。但那是「劝」——
+模型可以不听。所以再加系统侧核查，与收尾验证闸门同一思路：
+**模型只有解读权，没有裁定权**。
 """
 
 from __future__ import annotations
@@ -136,13 +150,167 @@ def external_unverified_block(hits: list[str]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# 第四道：本机事实（工作区里有什么）
+# ---------------------------------------------------------------------------
+# 结论的来源不光有「外部站点」，还有「工作区本身」。工作区里有什么只能看，不能想。
+
+# 只读工具：调用过任意一个，就说明它真的看过现场。
+LOCAL_READ_TOOLS = (
+    "list_dir", "find_files", "read_file", "search_code", "impact_of",
+    "git_status", "git_log", "git_diff", "git_show",
+    "novel_stats", "task_notes", "ssh_info",
+)
+# 也可能顺带看过现场的（跑命令 / 远程命令）。判据宁宽不宁窄——这是「提醒」不是「拦截」，
+# 宁可漏报一次，也不要对着真查过现场的回答说「你根本没查」。
+LOCAL_EVIDENCE_TOOLS = LOCAL_READ_TOOLS + ("run_command", "ssh_run")
+
+# 文件 / 目录名的识别。刻意只认「像文件名」的（带已知扩展名）和「以 / 结尾的目录」，
+# 不去猜裸词——裸词里的误报（「框架」「工具」）会把这一层变成噪音。
+_EXT = (
+    "py|pyi|js|mjs|cjs|jsx|ts|tsx|vue|svelte|java|go|rs|c|h|cpp|hpp|cs|rb|php"
+    "|sh|bash|ps1|bat|cmd|sql|html|htm|css|scss|json|yaml|yml|toml|ini|cfg|conf"
+    "|md|rst|txt|csv|xml|env|lock|lnk|exe|dll|pem|key|log|png|jpg|jpeg|svg|pdf"
+)
+_FILE_RX = re.compile(
+    r"(?<![\w./\\-])((?:[\w\-.]+/)*[\w\-.]+\.(?:" + _EXT + r"))(?![\w])", re.I)
+_DIR_RX = re.compile(r"(?<![\w./\\-])([\w\-.]+/)(?!/?[\w])")
+_WINPATH_RX = re.compile(r"[A-Za-z]:\\[^\s，。；、）)】\"']+")
+
+# 「工作区现状」在任务书里的说法。三种句式都算：
+#   ① 动词在前：列出…文件 / 看一下…loop.py
+#   ② 名词在前：代码是怎么实现的 / 项目里有哪些目录
+#   ③ 直接点「现状」：工作区、根目录、目录结构…
+# 只认 ①② 会漏掉「看一下 agentforge/loop.py 里工具超时是怎么处理的」这种最日常的问法。
+_WS_NOUN = (r"(?:文件|目录|文件夹|源码|代码|内容|清单|列表|结构|实现|定义|配置"
+            r"|[\w\-.]+\.(?:" + _EXT + r")|[\w\-.]+/)")
+_ASK_VERB = (r"(?:列出|列一下|罗列|有哪些|哪些|有没有|存在吗|查看|查一下|看一下|看看"
+             r"|读一下|读读|打开|显示|展示|里面(?:有|是)什么|包含(?:哪些|什么))")
+_ASK_TAIL = r"(?:是什么|有什么|干什么|怎么样|如何|怎么|在哪儿|在哪)"
+_ASK_RX = re.compile(
+    _ASK_VERB + r"[^。；\n]{0,14}" + _WS_NOUN
+    + r"|" + _WS_NOUN + r"[^。；\n]{0,10}" + _ASK_TAIL
+    + r"|(?:文件列表|目录列表|目录结构|项目结构|文件结构|文件夹结构|工作区|根目录)",
+)
+# 任务书在让「造东西」时不算：那种任务里冒出来的文件名是它自己起的，
+# 不是对现有目录的陈述（产物是否存在另有一道核查，见 verify.py）。
+_CREATE_RX = re.compile(
+    r"(?:写|撰写|起草|创建|新建|生成|设计|规划|建议|推荐|重构|修改|改成|改为"
+    r"|添加|新增|实现|补上|加上|加个|做个)",
+)
+
+# 回复里「在陈述工作区现状」的标记。光有文件名不够——「已创建 tools/x.py」里也有
+# 文件名，但那是在说自己干了什么，不是对现有目录的陈述。
+_LISTING_RX = re.compile(
+    r"(?:根目录|目录结构|文件列表|目录列表|文件结构|文件夹结构|如下文件|以下(?:文件|目录)"
+    r"|文件如下|目录如下|包含以下|工作区(?:里|中|内)|当前(?:目录|文件)|现有(?:文件|目录))",
+)
+
+
+def asks_workspace_state(message: str) -> bool:
+    """任务书是不是在问「工作区里现在有什么」（且不是在让它造东西）。"""
+    m = str(message or "")
+    if not _ASK_RX.search(m):
+        return False
+    return not _CREATE_RX.search(m)
+
+
+def ran_local_inspection(convo: list[dict] | None) -> bool:
+    """任务过程中是否读过工作区（任意读取类工具，或跑过命令）。"""
+    return any(n in LOCAL_EVIDENCE_TOOLS for n in tool_names(convo))
+
+
+def local_fact_tokens(summary: str, exclude_text: str = "", cap: int = MAX_HITS) -> list[str]:
+    """总结里出现的「工作区现状」具体项（文件名 / 目录名 / 绝对路径，去重保序限量）。
+
+    exclude_text 里出现过的名字不算——那可能是任务书本身点名的对象
+    （「给 web/index.html 加个按钮」），不是凭空的现状陈述。
+    """
+    txt = str(summary or "")
+    ex = str(exclude_text or "").lower()
+    out: list[str] = []
+    seen: set[str] = set()
+    for rx in (_WINPATH_RX, _FILE_RX, _DIR_RX):
+        for m in rx.finditer(txt):
+            t = (m.group(1) if m.groups() else m.group(0)).strip()
+            if not t:
+                continue
+            k = t.lower()
+            if k in seen or k in ex:
+                continue
+            seen.add(k)
+            out.append(t)
+            if len(out) >= cap:
+                return out
+    return out
+
+
+def needs_local_note(summary: str, convo: list[dict] | None,
+                     message: str = "") -> list[str]:
+    """是否需要追加「本机事实未经核实」声明；需要就返回命中的文件/目录名。
+
+    与 needs_external_note 同一路数：判据全部由程序算，不看模型自报。
+    """
+    if not asks_workspace_state(message):
+        return []
+    if ran_local_inspection(convo):
+        return []
+    tokens = local_fact_tokens(summary, exclude_text=message)
+    if not tokens:
+        return []
+    # 单个名字可能是顺手提一句；要「≥2 项」或「明确在列清单」才当成现状陈述，
+    # 免得把「已创建 foo.py」这类正常收尾也标一遍。
+    if len(tokens) >= 2 or _LISTING_RX.search(str(summary or "")):
+        return tokens
+    return []
+
+
+def local_unverified_block(tokens: list[str]) -> str:
+    """附在最终答复末尾的系统侧声明。程序写的，模型只有解读权。"""
+    lines = [
+        "【系统侧核查】本回复描述了当前工作区里的文件 / 目录，但整个任务没有调用过任何"
+        "读取工作区的工具（`list_dir` / `find_files` / `read_file` / `search_code`），"
+        "下列内容未经核实，请勿直接采信：",
+    ]
+    lines += [f"- {t}" for t in tokens]
+    lines.append(
+        "工作区里到底有什么只能看、不能想：先 `list_dir` 列一遍，再写结论。"
+        "（此核查由程序完成，不依赖模型自报。）"
+    )
+    return "\n".join(lines)
+
+
+# 命中时给模型的一轮修正机会（硬约束：不能就这么把编的内容交出去）。
+LOCAL_FACTS_CORRECTIVE_PROMPT = """【系统侧核查 · 需要修正】
+你刚才的答复描述了工作区里的文件 / 目录，但这次任务从头到尾没有调用过任何读取
+工作区的工具——这些内容不是看来的。被点出的部分：
+
+{tokens}
+
+现在按顺序做两件事：
+1. 用 list_dir（必要时配合 find_files / read_file）真实看一遍工作区，把写错的地方改对；
+2. 重新给出答复。查到什么写什么，查不到的如实说「未核实」，不要凭印象补全。
+
+若你认为这些内容其实来自任务书本身（不是在陈述现状），说明一句即可。
+你刚才的答复：
+{summary}"""
+
+
 __all__ = [
     "SEARCH_TOOLS",
     "FETCH_TOOLS",
+    "LOCAL_READ_TOOLS",
+    "LOCAL_EVIDENCE_TOOLS",
     "tool_names",
     "ran_search",
     "ran_first_party_fetch",
     "external_claim_hits",
     "needs_external_note",
     "external_unverified_block",
+    "asks_workspace_state",
+    "ran_local_inspection",
+    "local_fact_tokens",
+    "needs_local_note",
+    "local_unverified_block",
+    "LOCAL_FACTS_CORRECTIVE_PROMPT",
 ]

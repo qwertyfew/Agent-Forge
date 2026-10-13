@@ -10,6 +10,7 @@ from .planner import KIND_DIM, KIND_LABEL, kind_of
 # gemma4:12b 做中文长文归纳时的真实短板：writing 不低，但 chinese 只有 62）。
 _CAP_DIMS = {
     "coding": ("coding",),
+    "inspect": ("reasoning",),
     "writing": ("writing", "chinese"),
     "math": ("math",),
     "analysis": ("reasoning", "chinese"),

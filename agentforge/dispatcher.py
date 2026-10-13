@@ -53,7 +53,8 @@ DISPATCH_SYSTEM = """你是 AgentForge 的任务调度器（Dispatcher）。你�
 
 对每个任务给出：
 - goal        自包含的执行指令（执行者只看这一条就能干活）
-- kind        coding / writing / math / analysis / general
+- kind        coding / inspect / writing / math / analysis / general
+              （inspect = 要先看现场才知道答案的活：列目录、看有哪些文件、读现有实现）
 - capability  完成任务所需的关键能力（一句话）
 - needs_chinese  产出是否必须是中文（true/false）
 - model       只在某个候选模型**明显更合适**时才填它的名字；不确定就留空（由系统按能力挑）。
@@ -87,8 +88,9 @@ MODEL_CHOICE_GAP = 8
 
 # 决策模型（体量小）只该干两件事：调度、以及几句简单对话。但凡要动工具、读写文件、
 # 写代码、做数学的活都不给它——否则真正的强模型闲着，活却被小模型做砸。
-# 除了 coding/math 这类显然的重活，写作/分析默认也要动手（读素材、写文件），同样算重活。
-NOT_SIMPLE_KINDS = {"coding", "math", "writing", "analysis"}
+# 除了 coding/math 这类显然的重活，写作/分析/检视默认也要动手（读素材、读现场、
+# 写文件），同样算重活。
+NOT_SIMPLE_KINDS = {"coding", "math", "writing", "analysis", "inspect"}
 
 # 即便是 general（闲聊/解释）类，出现下面任一信号也说明「要动手或要算力」，不算简单对话。
 _TOOL_HINTS = (

@@ -300,6 +300,38 @@ def _verify_gate(agent, message: str, holder: dict,
             summary = (summary + "\n\n---\n"
                        + sources_gate.external_unverified_block(hits)).strip()
 
+    # 第四道核查：本机事实的来源。任务要的就是「工作区里现在有什么」（列目录 /
+    # 有哪些文件 / 看现状），模型却全程一次读取类工具都没调，答复里却列着具体文件
+    # 名——那是编的。治的是端到端实测那个病：25 秒、0 次工具调用，凭空列出
+    # agent-forge.json / core/ / ui/ 这些工作区里根本不存在的路径。
+    # 与外部事实那道同源（结论必须有来源），只不过这回的来源是工作区本身。
+    # 硬约束：先给一轮修正机会去真看一眼——「技能加载了但没拦住」的解法不是把
+    # 提示词写得更重，而是让系统替它把这一步做实；修正后仍然没看，才由程序附声明。
+    if getattr(cfg, "local_facts_gate", True):
+        hits = sources_gate.needs_local_note(summary, convo, message)
+        if hits and not corrected:
+            corrected = True
+            prompt = sources_gate.LOCAL_FACTS_CORRECTIVE_PROMPT.format(
+                tokens="\n".join(f"- {t}" for t in hits),
+                summary=summary or "（无）",
+            )
+            for ev in agent.run(convo, prompt, auto_route=False,
+                                stop_check=stop_check, auto_approve=auto_approve,
+                                read_cache=read_cache):
+                k = ev.get("type")
+                if k in ("user", "route"):
+                    continue
+                if k == "assistant":
+                    convo = ev["history"]
+                    summary = (ev.get("content") or "").strip() or summary
+                yield ev
+            hits = sources_gate.needs_local_note(summary, convo, message)
+        if hits:
+            yield {"type": "verify", "cmd": "", "ok": False, "exit": "",
+                   "duration": "", "unverified_local": hits}
+            summary = (summary + "\n\n---\n"
+                       + sources_gate.local_unverified_block(hits)).strip()
+
     if summary != holder.get("summary"):
         holder["summary"] = summary
         holder["convo"] = convo
