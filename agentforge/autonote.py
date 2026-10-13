@@ -48,7 +48,7 @@ _BRIEF = re.compile(
     r"|指定路径|该文件|这个文件|本文|素材|大纲|报告|全文"
     r"|[A-Za-z]:\\|/[\w.-]+/|\S+\.(txt|md|py|json|ya?ml|csv|docx?|xlsx?)\b"
     # 工具名与「我已经把东西准备好了」式的交代（实测漏过「…直接用 read_file 读，不要联网：」）
-    r"|read_file|write_file|edit_file|run_command|fetch_url|search_code|list_dir"
+    r"|read_file|write_file|edit_file|run_command|fetch_url|fetch_json|search_code|list_dir"
     r"|联网|工作区里|目录里|参考文件"
     # 以冒号收尾 = 后面还要跟一列东西，是交代清单的口气，不是偏好的口气
     r"|[:：]\s*$"
@@ -106,7 +106,7 @@ _TASKISH = re.compile(
     r"|约\s*\d+\s*[万千]字|第\s*\d+\s*行"
     # 工具名与任务约束句（实测漏过「web_search 之前重复调用过多…」「禁止修改
     # 任何 Python 代码」这类把任务指令当结论的条目）
-    r"|web_search|search_code|fetch_url|run_command|read_file|edit_file|write_file"
+    r"|web_search|search_code|fetch_url|fetch_json|run_command|read_file|edit_file|write_file"
     r"|use_skill|task_notes|GitHub API|禁止修改|不要使用任何|不要写文件|不要硬凑"
 )
 

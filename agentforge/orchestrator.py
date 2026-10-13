@@ -26,6 +26,7 @@ from .dispatcher import Dispatcher, SharedState, TaskSpec
 from .loop import Agent
 from .planner import KIND_DIM, KIND_LABEL, Subtask, kind_of, make_plan, needs_plan, plan_summary
 from .readcache import ReadCache
+from . import sources as sources_gate
 from . import verify as verify_gate
 
 # 首步与后续步骤的提示词模板。都强调"只做这一步"，否则模型会越界把后面的活也干了。
@@ -287,6 +288,18 @@ def _verify_gate(agent, message: str, holder: dict,
                                   "status": c["status"]} for c in issues]}
             summary = (summary + "\n\n---\n"
                        + verify_gate.artifact_issue_block(issues)).strip()
+
+    # 第三道核查：外部事实的一手来源。用过联网搜索、却没抓过任何一手来源，
+    # 而总结里又出现了数字 / 版本 / 日期这类外部事实时——由程序在答复末尾追加
+    # 「转述 · 未经核实」声明。这治的是 REA 检索那个病：搜索摘要里的「star 1w+」
+    # 被直接当结论写出来，而真实值是 17 万。人不一定看穿，程序一眼看穿。
+    # 与上面两道核查同一思路：模型只有解读权，没有裁定权。
+    if getattr(cfg, "sources_gate", True):
+        hits = sources_gate.needs_external_note(summary, convo)
+        if hits:
+            summary = (summary + "\n\n---\n"
+                       + sources_gate.external_unverified_block(hits)).strip()
+
     if summary != holder.get("summary"):
         holder["summary"] = summary
         holder["convo"] = convo

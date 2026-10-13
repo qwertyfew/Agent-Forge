@@ -135,6 +135,10 @@ class Config:
     # 收尾验证闸门（agentforge/verify.py）：任务书声明了验证命令（「验证：xxx」）时，
     # 任务结束前由系统亲自运行该命令、把真实结果附进最终答复；模型只有解读权。
     verify_gate: bool = True
+    # 一手来源核查（agentforge/sources.py）：用过联网搜索、却全程没抓过一手来源
+    # （fetch_url / fetch_json / browser_snapshot），而总结里又出现数字 / 版本 / 日期
+    # 这类外部事实时，由程序在答复末尾追加「转述 · 未经核实」声明。
+    sources_gate: bool = True
 
     # ---- 多 agent 调度（Dispatcher）----
     # 由一个本地决策模型把请求拆成【语义独立】的任务、指派执行 agent、维护共享进度，
@@ -246,6 +250,8 @@ class Config:
         cfg.memory_autonote = bool(a.get("memory_autonote", True))
         # 收尾验证闸门：任务书里声明了验证命令时，收尾由系统亲自运行并播报真实结果
         cfg.verify_gate = bool(a.get("verify_gate", True))
+        # 一手来源核查：只用过搜索没抓过一手来源、总结里又有数字时，附「未经核实」声明
+        cfg.sources_gate = bool(a.get("sources_gate", True))
         relay = str(a.get("relay", "brief" if cfg.relay_brief else "full")).strip().lower()
         cfg.relay_brief = relay != "full"
 

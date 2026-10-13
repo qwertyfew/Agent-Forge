@@ -2737,7 +2737,7 @@ function prependNote(html){
   log.insertBefore(n, log.firstChild);
 }
 
-function renderHistory(hist){
+function renderHistory(hist, task){
   log.innerHTML = '';
   history = hist || [];
   let pending = [];
@@ -2763,20 +2763,57 @@ function renderHistory(hist){
     }else if(m.role === 'tool'){
       const t = pending.shift();
       if(t){
-        t.body.textContent = m.content || '';
-        t.state.textContent = '完成';
-        t.state.className = 'tool-state ok';
+        const out = m.content || '';
+        t.body.textContent = out;
+        // 回看时也要按真实结果标状态：失败/拒绝不能一律显示「完成」。
+        // 判定口径与实时 tool_result 事件保持一致（见 handleTaskEvent）。
+        // 关键：必须把 dataset.run 清成 '0' 并换掉图标——toolHeadSummary 靠
+        // dataset.run 判定「运行中」，addTool 又把图标初始化成 spinner；
+        // 只改文本不清这两个，回看一个已完成的任务时组头与每次调用会永远
+        // 显示转圈 +「调用中」，像是还在跑。
+        const ico = t.item.querySelector('.tool-ico');
+        t.state.dataset.run = '0';
+        if(/^\[错误\]/.test(out)){
+          t.item.classList.add('denied');
+          t.state.textContent = '失败';
+          t.state.className = 'tool-state deny';
+          if(ico){ ico.innerHTML = SVG.rectx; ico.classList.remove('spin'); }
+        }else if(/^\[已拒绝\]/.test(out)){
+          t.item.classList.add('denied');
+          t.state.textContent = '已拒绝';
+          t.state.className = 'tool-state deny';
+          if(ico){ ico.innerHTML = SVG.rectx; ico.classList.remove('spin'); }
+        }else{
+          t.state.textContent = '完成';
+          t.state.className = 'tool-state ok';
+          if(ico){ ico.innerHTML = SVG.rectcheck; ico.classList.remove('spin'); }
+        }
         toolHeadSummary(t.t);
       }
     }
   }
   // 被停止的任务会留下「声明了但没执行」的工具调用，如实标出来别装成还在跑
   for(const t of pending){
+    const ico = t.item.querySelector('.tool-ico');
+    t.state.dataset.run = '0';   // 同上：不清这个标志，组头会卡在「调用中」
+    t.item.classList.add('denied');   // 与实时路径口径一致：未执行也要标红
     t.state.textContent = '未执行';
     t.state.className = 'tool-state deny';
+    if(ico){ ico.innerHTML = SVG.rectx; ico.classList.remove('spin'); }
     toolHeadSummary(t.t);
   }
   if(lastA){ lastStats = null; cur = lastA; attachMsgFoot(); cur = null; }
+  // 回看的是任务台账里的历史 = 这段回复早就结束了，头像行时间必须冻结。
+  // aiHead() 的初始文案是「执行中 0m00s」，而冻结只发生在实时的 done / stopped；
+  // 回看不冻结，一条结束很久的回复会永远显示「执行中」——跟工具组头卡在「调用中」
+  // 是同一类错觉。耗时优先用任务台账里的真实记录，比拿「现在」去减过期基准准。
+  // 唯一不冻结的情况是任务还在跑；调用方对运行中的任务走的是另一条分支（挂实时流），
+  // 所以拿不到 task 时按「已结束」处理更安全。
+  const st = task ? task.status : '';
+  if(st !== 'running'){
+    const label = ({ done:'完成', stopped:'已停止', error:'已中断' })[st] || '完成';
+    freezeAIHeadTime(label, task && task.duration);
+  }
   updateContextMeter(history, threshold);
   updateCompactBtn();
 }
@@ -2809,7 +2846,7 @@ function openTask(id){
     // 不再弹方框介绍条，只在顶栏标题后补一个轻量标记说明这是回看
     if($('topTitle')) $('topTitle').textContent += ' · 历史回看';
     if((task.history || []).length){
-      renderHistory(task.history);
+      renderHistory(task.history, task);
     }else{
       if(task.summary){ const a = addAssistant(); a.text = task.summary; a.body.innerHTML = md(task.summary); }
     }
@@ -3212,11 +3249,19 @@ function updateAIHeadTime(){
   const m = Math.floor(sec / 60), s = sec % 60;
   t.textContent = '执行中 ' + m + 'm' + String(s).padStart(2,'0') + 's';
 }
-function freezeAIHeadTime(label){
+/* 头像行时间：运行中每帧刷新「执行中 XmYs」；done/stopped 调 freezeAIHeadTime 冻结。
+   secOverride 传数字时直接用（回看历史时用任务台账里记的真实耗时，比拿「现在」去减
+   一个早已过期的基准准确得多）。*/
+function freezeAIHeadTime(label, secOverride){
   const t = aiHeadTimeEl;
   if(!t) return;
-  const base = Number(t.dataset.base) || Date.now();
-  const sec = Math.max(0, Math.floor((Date.now() - base) / 1000));
+  let sec;
+  if(typeof secOverride === 'number' && isFinite(secOverride) && secOverride >= 0){
+    sec = Math.floor(secOverride);
+  }else{
+    const base = Number(t.dataset.base) || Date.now();
+    sec = Math.max(0, Math.floor((Date.now() - base) / 1000));
+  }
   const m = Math.floor(sec / 60), s = sec % 60;
   t.textContent = label + ' ' + m + 'm' + String(s).padStart(2,'0') + 's';
   t.dataset.done = '1';
@@ -3478,6 +3523,28 @@ function toolHeadSummary(g){
   st.textContent = running ? (kind === 'skill' ? '执行中' : '调用中')
                             : (denied ? '有异常' : (kind === 'skill' ? '已执行' : '已调用'));
   st.className = 'tool-state ' + (running ? '' : (denied ? 'deny' : 'ok'));
+  // 组头自己的标志也要跟着落定。原来只改文本、不改这个 dataset 标志，
+  // 于是组头永远带着 run='1'——文本说「已调用」，标志说「还在跑」，
+  // 任何靠这个标志判定的地方（含外部脚本）都会读错。
+  st.dataset.run = running ? '1' : '0';
+}
+/* 任务收尾时把 DOM 里仍标记为「运行中」的工具调用落定。
+   任何终态事件（done / stopped / error）之后都不该再有转圈的工具：
+   error（模型调用失败等）会让已声明的 tool_start 永远等不到 tool_result，
+   不落定就会一直显示「调用中」——看起来像任务还在跑。 */
+function finalizeRunningTools(interrupted){
+  log.querySelectorAll('.tool-item').forEach(it=>{
+    const st = it.querySelector('.tool-state');
+    if(!st || st.dataset.run !== '1') return;
+    const ico = it.querySelector('.tool-ico');
+    st.dataset.run = '0';
+    it.classList.add('denied');
+    st.textContent = interrupted ? '中断' : '未执行';
+    st.className = 'tool-state deny';
+    if(ico){ ico.innerHTML = SVG.rectx; ico.classList.remove('spin'); }
+    const g = it.closest('.toolrun');
+    if(g) toolHeadSummary(g);
+  });
 }
 function addTool(name, args, parent){
   closeThinking(); hideShimmer();
@@ -4370,9 +4437,10 @@ function handleTaskEvent(ev, data){
       // 挂了就会出现「回答还没完，工具条先出来了」。工具条只在 done/stopped/回看时挂。
       history = data.messages; updateCompactBtn(); updateContextMeter(history, threshold);
     }
-    else if(ev === 'error'){ dropLanes(); addError(data.message); }
+    else if(ev === 'error'){ dropLanes(); finalizeRunningTools(true); addError(data.message); }
     else if(ev === 'stopped'){
       dropLanes();
+      finalizeRunningTools(false);
       attachMsgFoot(lastSeg || undefined);   // 已生成的部分回复也带上工具条
       lastSeg = null;
       cur = null; curTool = null;
@@ -4392,6 +4460,7 @@ function handleTaskEvent(ev, data){
     }
     else if(ev === 'done'){
       dropLanes();
+      finalizeRunningTools(false);   // 收尾后不该再有转圈的工具
       attachMsgFoot(lastSeg);   // 整段回复收尾：复制/重新回答/朗读工具条只挂这一次
       lastSeg = null;
       freezeAIHeadTime('完成');  // 头像行耗时冻结为「完成 XmYs」

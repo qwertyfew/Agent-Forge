@@ -1,16 +1,28 @@
 """网络与浏览器工具族。
 
 对照成熟 Agent 产品（Codex）的能力集：
-- web_search        联网搜索（查资料第一步）
-- fetch_url         抓取网页正文（静态页面 / 文档）
+- web_search        联网搜索（查资料第一步；**只用来找入口**，返回的是转述）
+- fetch_url         抓取网页正文（实测一手来源：官方页面 / 文档）
+- fetch_json        抓取 JSON 接口并投影字段（实测一手来源：GitHub / 包仓库等 API）
 - browser_snapshot  无头浏览器读取 JS 渲染页面的可访问文本
 - browser_screenshot 无头浏览器截图（用于界面验证 / 视觉确认）
 - open_browser      在用户本机默认浏览器中打开网页（给用户看）
+
+【为什么要有 fetch_json】REA 检索实测的教训：模型只调 web_search，把搜索结果摘要里
+的「star 1w+」当成事实写进结论（真实值是 17 万），而它手里明明有 fetch_url。
+根因是「搜索摘要」与「一手来源」在工具输出里长得一样，小模型分不清。所以：
+    1. 每个工具的输出头显式标注来源性质——`[搜索摘要 · 转述 · 未核实]` /
+       `[实测 · 网页]` / `[实测 · API]`，让模型一眼看出哪条能引用；
+    2. 专门给 API 一个工具，把「打官方接口拿真实数据」变成一次调用能办的事，
+       而不是要求小模型自己拼 URL、自己读一大坨 JSON。
+收尾还有系统侧核查兜底（agentforge/sources.py）：只用过搜索、没抓过一手来源、
+却在总结里写了数字 → 答复末尾由程序追加「转述·未经核实」声明。
 """
 
 from __future__ import annotations
 
 import html
+import json
 import re
 import subprocess
 import webbrowser
@@ -62,8 +74,64 @@ def build_web_tools(guard, cfg):
             body = _to_text(raw)
         else:
             body = raw
-        head = f"[URL] {url}\n[标题] {title}\n"
+        head = f"[实测 · 网页] {url}\n[标题] {title}\n"
         return head + body[: int(max_chars)]
+
+    # ---------- fetch_json ----------
+    def _dig(obj, path: str):
+        """按点分路径取字段（支持列表下标）："owner.login"、"items.0.name"。"""
+        cur = obj
+        for part in str(path).split("."):
+            if isinstance(cur, dict):
+                cur = cur.get(part)
+            elif isinstance(cur, list):
+                try:
+                    cur = cur[int(part)]
+                except (ValueError, IndexError):
+                    return None
+            else:
+                return None
+            if cur is None:
+                return None
+        return cur
+
+    def fetch_json(url: str, keys: str = "", max_chars: int = 6000) -> str:
+        """抓 JSON 接口并返回真实数据（fields 投影）。
+
+        这是「实测」路径：结果直接来自官方 API，可以直接引用。适合 GitHub
+        （api.github.com/repos/owner/repo）、包仓库（registry.npmjs.org /
+        pypi.org/pypi/<pkg>/json）这类结构化来源。
+        """
+        if not url.lower().startswith(("http://", "https://")):
+            return "[错误] 只支持 http/https 链接"
+        try:
+            r = requests.get(url, timeout=25, headers={
+                "User-Agent": "AgentForge/0.1 (local agent)",
+                "Accept": "application/json, text/plain, */*",
+            })
+            r.raise_for_status()
+        except requests.RequestException as e:
+            return f"[错误] 请求失败: {e}"
+        try:
+            data = r.json()
+        except ValueError:
+            return ("[错误] 该地址返回的不是 JSON（多半是个网页）。"
+                    "查网页正文请改用 fetch_url；确认是接口再检查 URL。\n"
+                    f"返回内容开头：{r.text[:300]}")
+        head = f"[实测 · API] {url}\n"
+        picks = [k.strip() for k in (keys or "").split(",") if k.strip()]
+        if picks:
+            lines = []
+            for k in picks[:40]:
+                v = _dig(data, k)
+                if v is None:
+                    lines.append(f"{k} = （无此字段）")
+                elif isinstance(v, (dict, list)):
+                    lines.append(f"{k} = {json.dumps(v, ensure_ascii=False)[:400]}")
+                else:
+                    lines.append(f"{k} = {v}")
+            return (head + "\n".join(lines))[:max_out]
+        return (head + json.dumps(data, ensure_ascii=False, indent=1))[:max_out]
 
     # ---------- web_search ----------
     _BING_BLOCK_RE = re.compile(r'<li class="b_algo".*?</li>', re.S | re.I)
@@ -117,8 +185,12 @@ def build_web_tools(guard, cfg):
             out.append((url, _clean(title), _clean(snippet)))
         return out
 
-    def web_search(query: str, max_results: int = 6) -> str:
-        """联网搜索：优先 Bing（国内直连），失败回退 DuckDuckGo。"""
+    def web_search(query: str, max_results: int = 8) -> str:
+        """联网搜索：优先 Bing（国内直连），失败回退 DuckDuckGo。
+
+        返回的是**搜索摘要**，只用来找入口。输出头显式标明「转述·未核实」——
+        实测教训：摘要里的数字被直接当结论引用过（star 说 1w+，实际 17 万）。
+        """
         rows: list[tuple[str, str, str]] = []
         errors = []
         for name, fn in (("bing", _search_bing), ("duckduckgo", _search_ddg)):
@@ -131,9 +203,11 @@ def build_web_tools(guard, cfg):
         if not rows:
             msg = f"[错误] 搜索失败。{'；'.join(errors)}" if errors else f"[搜索] “{query}” 没有返回结果。"
             return msg + "\n建议：直接 fetch_url 你猜测的官网地址。"
-        lines = [f"[搜索] {query} — 前 {len(rows)} 条结果:"]
+        lines = [f"[搜索摘要 · 转述 · 未核实] {query} — 前 {len(rows)} 条（摘要不可直接当事实引用）:"]
         for i, (url, title, snippet) in enumerate(rows, 1):
             lines.append(f"{i}. {title[:80]}\n   {url}\n   {snippet[:160]}")
+        lines.append("下一步：挑 ≥1 条最可能是官方的结果，用 fetch_url / fetch_json 抓原文核实后再下结论。"
+                     "这里的数字、版本、日期都不可直接写进回复。")
         return "\n".join(lines)[:max_out]
 
     # ---------- 浏览器 CLI 封装 ----------
@@ -208,16 +282,20 @@ def build_web_tools(guard, cfg):
             return f"[错误] 打开浏览器失败: {e}"
         return f"已在你的默认浏览器打开: {url}" if ok else "[错误] 系统未返回成功状态"
 
-    # ---------- fetch_url ----------
+    # ---------- 工具注册 ----------
     return [
         make_tool(
             "web_search",
-            "联网搜索（DuckDuckGo，免 key）。查资料、找文档、核对事实的第一步；拿到结果后用 fetch_url 或 browser_snapshot 读详情。",
+            "联网搜索（Bing，失败回退 DuckDuckGo）。**只用来找入口**：返回的是搜索摘要"
+            "（转述），其中的数字 / 版本 / 日期一律不可直接引用。硬性要求：搜到候选 URL 后，"
+            "必须用 fetch_url 或 fetch_json 抓至少一个一手来源核实，然后才下结论。"
+            "目标是某个具体项目 / 库 / 产品时，优先找它的官方地址（官网、GitHub、官方文档），"
+            "而不是第三方博客。",
             {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "搜索关键词"},
-                    "max_results": {"type": "integer", "description": "返回条数，默认 6"},
+                    "max_results": {"type": "integer", "description": "返回条数，默认 8"},
                 },
                 "required": ["query"],
             },
@@ -226,7 +304,9 @@ def build_web_tools(guard, cfg):
         ),
         make_tool(
             "fetch_url",
-            "抓取网页并转成纯文本，用于查文档、核对信息。静态页面用这个；JS 渲染的页面请用 browser_snapshot。",
+            "抓取网页正文并转成纯文本——这是**实测**路径，抓到的内容可以直接引用。"
+            "查官方文档、官网、核实事实用这个；JS 渲染的页面改用 browser_snapshot；"
+            "JSON 接口改用 fetch_json。",
             {
                 "type": "object",
                 "properties": {
@@ -236,6 +316,27 @@ def build_web_tools(guard, cfg):
                 "required": ["url"],
             },
             fetch_url,
+            SAFE,
+        ),
+        make_tool(
+            "fetch_json",
+            "抓取 JSON 接口并返回真实数据——**实测**路径，结果可直接引用。"
+            "核对数字与结构化事实用它，一次调用就能拿到官方 API 的权威字段。"
+            "常用：GitHub 仓库 https://api.github.com/repos/<owner>/<repo>"
+            "（keys 可填 stargazers_count,forks_count,open_issues_count,pushed_at,language）；"
+            "npm 包 https://registry.npmjs.org/<pkg>；PyPI 包 https://pypi.org/pypi/<pkg>/json。"
+            "keys 用逗号分隔的点分路径投影字段，省略则返回完整 JSON。",
+            {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "接口完整 URL（返回 JSON）"},
+                    "keys": {"type": "string",
+                             "description": "要取的字段，逗号分隔的点分路径，如 stargazers_count,pushed_at；省略返回全部"},
+                    "max_chars": {"type": "integer", "description": "最多返回多少字符，默认 6000"},
+                },
+                "required": ["url"],
+            },
+            fetch_json,
             SAFE,
         ),
         make_tool(
