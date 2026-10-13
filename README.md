@@ -289,6 +289,17 @@ skills/                内置技能（frontend-design / novel-writing / web-brow
 tools/                 开发/运维工具（bench.py 模型性能基准、fastpull.py 模型拉取与体检）
 ```
 
+### 跨平台脚本的行尾与编码
+
+所有 `.bat` 与 `.sh` 都受这两条硬约束，由 `.gitattributes` 强制住，改脚本时别踩：
+
+- **`.bat` 必须「纯 ASCII + CRLF」**。cmd.exe 按 CRLF 计算字节偏移，纯 LF 会让它逐行错位、
+  从行中间开始执行（把半句话当命令跑）；在 936（GBK）控制台下，UTF-8 中文的尾字节还会被
+  GBK 解码器**连同行尾 CR 一起吃掉**，照样错位。存成 GBK 能让 cmd 跑通，但编辑器（默认 UTF-8）
+  打开就是满屏乱码——所以这些文件**只用英文注释与提示**。`*.bat text eol=crlf` 守住这条。
+- **`.sh` 必须 LF**。CRLF 会让 shebang 变成 `#!/usr/bin/env bash^M`，Linux / macOS 上直接执行
+  会报 `bad interpreter`。`*.sh text eol=lf` 守住这条。
+
 ## 架构演进
 
 按时间顺序记录**影响输出质量与架构形态的关键变动**（bug 修复不在此列，见各自 commit）。
@@ -339,7 +350,31 @@ tools/                 开发/运维工具（bench.py 模型性能基准、fastp
 - **并行波次**：独立任务同时跑（仅完全访问权限）；本地模型串行闸门（16GB 显存两个本地模型常驻会互挤）；
   同文件写入串行保护（`claim_write`），不同文件互不阻塞。
 - **Provider 层**：OpenAI 兼容 / Anthropic / Ollama 三家统一形状，内部历史转严格 provider 格式
-  （dict→JSON、补 tool_call_id、system 上提合并），支持 SSE 流式。
+  （dict→JSON、补 `tool_call_id`、system 上提合并），支持 SSE 流式。
+- **在严格 Provider 上跑通（Batch D 挖出的坑）**：本地 Ollama 对消息形状一律容忍，在线 provider
+  要么直接 400、要么静默跑歪。下面每一条都是真实跑崩后定位并修掉的，不是预防性设计：
+  - **语言提醒曾以 system 贴在消息末尾** → `System message must be at the beginning` 400。
+    改为在 `_convert_messages` 里把**所有 system 收拢、合并成开头唯一一条**再发出；不改成
+    `user` 角色——实测那样模型会去「回复」这条提醒，反而打断干活。
+  - **上下文压缩会重建消息**，丢掉 DeepSeek 要求原样回传的 `reasoning_content`、以及 `role=tool`
+    必须配对的 `tool_call_id` → 长任务跑到中途又 400。`context.py` 补了 `rehydrate_reasoning()`
+    （按工具调用指纹「名字+参数」回填，找不到就保持原样、绝不张冠李戴）与「重建 tool 消息只改
+    `content`、其余字段全留」。
+  - **最阴的一个——SSE 中文乱码**：OpenAI 兼容流的 `Content-Type: text/event-stream` 不带 charset，
+    `requests` 于是把编码认成 ISO-8859-1，`iter_lines(decode_unicode=True)` 按 latin-1 解码 →
+    中文正文与**工具参数**（文件路径、搜索词）整段坏掉（`写作.txt` → `åä½.txt`），agent 读不到文件、
+    搜索全 miss、只能反复空转，而界面看不出任何异常。本地 Ollama 的原生 `/api/chat` 是
+    `application/x-ndjson`（走 bytes）不受影响——**本地跑绿 ≠ 在线 provider 跑绿**。改为
+    `decode_unicode=False` + `raw.decode("utf-8", "replace")`。
+  - **空轮次假成功**：思考模型偶尔返回「无 tool_calls 且正文为空」的一轮，原先被当任务完成
+    （界面 `task_done files=[]`，实际零产出）。改为连续空轮次 ≤2 次时注入「上一轮没有输出」提示
+    并继续，超过 2 次报 error——不再假成功。
+  - **决策模型私自缩小任务范围**：把「通读素材并覆盖写入 outline.md」改写成「仅做分析，不执行
+    文件写入」，执行者照 goal 干活就不写文件。`DISPATCH_SYSTEM` 明令「**绝不缩小任务范围**：用户
+    要求的产物（文件名/路径/格式）必须原样出现在 goal 里」。
+  - 顺带一个路由口径隐患：`router.py` 的候选池 `all_avail` 取的是 catalog 里 `available` 的模型，
+    **包含没勾选的**——只要 `allow_paid_upgrade=True`，自动选型就可能挑到一个根本没勾选的付费模型。
+    已用 `allow_paid_upgrade: false` 收口（关掉后候选池会先过滤掉 `paid`），但这个口径要留意。
 
 ### 第 7 步：记忆分层与技能元数据（本批提交）
 

@@ -18,7 +18,7 @@ rem
 rem KEEP THIS FILE ASCII-ONLY WITH CRLF LINE ENDINGS. cmd.exe tracks byte
 rem offsets by CRLF and decodes the file in the console codepage, so a bare-LF
 rem file, or non-ASCII text on a 936 (GBK) console, makes it run half-sentences
-rem as commands and die. See docs/BATCH_D_REPORT.md section 6.
+rem as commands and die. See README: "Cross-platform script line endings".
 rem ===========================================================================
 setlocal EnableExtensions
 cd /d "%~dp0"
