@@ -2631,34 +2631,22 @@ function adoptRunning(){
   const running = (taskData || []).find(t => t.status === 'running');
   if(running){
     if(!liveTask || liveTask.id !== running.id){
-      // 页面还停在初始落地态（没聊过、没开过任务、没在打字）时，接管 = 直接入场：
-      // 侧栏有任务在跑、主区域却还是落地页很割裂——自动切进该任务的执行视图。
-      // 每个任务只自动切这一次，之后用户手动离开（点「新对话」等）不再拽回来。
-      const pristine = view === 'chat' && !busy && !openTaskId && !viewingHistory
-        && history.length === 0 && !log.childElementCount && !input.value.trim();
-      liveTask = {
-        id: running.id, startedAt: running.created_at, status: 'running',
-        tools: running.tools || 0, cost: running.cost || 0,
-        localOnly: running.local_only !== false,
-        progress: running.progress || '', models: running.models || [],
-        followed: true, stopping: false
-      };
-      if(pristine){
-        liveTask.autoOpened = true;
-        openTaskId = running.id;
-        renderTasks();                       // 侧栏立刻高亮
-        showView('chat');
-        enterChat(running.title || '运行中任务');
-        log.innerHTML = '';                  // 同步清场，赶在事件流回放前面，避免竞态丢内容
-        // 外部指派的任务（curl/其他端发起）流里没有用户气泡，回放的事件只有
-        // 思考/工具/回复——不补一条的话，输入框和输出开头的头像时间全都缺失。
-        // 用台账标题补上，同时让第一个 AI 元素挂上头像行（addUser 会置 needAIHead）。
-        headTimeOverride = running.created_at || 0;
-        if(running.title) addUser(running.title);
-        hideShimmer();
-        showShimmer();
+      // 别处（脚本 / CLI / 另一个标签页）发起的任务：入场，把提问、头像行、计时
+      // 一次补齐——以前这里只在页面「干净」时才补提问（还拿标题当提问），
+      // 于是「已经看过一条任务再发下一条」就成了一屏没有问题/头像/计时的输出。
+      // 每个任务只自动入场一次：判据是 liveTask.id，用户中途点「新对话」离开
+      // 不会再被拽回来。
+      //
+      // 两种情况不抢画面：本标签页自己的任务正在流（busy——两路事件会串在一段
+      // 对话里），用户停在设置/记忆/技能页（那是「正在做别的事」，回到对话时
+      // 5 秒内的轮询会补上入场）。回看历史**不算**——这里如果也放过，用户就会
+      // 永远看不见这条任务：他一直停在回看态，轮询每次都跳过，直到他主动点开
+      // 侧栏那条任务。想看旧任务，点回去就行（入场每个任务只发生一次）。
+      if(view === 'chat' && !busy){
+        liveTask = liveTaskFrom(running);
+        enterTaskView(running, {live: true});
+        followTaskStream(running.id);   // 接管即挂流：能看到完整思考与回复
       }
-      followTaskStream(running.id);   // 接管即挂流：能看到完整思考与回复
     }else{
       liveTask.tools = Math.max(liveTask.tools || 0, running.tools || 0);
       liveTask.cost = Math.max(liveTask.cost || 0, running.cost || 0);
@@ -2803,19 +2791,92 @@ function renderHistory(hist, task){
     toolHeadSummary(t.t);
   }
   if(lastA){ lastStats = null; cur = lastA; attachMsgFoot(); cur = null; }
-  // 回看的是任务台账里的历史 = 这段回复早就结束了，头像行时间必须冻结。
-  // aiHead() 的初始文案是「执行中 0m00s」，而冻结只发生在实时的 done / stopped；
-  // 回看不冻结，一条结束很久的回复会永远显示「执行中」——跟工具组头卡在「调用中」
-  // 是同一类错觉。耗时优先用任务台账里的真实记录，比拿「现在」去减过期基准准。
-  // 唯一不冻结的情况是任务还在跑；调用方对运行中的任务走的是另一条分支（挂实时流），
-  // 所以拿不到 task 时按「已结束」处理更安全。
-  const st = task ? task.status : '';
-  if(st !== 'running'){
-    const label = ({ done:'完成', stopped:'已停止', error:'已中断' })[st] || '完成';
-    freezeAIHeadTime(label, task && task.duration);
-  }
+  freezeHeadFor(task);
   updateContextMeter(history, threshold);
   updateCompactBtn();
+}
+
+/* ============ 进入任务视图：全项目唯一的入口 ============
+   提问气泡、头像行、计时基准这三件事，过去有三条各写各的路：
+   本页输入框发起的（send 里直接 addUser）、别处发起被接管的（只在页面「干净」时
+   补一条、而且拿标题当提问）、收尾后从侧栏点进来回看的（renderHistory 里齐全）。
+   于是任务跑到一半去看它，就是一屏「没有问题、没有头像、没有计时」的输出——
+   同一件事三个口径，差别只取决于「谁发起的、什么时候看的」。
+
+   根因不在渲染，在真相来源：提问的原文只活在发起方的内存里，台账要到任务结束
+   才写 history。现在台账在 begin 时就把原话记进 prompt，这里统一从台账取，
+   所以不管任务是谁发起的、什么时候点进去，画面上都先有提问，
+   而头像行与计时是挂在提问之后的（addUser 会把闸门打开），跟着一起就位。
+
+   opts.live = true  → 内容靠事件流（调用方接着调 followTaskStream）
+   opts.live = false → 内容靠台账里的 history（回看） */
+function taskPrompt(task){
+  if(!task) return '';
+  if(task.prompt && task.prompt.trim()) return task.prompt;   // 台账原话：任务一开始就有
+  for(const m of (task.history || [])){                        // 老台账没有 prompt 字段
+    if(m && m.role === 'user' && (m.content || '').trim()) return m.content;
+  }
+  return task.title || '';                                     // 最后才退回标题（截断过的）
+}
+
+/* 清空对话区（换任务 / 新对话）时必须一起复位的实时渲染状态。
+   这些变量都指着刚被删掉的那批 DOM，不复位的话后面的事件会往脱离文档的节点里写：
+   流明明还在跑，界面却是空的（而且看起来像「什么都没发生」）。
+   needAIHead 刻意留成 true——清场意味着「接下来还有内容要画」，
+   下一段输出仍然该带上头像行与计时（跑一半清屏后接着看尤其明显）。 */
+function resetRenderState(){
+  cur = null; curTool = null; curToolGroup = null;
+  lastSeg = null; lastStats = null; lastAssign = null;
+  aiHeadTimeEl = null;
+  needAIHead = true;
+  dropLanes();
+}
+
+/* 界面上的「正在执行」从台账来：本页发起的、别的标签页发起的、脚本发起的，
+   结构一样，只有 startedAt 会被拿来给头像行计时兜底。 */
+function liveTaskFrom(rec){
+  return {
+    id: rec.id || '', startedAt: rec.created_at || (Date.now()/1000), status: 'running',
+    tools: rec.tools || 0, cost: rec.cost || 0,
+    localOnly: rec.local_only !== false,
+    progress: rec.progress || '', models: rec.models || [],
+    stopping: false
+  };
+}
+
+function enterTaskView(task, opts = {}){
+  if(!task) return;
+  const live = !!opts.live;
+  openTaskId = task.id || '';
+  viewingHistory = !live;
+  // 正在跑的任务不能沿用上一条的对话历史，否则接着发消息会把旧上下文塞进新任务
+  history = live ? [] : (task.history || []);
+  resetRenderState();
+  renderTasks();
+  showView('chat');
+  enterChat(task.title || (live ? '运行中任务' : '历史任务'));
+  log.innerHTML = '';                    // 换任务 = 换画面，上一条的内容不能留在底下
+  hideShimmer(); closeThinking();
+  headTimeOverride = task.created_at || 0;   // 头像行计时基准 = 任务真正的开始时间
+  if(live){
+    const prompt = taskPrompt(task);
+    if(prompt) addUser(prompt);
+    showShimmer();
+  }else{
+    if($('topTitle')) $('topTitle').textContent += ' · 历史回看';
+    if(history.length) renderHistory(history, task);
+    else if(task.summary){
+      // 历史被裁掉了（老台账）：只剩摘要也要把提问摆回去，否则看的是「半句话」
+      const prompt = taskPrompt(task);
+      if(prompt) addUser(prompt);
+      const a = addAssistant(); a.text = task.summary; a.body.innerHTML = md(task.summary);
+      freezeHeadFor(task);
+    }
+    if((task.files || []).length) addFilesCard(task.files);
+    if(task.error) addError(task.error);
+  }
+  updateContextMeter(history, threshold);   // 实时入口的 history 是空的 → 计量归零，等事件流回填
+  scrollBottom();
 }
 
 function openTask(id){
@@ -2825,33 +2886,16 @@ function openTask(id){
     const task = d.task;
     if(!task) return;
     if(task.status === 'running'){
-      // 关键：看正在跑的任务时不能沿用上一次的对话历史，
-      // 否则接着发消息会把旧上下文一起塞给新任务（之前就是这么串档的）。
-      history = [];
-      viewingHistory = false;
-    }else{
-      viewingHistory = true;
-      history = task.history || [];   // 先把历史挂上再切视图，否则会误判成落地页
-    }
-    showView('chat');
-    enterChat(task.title || '历史任务');
-    log.innerHTML = '';
-    hideShimmer();
-    closeThinking();
-    if(task.status === 'running'){
-      updateContextMeter(0, threshold);
-      showShimmer();
+      // 正在跑的任务：画面得挂上它的实时流（缓冲会重放，整段过程都补得回来）。
+      // 但本标签页就是发起者时流已经在手上，重进只会把画好的内容清掉——切回视图就行。
+      if(busy && liveTask && liveTask.id === task.id){ showView('chat'); scrollBottom(); return; }
+      if(!liveTask || liveTask.id !== task.id) liveTask = liveTaskFrom(task);
+      enterTaskView(task, {live: true});
+      followTaskStream(task.id);
+      renderRunBar(); syncComposer();
       return;
     }
-    // 不再弹方框介绍条，只在顶栏标题后补一个轻量标记说明这是回看
-    if($('topTitle')) $('topTitle').textContent += ' · 历史回看';
-    if((task.history || []).length){
-      renderHistory(task.history, task);
-    }else{
-      if(task.summary){ const a = addAssistant(); a.text = task.summary; a.body.innerHTML = md(task.summary); }
-    }
-    if((task.files || []).length) addFilesCard(task.files);
-    if(task.error) addError(task.error);
+    enterTaskView(task);
   }).catch(()=>{});
 }
 
@@ -3183,6 +3227,7 @@ function resetChat(){
   attachments = [];
   renderAttach();
   renderTasks();
+  resetRenderState();      // 清场就得把指向旧 DOM 的渲染状态一起复位（否则接着写进空气里）
   $('topTitle').textContent = '';
   showView('chat');
 }
@@ -3265,6 +3310,19 @@ function freezeAIHeadTime(label, secOverride){
   const m = Math.floor(sec / 60), s = sec % 60;
   t.textContent = label + ' ' + m + 'm' + String(s).padStart(2,'0') + 's';
   t.dataset.done = '1';
+}
+/* 回看一条已结束的任务：头像行时间按台账冻结。
+   aiHead() 的初始文案是「执行中 0m00s」，而实时路径只在 done / stopped 时冻结——
+   回看不冻结的话，一条结束很久的回复会永远显示「执行中」（跟工具组头卡在
+   「调用中」是同一类错觉）。耗时优先用台账里记的真实值，比拿「现在」减一个
+   早已过期的基准准得多。任务还在跑时不冻结（那条路走实时流）。
+   收口成一个函数：回看、摘要、以及将来任何「画一条已结束的任务」都走它，
+   免得各写各的又出现口径不一。 */
+function freezeHeadFor(task){
+  const st = (task && task.status) || '';
+  if(st === 'running') return;
+  const label = ({ done:'完成', stopped:'已停止', error:'已中断' })[st] || '完成';
+  freezeAIHeadTime(label, task && task.duration);
 }
 function takeAIHead(host){
   // 每轮回复只在第一个 AI 元素前插一次头像行

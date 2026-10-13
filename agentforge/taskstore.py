@@ -97,6 +97,12 @@ def _norm_files(files: list[dict], cap: int = 400) -> list[dict]:
 class Task:
     id: str
     title: str
+    # 用户的原始指令（完整，不截断、不压空白）。
+    # title 是它的派生物（压空白 + 截到 90 字），只能当侧栏标签用；界面上的
+    # 「提问气泡」必须用原文。这条字段的意义在于**任务一开始就有**——history
+    # 要到任务结束才写，中间这段时间别的端（网页、CLI、脚本）想画这条任务的
+    # 提问，除了它没有别的真相可用。
+    prompt: str = ""
     status: str = "running"            # running | done | error | stopped
     created_at: float = field(default_factory=_now)
     ended_at: float | None = None
@@ -175,9 +181,14 @@ class TaskStore:
             pass  # 台账写不进去不该拖垮任务本身
 
     # ---------- 写 ----------
-    def begin(self, title: str, model: str = "", permission: str = "full") -> str:
+    def begin(self, message: str, model: str = "", permission: str = "full") -> str:
+        """登记一条新任务。message 是用户原话，原样记进 prompt；标题只是它的摘要。"""
         tid = "t" + time.strftime("%m%d%H%M%S") + uuid.uuid4().hex[:4]
-        task = Task(id=tid, title=(" ".join((title or "").split())[:90]) or "未命名任务")
+        task = Task(
+            id=tid,
+            prompt=message or "",
+            title=(" ".join((message or "").split())[:90]) or "未命名任务",
+        )
         task.permission = "default" if permission == "default" else "full"
         if model:
             task.models = [model]

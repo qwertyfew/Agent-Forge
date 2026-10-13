@@ -327,7 +327,7 @@ agentforge/
   sources.py           一手来源核查（搜索过却没抓一手来源时，附「转述·未核实」声明）
   reveal.py            用系统默认程序打开文件/文件夹，并把窗口抬到前台（Windows 前台锁）
   artifact.py          产出文件追踪（快照对比）
-  taskstore.py         任务台账
+  taskstore.py         任务台账（title 是摘要，prompt 是用户原话——界面的提问气泡用它）
   pricing.py           费用估算
   tools/               内置工具集（graph.py 影响路径分析、notes.py 任务笔记、
                        web.py 里 web_search 只找入口 / fetch_url / fetch_json 抓一手来源）
@@ -335,7 +335,8 @@ skills/                内置技能（frontend-design / novel-writing / web-brow
                        self-verification / first-party-source / self-extension ...）
 tools/                 开发/运维工具（bench.py 模型性能基准、fastpull.py 模型拉取与体检、
                        test_readcache.py / test_verify_gate.py / test_sources_gate.py /
-                       test_reveal.py 常驻回归、test_tool_panel.mjs 前端工具面板回归）
+                       test_reveal.py / test_taskstore.py 常驻回归、
+                       test_tool_panel.mjs / test_task_view.mjs 前端回归）
 docs/                  参考资料（foreign-models.md 外部模型说明、ref/ 外部仓库快照、
                        legacy-ui.png 旧界面存档）
 examples/              示例工作区（demo-excel、novel-sample）
@@ -447,6 +448,7 @@ agent 没读错误、也没重跑测试，就在总结里谎报「所有断言�
 | 14 | 入口收敛与「不占任务栏」 | 6 个启动脚本收成 `start.bat` / `stop.bat`；服务无窗口、不占任务栏 |
 | 15 | 检索的来源等级 | 一手来源优先：工具输出标注 + `fetch_json` + 系统侧「转述」核查 |
 | 16 | 点一下就要看到窗口 | 绕开 Windows 前台锁，点工作区路径 / 产出文件即到前台 |
+| 17 | 一条任务只有一个入口 | 提问 / 头像 / 计时统一从台账来：脚本发起的任务也能看见「我问了什么」 |
 
 ### 第 1 步：单 Agent 打磨（10-11，`a0944df`…`824e873`）
 
@@ -751,6 +753,72 @@ Windows 不给它焦点。**「功能生效了但你看不见」也是一种坏�
 会不会弹出来」，这一步问的是「窗口会不会到前面来」，两处都是 Windows 在用你没想到的规则
 替你决定结果。
 
+### 第 17 步：一条任务只有一个入口——提问、头像、计时都从台账来（10-13）
+
+用户反馈（已经不是第一次了）：「你发指令时，一开始回复没有显示问题，也没有头像和计时；
+后续发指令，从头到尾都没有。」三条症状，一个原因。
+
+先定位：画面上这三样东西各有各的出处——**提问气泡**只由 `addUser()` 画，
+**头像行与计时**是挂在提问之后的（`addUser` 顺手把 `needAIHead` 这个闸门打开）。
+所以问题变成：什么时候会调 `addUser`？全项目只有三处——输入框发送（`send`）、
+回看历史（`renderHistory`）、以及**接管外部任务**时。第三处当时有个苛刻的前提：
+
+```js
+const pristine = view === 'chat' && !busy && !openTaskId && !viewingHistory
+  && history.length === 0 && !log.childElementCount && !input.value.trim();
+if(pristine){ … addUser(running.title) … }        // 只有「页面干净」才补一条
+```
+
+于是「已经看过一条任务，再发下一条」必然落空：`openTaskId` 还留着上一条的 id、
+对话区还有内容，`pristine` 为假——**不补提问、也不挂流**，别人的思考/工具/回复就直接
+续写在上一段对话底下。首屏干净时看着是对的，这解释了「第一次好像有、后面全没有」。
+
+更深的根因不在渲染，在**真相来源**：提问的原文只活在发起方的内存里。
+台账 `Task` 当时只有 `title`（压空白 + 截 90 字），`history` 要到任务结束才写
+（`finish(history=…)`），所以任务跑到一半，别的端除了那个截断的标题**没有原文可用**。
+三条路各写各的，本质是在各自弥补这个缺口。
+
+改法是收成一个入口，并且让台账从第一秒起就有真相：
+
+| 层 | 改动 |
+|---|---|
+| 台账 `taskstore.py` | `Task` 增 `prompt` 字段：`begin(message)` 时原样记下用户原话（不截断、不压空白）；`title` 降级成它的派生物 |
+| 前端 `index.html` | 新增唯一入口 `enterTaskView(task, {live})`：清场 → 提问气泡（`taskPrompt`：`prompt` → `history` 首条 user → `title`） → 头像行与计时（基准 = 台账 `created_at`） → 实时就挂流、回看就 `renderHistory`。`openTask` / `adoptRunning` / `resetChat` 全部改走它 |
+
+判据也跟着改成「**要不要显示**」而不是「**页面够不够干净**」：只要停在对话页、
+自己手上没有正在流的任务（`busy`），外来任务就入场；正在回看历史**不算**妨碍——
+一开始我把「回看中」也当成「别打扰」，写完才想明白它的后果：用户一直停在回看态，
+轮询每次都跳过，这条任务他就**永远看不见**，正是要修的那个症状。入场每个任务只发生
+一次（判据是 `liveTask.id`），想看旧任务点回去即可。
+
+顺带修掉同一类病的一处：清空对话区（换任务 / 新对话）时，`cur` `curTool` `needAIHead`
+这些**指向 DOM 的渲染状态**没复位，后面的事件会写进已经脱离文档的节点——流还在跑、
+界面永远空着。收成一个 `resetRenderState()`，谁清场谁调用。
+
+验证分三层，都不靠「看起来对了」：
+
+1. `tools/test_taskstore.py`（18 项）：`begin` 之后 `prompt` 就是原话，`list` / `get`
+   都带得出来，`finish` 不会冲掉它，老台账（没有这个字段）读得进来；
+2. `tools/test_task_view.mjs`（34 项，jsdom）：脚本发起的任务在「页面不干净」时也要入场、
+   气泡里是原话、提问之后紧跟头像行、计时基准是任务真正的开始时间；`busy` 与「停在设置页」
+   不抢画面也不挂流；回看时提问不重复上屏；
+3. **突变验证**（测试到底抓不抓得住）：把老的 `pristine` 条件塞回去再跑一遍，
+   测试立刻红 6 项，症状与用户描述一一对应——气泡里是**上一条**任务的提问、
+   没挂流、计时基准变成「现在」（`1791875325024`，而不是任务开始时间）。
+
+最后是真机端到端（`.run/e2e_task_view.mjs`，仅供本地诊断）：脚本 `POST /api/chat` 发起任务，
+jsdom 里跑真页面代码、连真服务、走真 SSE 回放。结果：
+
+```
+台账里的这条任务：id=t10131510505bdc created_at=1791875450.5
+台账 prompt（前 60 字）：先列出当前工作区根目录下的文件（不要读内容）…
+对话区实际结构：msg-user → ai-head → pillnote → … → divider → …
+计时基准 = 台账里的任务开始时间（不是「现在」）        [PASS]
+```
+
+`msg-user → ai-head → …` 就是这一步要的结果：**先有「我问了什么」，再有头像与计时，
+然后是过程**——不管这条任务是浏览器里敲的，还是脚本 / CLI 发起的。
+
 ## 能力的契约：可观测、可验证、不自我污染
 
 这一节不讲功能，讲**怎么确认这些能力真的在起作用、以及它们不会自己长歪**。
@@ -838,6 +906,8 @@ NAME / DESC / VERSION / WHEN / WHEN_NOT / KEYWORDS
 | `tools/test_sources_gate.py` | 常驻（38 项） | 一手来源核查：搜索/抓取的识别、事实判据的召回与误报边界、三条件联动、闸门接入 |
 | `tools/test_tool_panel.mjs` | 常驻（21 项） | 前端工具面板回看：组头/明细状态与图标、`dataset.run` 落定、头像行计时冻结（需 jsdom，缺了自动 SKIP） |
 | `tools/test_reveal.py` | 常驻（20 项） | 工作区路径点击后窗口到前台：窗口标题匹配（文件夹/文件）、只抬该抬的、窗口晚出现也等得到、找不到就退回原样 |
+| `tools/test_taskstore.py` | 常驻（18 项） | 台账的 prompt：原话逐字入库（不截断、不压空白）、`list`/`get` 都带得出、`finish` 不冲掉、老台账读得进 |
+| `tools/test_task_view.mjs` | 常驻（34 项） | 「进入任务视图」唯一入口：外部任务在页面不干净时也入场、提问/头像/计时都从台账来、`busy` 与停在设置页不抢画面、回看不重复上屏、清场后事件仍落在画面上（需 jsdom，缺了自动 SKIP） |
 | `tools/bench.py` | 工具 | 本地模型性能基准（加载耗时 / 提示 / 生成 / 显存分布） |
 | `tools/fastpull.py` | 工具 | 模型拉取通道测速与推荐、权重 sha256 体检、镜像整包重拉 |
 
