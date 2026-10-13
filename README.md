@@ -13,6 +13,10 @@
   维护共享进度接力交接；独立任务可并行波次执行（本地模型串行闸门防显存互挤，同文件写入串行保护）。
   决策模型只做拆解/指派/交接和几句简单对话，重活一律派给最强执行模型；拆解失败自动回退规则编排。
 - **本地优先**：默认全部走 Ollama 本地模型，零 API 费用；付费模型（DeepSeek / SiliconFlow）按需勾选启用。
+  Ollama 挂了会自动拉起（桌面版优先，退回 `ollama serve`），判定标准是「真能应答」而非「进程生出来了」。
+- **Web 服务常驻**：`start-service.bat`（Windows）/ `start-service.sh`（Linux、macOS）起一个无窗口
+  保姆进程，端口没人服务就补位拉起，只补位不抢占、不杀进程（跑着任务时重启的代价远大于等它自己好）。
+  `install-autostart.bat` / `install-autostart.sh` 一条命令把开机自启装上——换台机器 clone 完即可复现。
 - **任务台账**：每个任务记录状态、耗时、token 与预估费用、产出文件、对话历史，重启后自动把遗留的
   「执行中」标记为已中断。
 - **产出追踪**：写文件工具精确记录 + 任务前后工作区快照对比，任务产出了哪些文件一目了然。
@@ -70,6 +74,21 @@ cd Agent-Forge
 
 两个脚本都会在缺虚拟环境时**自动创建并安装依赖**，然后起服务（`http://127.0.0.1:8787`）。
 
+想让它**一直在**（推荐：装完就不必再管，页面随时打得开）：
+
+```
+# Windows —— 双击这两个文件，各一次即可，可重复执行
+#   start-service.bat       起常驻服务，现在就能用
+#   install-autostart.bat   装上开机自启，下次登录自动起
+
+# Linux / macOS
+./start-service.sh
+./install-autostart.sh
+```
+
+四个脚本都是幂等的，卸载自启用 `install-autostart.bat /remove`
+或 `./install-autostart.sh --remove`（只删它自己写的那份启动项，不动正在跑的服务）。
+
 `config.yaml` 里不含任何绝对路径，但**在线模型的 API Key 不在版本库里**（见下文「配置」），
 所以 clone 下来只需做一次「复制模板 + 填 Key」，就能直接用在线模型开工，
 不必先装 Ollama、也不必先拉本地模型：
@@ -101,6 +120,85 @@ python run.py -c config.lanrun.yaml --web --port 8787   # 用本机专属配置�
 ```
 
 Windows 下可直接双击 `start-web.bat` 后台起服务，日志写入 `.run/web.log`。
+
+### 启动脚本一览
+
+根目录下的启动脚本都会「缺虚拟环境就自动建 .venv 并装依赖」，可重复执行、不会互相冲突：
+
+| 脚本 | 作用 |
+|---|---|
+| `start-web.bat` / `start-web.sh` | 一次性起 Web 服务，适合临时开一下 |
+| `start-service.bat` / `start-service.sh` | 起**常驻服务**（后台无窗口的保姆进程） |
+| `install-autostart.bat` / `install-autostart.sh` | 装开机自启（`/remove` 可卸掉） |
+
+`.bat` 是 Windows、`.sh` 是 Linux / macOS，两边功能一一对应，**不是重复文件**（这就是根目录看着有两个
+`start-web` 的原因）。另外 `service.py` 是常驻服务本体，也可以直接用命令行调：
+
+```bash
+# Windows
+.venv\Scripts\python.exe service.py --status    # 现在什么状态
+.venv\Scripts\python.exe service.py --stop      # 停掉常驻服务与 Web 服务
+
+# Linux / macOS
+.venv/bin/python service.py --status
+.venv/bin/python service.py --stop
+```
+
+### 让它一直开着：`start-service.bat` / `start-service.sh`
+
+`start-web.bat` 起的是一次性进程，它一旦退出（异常、误关窗口、升级时重启）网页就打不开了。
+要「随时都能打开」，用 **`start-service.bat`**（Windows）或 **`./start-service.sh`**（Linux、macOS）：
+它把 `service.py` 放到后台无窗口跑（Windows 用 `pythonw`，Unix 用 `nohup`），由这个常驻脚本当保姆：
+
+- **只补位，不抢占**：端口上已经有人（比如你手动开过一次 `start-web.bat`）就什么都不做；
+  **绝不杀进程**——杀掉可能正在跑的任务，代价远大于等它自己好；
+- 发现 8787 没人服务就立刻拉起来，连续失败按指数退避，日志在 `.run/service.log`；
+- 每约 1 分钟顺带复查一次 Ollama（见下节），掉了同样拉回来。
+
+### 开机自启：`install-autostart.bat` / `install-autostart.sh`
+
+跑一次即可，之后每次登录自动把常驻服务拉起来。启动项里必须写**本机的绝对路径**，
+所以它不能进仓库，只能由脚本现场生成（这也是它要单独存在的原因）：
+
+```
+install-autostart.bat            # 安装（或刷新）
+install-autostart.bat /status    # 看装没装、装的什么内容
+install-autostart.bat /remove    # 卸载
+
+./install-autostart.sh           # Linux / macOS 同一套参数
+```
+
+- **Windows**：写进用户「启动」文件夹的 `AgentForge Web UI.bat`（内容就一行 `call "<绝对路径>\start-service.bat"`）。
+  不需管理员、不写注册表；任务计划的 `schtasks.exe` 在某些安全策略下会被禁用，用启动文件夹更省事。
+  生成的文件是**纯 ASCII + CRLF**（`echo` 写出的编码与 cmd 当前代码页一致，即使项目路径含中文也不会错位）。
+- **Linux**：写 XDG autostart 条目 `~/.config/autostart/agentforge.desktop`。
+- **macOS**：不读 XDG autostart，脚本会直说并让你改用 launchd（或每次手动跑 `./start-service.sh`）。
+- 在 Windows 的 Git Bash / MSYS 里跑 `.sh` 版本会被直接拦下——那里 `pwd` 返回 `/d/...` 这类 MSYS
+  路径，写进启动项在真实登录流程里解析不了；脚本会提示改用对应的 `.bat`。
+
+## 本地模型的上游：Ollama 自动拉起
+
+本地模型全部依赖本机 Ollama。长期不关机的机器上，它可能被手动退出、升级时重启或崩掉——
+这时项目里所有本地模型会**静默失效**，界面上只有一句「Ollama 无响应」。所以加了一层守卫
+（`agentforge/ollamaguard.py`），三条路径复用同一份实现：
+
+- **Web 启动时**（`serve()`）：先把 Ollama 确保起来，再去打印状态；
+- **界面上**：左下角状态点每 30 秒体检一次，发现没响应就自动拉起（`POST /api/ollama/ensure`，
+  带冷却，不会把进程刷爆），拉起来了会弹一条提示；**没响应时点它 = 立即重试拉起**（有响应时才跳服务页）；
+- **常驻服务**（`service.py`）：每约 1 分钟复查一次。
+
+拉起策略：优先 **Ollama 桌面版**（`ollama app.exe`，就是用户平时开机自启那一份，单实例不会抢端口），
+找不到才退回 `ollama serve`。判定成功以「`/api/tags` 真能应答」为准，不是「进程生出来了」就算数。
+日志在 `.run/ollama.log`。
+
+```yaml
+ollama:
+  host: http://localhost:11434
+  auto_start: true        # 关掉就只提示、不动作
+  auto_start_wait: 45     # 拉起后最多等这么多秒
+```
+
+只想自己掌控时把 `auto_start` 设成 `false`，界面不会做任何动作。
 
 ## 配置
 
@@ -151,8 +249,12 @@ cp models.example.json models.json   # 填上 api_key 即可用
 
 ```
 run.py                 入口（交互 / 单任务 / Web）
+service.py             常驻服务：端口没人就补位拉起 Web 服务，顺带守 Ollama
 webui.py               Web 后端：SSE 事件流 + /api/* 接口
 web/index.html         全部前端（零依赖单文件）
+start-web.bat / .sh     一次性起 Web 服务（.bat=Windows，.sh=Linux/macOS）
+start-service.bat / .sh 常驻服务：无窗口保姆进程，端口没人就补位拉起
+install-autostart.bat / .sh  装开机自启（启动项含本机绝对路径，由它现场生成）
 agentforge/
   loop.py              单轮智能体循环（推理 → 工具 → 回灌）
   orchestrator.py      任务编排：拆解、分配、限步、停止
@@ -163,6 +265,7 @@ agentforge/
   planner.py           任务拆解与步骤分配
   toolselect.py        工具按需下发（核心常驻 + 关键词命中）
   skills.py            技能发现与自动注入
+  ollamaguard.py       本地模型上游守卫：探测 / 定位 / 拉起 Ollama
   memory.py autonote.py 长期记忆（L1/L2/L3 分层）与自动沉淀
   verify.py            收尾验证闸门（提取/运行/核查，系统侧强制）
   artifact.py          产出文件追踪（快照对比）
@@ -276,7 +379,19 @@ tools/                 开发/运维小工具（bench.py 模型基准、ctx_prob
   （`/api/open-folder` 放开相对路径），点击有反馈、无关联文件有兜底提示；
 - **回看体验**：历史回看补工具条、回看时暂停贴底、接管任务自动切到聊天视图；
 - **清空保护**：`skills/` 退出任务产出清理清单（曾被当任务产出误删，靠 git 才救回来）；
-  「清空」按 `is_intermediate` 只清中间文件（tmp/draft/草稿/备份），保留最终产出；
+- **清空弹窗改成「逐条勾」**：每个类别（对话记录 / 过渡 · 中间文件 / 最终产出 / 被任务改过的文件 /
+  任务留下的记忆）和它下面的每条明细都有自己的勾选框，且全部落在同一列上；类别与明细双向联动
+  （明细全勾则类别自动勾上，勾掉一条变半选），点右侧箭头展开或收起明细。
+  默认只勾「对话记录 + 过渡 · 中间文件（连同下面的明细）」，最终产出默认**保留但可以勾掉删**——
+  删不删完全由勾选决定，界面文案也跟着勾选实时换（「将被删除 / 部分删除 / 全部保留」），
+  不再写死「始终保留」。后端只接受清理快照里出现过的路径、以及属于本次已结束任务的记忆行号，
+  越界一律跳过，接口不接受任意路径。
+- **「读不到」不再冒充「没有」**：后端进程挂掉时，页面原先会把请求失败静默吞掉，
+  再被 `|| []` 兜底渲染成「还没有记忆 / 还没有技能」，点清空更会谎报「还没有可清理的任务」——
+  而侧栏明明还列着十几条历史任务（那是上一次成功拉取的数据）。数据其实好好躺在磁盘上，
+  用户只会以为被清空了。现在所有只读接口走统一的 `apiGet`：连不上 / HTTP 报错 / 返回非 JSON
+  都翻成人话异常；记忆与技能面板显示红色「读取失败 + 重试」而不是空态，侧栏顶部亮出
+  「服务未连接，列表为上次数据」横幅，轮询失败时保留原列表不清空。
 - 细节：提示行左对齐、输出加粗克制、加载圈与完成态区分。
 - **最新一轮 UI 打磨（10-13）**：聚焦回复呈现的时序与状态一致性，全部集中在 `web/index.html`：
   - **头像行时间 = 本轮回复总耗时**：不再显示时钟，改为基于任务真实开始时刻累计，运行中实时跳动「执行中 XmYs」、整段收尾冻结为「完成 XmYs」，与子任务耗时区分开；
@@ -314,6 +429,33 @@ agent 没读工具返回的错误信息、也没重跑测试，就在总结里�
    追加「未经系统确认」声明。配套纪律：复用优先（先查证已有能力，禁止重复造轮子）。
 
 自测 `tools/test_verify_gate.py`（24 项断言）+ `tools/verify_edit_guard.py` 回归。
+
+### 第 13 步：运行期可靠性——上游守卫与常驻服务（10-13）
+
+三件「不该让人操心的事」变成了代码：
+
+1. **「读不到」不再冒充「没有」**。后端进程挂掉时，页面原先把请求失败静默吞掉再兜成空列表，
+   于是「还没有记忆 / 还没有技能 / 还没有可清理的任务」三处一起说谎，而侧栏还列着十几条任务
+   （那是上一次成功拉取的数据）。现在所有只读接口走统一的 `apiGet`，连不上/报错/非 JSON 一律
+   翻成人话；记忆与技能面板显示红色「读取失败 + 重试」，侧栏顶部亮出「服务未连接，列表为上次数据」，
+   轮询失败时保留原列表不清空。
+2. **上游与自身都有人守**。本地模型的上游是 Ollama，长期不关机的机器上它可能被手动退出或升级时
+   重启，本地模型就静默失效了——`agentforge/ollamaguard.py` 把它收成「探测 → 定位 → 拉起 → 等就绪」
+   一件事，Web 启动、界面健康检查、常驻服务三处复用；`service.py` 则盯着 8787 端口，
+   没人服务就补位拉起（**只补位不抢占、绝不杀进程**——杀进程会连带杀掉正在跑的任务）。
+3. **常驻与自启从「手工配置」变成「仓库里的一步」**。以前「开机自启」只存在于这台机器的
+   启动文件夹里——换台机器 clone 下来就没了，而启动项又无法入库（它必须写死本机的绝对路径）。
+   现在 `install-autostart.bat` / `install-autostart.sh` 现场生成启动项，`start-service.sh` 补齐
+   Unix 侧的常驻入口，`start-web.bat` / `start-service.bat` 加 `.sh` 一一对应：
+   clone 完双击一次就复现整套「随时打得开」，卸载各留一条 `/remove`。
+
+一个值得记下的坑：Windows 上不能用 `os.kill(pid, 0)` 探测进程存活——Windows 没有信号，
+Python 的 `os.kill` 对非 CTRL_* 会直接调 `TerminateProcess`，「查一下你在不在」把人杀了。
+已改用 `OpenProcess` + `GetExitCodeProcess`。另一个：venv 的 `python.exe` 可能只是转发器，
+`Popen` 拿到的 pid 并不是真正占着端口的那个（实测 `web.pid=11500` 而监听者是 `19984`），
+所以 `--stop` 走「记录 pid + 按端口扫占用者」双保险。
+
+自测：`test_ollama_guard.py`（20 项）+ `test_service.py`（28 项）+ `test_ollama_ui.mjs`（15 项）。
 
 ## 本地模型性能基准
 
