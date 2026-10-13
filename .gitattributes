@@ -8,7 +8,7 @@
 *.mjs text
 *.yaml text
 *.json text
-# 注意：所有 .bat（根目录的 start.bat 是唯一一个）必须是【纯 ASCII + CRLF】。
+# 注意：所有 .bat（根目录的 start.bat / stop.bat）必须是【纯 ASCII + CRLF】。
 # cmd.exe 按 CRLF 计算字节偏移：纯 LF、或任何非 ASCII 字节都会让脚本逐行错位、
 # 从行中间执行而崩掉。
 #   * UTF-8 存中文：936 代码页下的 GBK 解码器会连行尾 CR 一起吃掉；

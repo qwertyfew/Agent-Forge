@@ -75,7 +75,7 @@ ollama pull qwen3.5:4b      # 轻量：速度快，长上下文
 git clone git@github.com:qwertyfew/Agent-Forge.git
 cd Agent-Forge
 
-# Windows：双击 start.bat（就这一个文件，不用挑）
+# Windows：双击 start.bat（起点就这一个，不用挑）
 # Linux / macOS：
 ./scripts/start.sh
 ```
@@ -87,7 +87,7 @@ cd Agent-Forge
 3. 把常驻服务放到后台无窗口跑 —— 页面从此随时打得开。
 
 Windows 上双击后你会看到一段说明文字然后窗口自动关闭：**这是正常的**，服务已经在后台了，
-不必留着那个窗口。要停：终端里跑 `start.bat --stop`。
+不必留着那个窗口。要停：**双击挨着它的 `stop.bat`**，或者终端里跑 `start.bat --stop`。
 
 `config.yaml` 里不含任何绝对路径，但**在线模型的 API Key 不在版本库里**（见下文「配置」），
 所以 clone 下来只需做一次「复制模板 + 填 Key」，就能直接用在线模型开工，
@@ -121,15 +121,21 @@ python run.py -c config.lanrun.yaml --web --port 8787   # 用本机专属配置�
 
 Windows 下双击 `start.bat` 即可：它把常驻服务放到后台无窗口跑，Web 日志写入 `.run/web.log`。
 
-### 启动脚本只有一个：`start.bat`（Windows）/ `scripts/start.sh`（Linux、macOS）
+### 入口只有一个：`start.bat`（Windows）/ `scripts/start.sh`（Linux、macOS）
 
 以前根目录堆着 `start-web`、`start-service`、`install-autostart` 各一对 `.bat`/`.sh`，
-Windows 又默认隐藏扩展名，于是看着像四个重名文件，每次都要猜该点哪个。现在**只剩一个入口**：
+Windows 又默认隐藏扩展名，于是看着像四个重名文件，每次都要猜该点哪个。现在**只剩一个入口**，
+外加一个专门用来「停」的同伴，两个文件在根目录里挨着：
 
 | 入口 | 作用 |
 |---|---|
 | `start.bat`（Windows，双击） | 建虚拟环境 + 装依赖 → 登记开机自启 → 起常驻服务 |
+| `stop.bat`（Windows，双击） | 停。**不含自己的逻辑**，只转发给 `start.bat --stop` |
 | `scripts/start.sh`（Linux、macOS） | 同上（Unix 侧脚本放在 `scripts/`，免得在 Windows 里跟 `.bat` 撞名） |
+
+`stop.bat` 之所以单独存在，只是因为 **Windows 没法「带参数双击」**：`start.bat --stop`
+不是一个文件，它是一个文件加一个参数，想用它就得开个终端把参数敲出来——正是这一点不方便。
+停的逻辑仍然只有一处（`service.py --stop`），所以这个转发文件不可能跟 `start.bat` 跑偏。
 
 参数（日常不需要，都是从终端里用）：
 
@@ -141,6 +147,9 @@ start.bat --remove-autostart    # 卸载开机自启
 
 ./scripts/start.sh --status     # Linux / macOS 同一套参数
 ```
+
+`stop.bat` 就是 `start.bat --stop`。`--status` 与 `--remove-autostart` 现在没有对应的双击文件，
+真要的话照 `stop.bat` 复制一份、改掉那个参数即可（三行就能写完）。
 
 `service.py` 是常驻服务本体，也可以直接命令行调：
 
@@ -273,6 +282,7 @@ service.py             常驻服务：端口没人就补位拉起 Web 服务，�
 webui.py               Web 后端：SSE 事件流 + /api/* 接口
 web/index.html         全部前端（零依赖单文件）
 start.bat              Windows 唯一入口：建环境 + 装自启 + 起常驻服务（双击它就行）
+stop.bat               挨着 start.bat 的「停」按钮：纯转发 start.bat --stop，自己没有逻辑
 scripts/start.sh       Linux / macOS 同一件事（放在子目录，免得在 Windows 里与 .bat 撞名）
 agentforge/
   loop.py              单轮智能体循环（推理 → 工具 → 回灌）
@@ -310,6 +320,12 @@ tools/                 开发/运维工具（bench.py 模型性能基准、fastp
   打开就是满屏乱码——所以这些文件**只用英文注释与提示**。`*.bat text eol=crlf` 守住这条。
 - **`.sh` 必须 LF**。CRLF 会让 shebang 变成 `#!/usr/bin/env bash^M`，Linux / macOS 上直接执行
   会报 `bad interpreter`。`*.sh text eol=lf` 守住这条。
+- **脚本里调外部命令别用裸名字**。`stop.bat` 判「是不是双击」用到了 `find.exe`，写成裸 `find`
+  时一脚踩空：cmd 从 Git Bash 继承的 PATH 里，Git 的 `usr\bin` 排在 System32 前面，
+  于是 `find` 落到了 **GNU find** 上（实测报 `find: '/i': No such file or directory`，
+  而且错误被吞在管道里）。结果是**双击能跑、从 Git Bash 起就哑**——同一个文件两种命运，
+  最难查的一类。改成 `"%SystemRoot%\System32\find.exe"` 就与 PATH 无关了。
+  同一类的还有 `sort`、`more`、`where`、`timeout`、`attrib`——Git for Windows 里都有同名件。
 
 ## 它是怎么一步步训出来的
 
@@ -582,9 +598,11 @@ agent 没读工具返回的错误信息、也没重跑测试，就在总结里�
 
 1. **四个看着重名的启动脚本收成一个**。`start-web`、`start-service`、`install-autostart`
    各有 `.bat` / `.sh` 一对，Windows 默认隐藏扩展名，于是根目录看着像四个同名文件，
-   每次都要猜点哪个。现在根目录只剩 `start.bat`（Windows 双击），Unix 侧挪到
-   `scripts/start.sh`（放子目录是为了不在 Windows 里跟 `.bat` 撞名）；开机自启不再单独一个脚本，
-   由入口顺手登记。语义也简化成一句话：**点它，服务就一直开着**。
+   每次都要猜点哪个。现在根目录只剩 `start.bat`（Windows 双击）和挨着它的 `stop.bat`，
+   Unix 侧挪到 `scripts/start.sh`（放子目录是为了不在 Windows 里跟 `.bat` 撞名）；
+   开机自启不再单独一个脚本，由入口顺手登记。语义也简化成一句话：**点它，服务就一直开着**。
+   `stop.bat` 是后来补的：`start.bat --stop` 没法双击使用（Windows 不能「带参数双击」），
+   于是给它配了一个只做转发的同伴文件——用的是同一个道理，停的逻辑永远只有一处。
 2. **服务彻底离开任务栏**。原来 `service.py` 拉 Web 服务用的是 `DETACHED_PROCESS`——
    实测它会给控制台程序**新开一个可见窗口**：一关掉 Web 服务就死，保姆又把它拉起来，
    于是任务栏里「关了又弹、关了又弹」。改用 `CREATE_NO_WINDOW` 后，服务自己没窗口，

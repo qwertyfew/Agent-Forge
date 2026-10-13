@@ -15,6 +15,9 @@ rem   start.bat --stop               stop the resident + web service
 rem   start.bat --no-autostart       do not touch the autostart entry
 rem   start.bat --remove-autostart   remove the autostart entry
 rem
+rem To stop without opening a terminal, double-click the sibling file stop.bat -
+rem it forwards to "start.bat --stop" and carries no logic of its own.
+rem
 rem KEEP THIS FILE ASCII-ONLY WITH CRLF LINE ENDINGS. cmd.exe tracks byte
 rem offsets by CRLF and decodes the file in the console codepage, so a bare-LF
 rem file, or non-ASCII text on a 936 (GBK) console, makes it run half-sentences
@@ -84,7 +87,7 @@ echo [AgentForge] Done. Web UI: http://127.0.0.1:8787
 echo [AgentForge] A hidden background service keeps it alive: nothing in the
 echo [AgentForge] taskbar, no window to close, and it returns after a reboot.
 echo [AgentForge]   status : start.bat --status
-echo [AgentForge]   stop   : start.bat --stop
+echo [AgentForge]   stop   : start.bat --stop   (or double-click stop.bat)
 echo [AgentForge]   logs   : .run\service.log
 goto :eof
 
@@ -121,6 +124,7 @@ goto :eof
 :usage
 echo AgentForge launcher. Double-click it, or use:
 echo   start.bat                    set up + start (default)
+echo   stop.bat                     double-clickable alias of "start.bat --stop"
 echo   start.bat --status           show what is running
 echo   start.bat --stop             stop the resident + web service
 echo   start.bat --no-autostart     do not touch the autostart entry
