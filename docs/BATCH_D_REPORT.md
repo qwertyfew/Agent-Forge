@@ -153,6 +153,8 @@ $ git diff --stat
 
 1. **付费模型下的评测复跑**：DeepSeek 与 SiliconFlow 双双欠费，需充值后重跑
    （`models.json` 里删掉欠费条目、或充值；然后 `.venv/Scripts/python.exe _eval_novel.py`）。
+   *（2026-10-13 归档：这条已关闭——`_eval_novel.py` 因写死本机路径而退休，契约见 README
+   「能力的契约：可观测、可验证、不自我污染」。）*
 2. **`models.json` 已还原**为原始内容（含欠费的 DeepSeek 条目）。
 
 ## 5. 改动清单

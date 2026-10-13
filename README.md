@@ -284,7 +284,8 @@ agentforge/
   taskstore.py         任务台账
   pricing.py           费用估算
   tools/               内置工具集（graph.py 影响路径分析、notes.py 任务笔记）
-skills/                内置技能（frontend-design / novel-writing / web-browsing / remote-ops ...）
+skills/                内置技能（frontend-design / novel-writing / web-browsing / remote-ops /
+                       self-verification / self-extension ...）
 tools/                 开发/运维小工具（bench.py 模型基准、ctx_probe.py 上下文占用探测）
 ```
 
@@ -482,6 +483,82 @@ Python 的 `os.kill` 对非 CTRL_* 会直接调 `TerminateProcess`，「查一�
 所以 `--stop` 走「记录 pid + 按端口扫占用者」双保险。
 
 自测：`test_ollama_guard.py`（20 项）+ `test_service.py`（28 项）+ `test_ollama_ui.mjs`（15 项）。
+
+## 能力的契约：可观测、可验证、不自我污染
+
+这一节不讲功能，讲**怎么确认这些能力真的在起作用、以及它们不会自己长歪**。
+这些规矩原先只活在三份一次性验证脚本里——`_eval_novel.py`、`tools/verify_gen_logic.py`、
+`tools/verify_layer_graph.py`。它们守的断言是常驻价值，但脚本本身绑死了那一次评测的路径与任务
+（`_eval_novel.py` 里写着 `D:\AI_develop\project\novel`），换台机器就跑不起来，留着只会误导
+「上次过了 = 现在也对」。所以把契约抽到这儿，脚本退休（git 历史里仍可取：
+`git show <旧提交>:tools/verify_layer_graph.py`）。要重新跑这些断言，照下面四节重建即可。
+
+### 1. 一次编排，怎么「看得见」
+
+`POST /api/chat` 返回的是一条 **SSE 事件流**。按顺序读完，等于把「决策模型到底干了什么」复盘一遍，
+不用猜它为什么这么答：
+
+| 事件 | 含义 |
+|---|---|
+| `combo` | 由 planner 归并出的一条「复合任务」 |
+| `route` | 这一轮交给谁：`auto` 是否自动选、`chosen` 与 `best` 及各自评分 |
+| `dispatch` | 决策模型把一句话拆成 N 个子任务（`kind`、`deps`、是否 `parallel`、拆解理由） |
+| `plan` | 执行计划摘要 |
+| `assign` | 子任务 #i 派给哪个模型、扮演什么角色、为什么 |
+| `bridge` | 交接说明（一个任务的产出交给下一个） |
+| `conflict` | 多个任务要写同一个文件（写冲突预警） |
+| `tool_start` | 每次工具调用：名字 + 参数 |
+| `task_done` | 子任务 #i 结束：状态 + 产出文件 |
+| `stats` | 每次模型调用的 tokens / tps / 花费（是否免费） |
+| `history` | 完整消息历史（终态一并发回） |
+| `complete` / `stopped` / `error` | 终态 |
+
+两个实操要点：切到「自动配置所有模型」用 `POST /api/models {"action":"auto_config","scope":"best"}`；
+自己写评测时**另起一个端口**（如 8795）跑 `serve(...)`，别去碰常驻服务的 8787，跑完 `shutdown()`。
+
+### 2. 自沉淀的三条不变量（不自我污染）
+
+自动沉淀（`autonote.py` / `autoskill.py`）最容易犯的错，是把「这次怎么做」当成「以后都这样」。
+三条硬规矩：
+
+1. **任务书句式不进长期记忆**。「必须先用 read_file 读完全文再动笔」「产出：写入 docs/x.md」
+   这类是*这一单的指令*，不是用户偏好；凡「任务：/步骤：/验收」结构的任务书一律过滤。
+   例外是强信号：「记住…」「以后…」这种用户明确要求保留的，哪怕长得像任务要求也照收。
+2. **本任务的结论不进长期记忆**。带本机绝对路径的、提「本次任务 / 本次产出」的都是一次性的，
+   写进记忆只会在下一个无关任务里误导人；该留的是用户偏好与项目约定。
+3. **讲方法论的 skill 不得混入本次任务的专有内容**。skill 正文里一旦出现本次任务的文件名或
+   绝对路径，**整条作废**——掺了细节的 skill 会在无关任务上误触发。这与 `self-extension` 里
+   「自己写的 skill 一律放 `skills/learned/`」是同源规矩：一次性的东西别混进方法论。
+
+### 3. 记忆分层与注入深度
+
+每条记忆按语义粒度打层：**L1 原子事实**（路径 / 端口 / 版本）、**L2 项目约定**、
+**L3 用户偏好**。`append` 自动判层，也可显式指定；旧格式（无层标签）的行会被就地推断层标签，
+不需要迁移。注入按 `scope` 取：
+
+- `facts`——把「事实与环境」排在「用户偏好」**前面**，抠技术细节时用（要的是可精确执行的信息）；
+- `wide`——常规对话，偏好优先。
+
+取哪种由 `loop.memory_scope()` 按任务文本决定：出现代码路径这类技术信号 → `facts`，否则 `wide`。
+
+### 4. 技能资产的元数据契约（含「让位」）
+
+SKILL.md 头部除 `name` / `description` 外，还认这几个路由与资产字段：
+
+```
+NAME / DESC / VERSION / WHEN / WHEN_NOT / KEYWORDS
+---
+正文
+```
+
+- **`WHEN_NOT` 是「让位」**：任务文本明显落在不适用的场景里时，该技能**不**自动命中——
+  技能不只要能说「我什么时候用」，还得说清「什么时候别用我」。
+- `WHEN_NOT: NONE` 视为「无特别不适用场景」（空）。
+- `KEYWORDS` 里的标点 / 非法字符会被剔除，只留干净词（避免 `a:b`、`c[d]` 切出来的碎片）。
+- 落盘后必须能经 `SkillRegistry` 原样读回：`brief()` 头部带「不适用：…」，`catalog()` 带版本号
+  （形如 `doc-eval (v1.2)`）——否则「版本」就只是个装饰。
+
+改这几处（记忆分层、技能注册、编排调度）时的操作规程，见 `skills/self-verification/`。
 
 ## 本地模型性能基准
 
