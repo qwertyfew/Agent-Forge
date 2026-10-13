@@ -286,7 +286,7 @@ agentforge/
   tools/               内置工具集（graph.py 影响路径分析、notes.py 任务笔记）
 skills/                内置技能（frontend-design / novel-writing / web-browsing / remote-ops /
                        self-verification / self-extension ...）
-tools/                 开发/运维小工具（bench.py 模型基准、ctx_probe.py 上下文占用探测）
+tools/                 开发/运维工具（bench.py 模型性能基准、fastpull.py 模型拉取与体检）
 ```
 
 ## 架构演进
@@ -366,7 +366,8 @@ tools/                 开发/运维小工具（bench.py 模型基准、ctx_prob
 3. **保鲜**：`keep_recent_tool_results` 6→8，压缩摘要行 160→280 字符。
 
 实测对比：同一个简单任务，修复前 28 分钟 / 68 次工具调用，修复后 18 秒 / 1 次调用（`t101213344526d9`）。
-验证脚本 `tools/verify_efficiency.py`（22 项断言）。
+这些不变量原先由 `tools/verify_efficiency.py`（22 项断言）守着。它已按「`verify_*` 是一次性
+批次证据、不是回归网」的约定退休（见「能力的契约」第 5 节），断言说的就是上面这三条。
 
 **后续实测补强**（第四~八轮真实任务）：
 
@@ -431,7 +432,9 @@ agent 没读工具返回的错误信息、也没重跑测试，就在总结里�
 
 1. **编辑护栏**（`tools/fs.py`，借鉴 Aider auto-lint）：`edit_file` / `write_file`
    保存后自动做语法检查（.py 用 `ast.parse`、.json 用 `json.loads`），
-   失败自动回滚并把错误行号还给模型重试；
+   失败自动回滚并把错误行号还给模型重试。边界很明确：**只查 `.py` / `.json`**（别的后缀不查），
+   而且回滚**只针对「改已有文件」**——新建文件哪怕语法错也放行（新建的是草稿，没有「改坏」可言）；
+   `edit_file` 另有两道前置闸：找不到待替换文本、或匹配到多处（有歧义），都直接报错且**一个字节都不动**；
 2. **工具失败强呈现**（`loop.py`）：`[错误]` 结果自动追加系统注脚——必须先读错误修正重试、
    禁止无视失败继续、禁止未验证就声称完成；连续失败第 2 次起升级警告；
    前端工具卡新增红色「失败」态；
@@ -441,7 +444,7 @@ agent 没读工具返回的错误信息、也没重跑测试，就在总结里�
    验证失败给一轮修正机会但报告照附；总结声称通过却全程没跑过命令的，
    追加「未经系统确认」声明。配套纪律：复用优先（先查证已有能力，禁止重复造轮子）。
 
-自测 `tools/test_verify_gate.py`（24 项断言）+ `tools/verify_edit_guard.py` 回归。
+自测 `tools/test_verify_gate.py`（73 项断言，覆盖命令提取与执行、谎报识别、产物核查、四条编排路径）。
 
 ### 第 13 步：运行期可靠性——上游守卫与常驻服务（10-13）
 
@@ -482,7 +485,9 @@ Python 的 `os.kill` 对非 CTRL_* 会直接调 `TerminateProcess`，「查一�
 `Popen` 拿到的 pid 并不是真正占着端口的那个（实测 `web.pid=11500` 而监听者是 `19984`），
 所以 `--stop` 走「记录 pid + 按端口扫占用者」双保险。
 
-自测：`test_ollama_guard.py`（20 项）+ `test_service.py`（28 项）+ `test_ollama_ui.mjs`（15 项）。
+本轮的验证是逐条跑过、全绿的（Ollama 守卫 20 项、常驻服务 28 项、界面自动拉起 15 项），
+但那些用例当时写在工作区临时目录、**没有随仓库留下**——留下的是上面这些结论本身。
+仓库里可执行的自测见「能力的契约」第 5 节。
 
 ## 能力的契约：可观测、可验证、不自我污染
 
@@ -559,6 +564,24 @@ NAME / DESC / VERSION / WHEN / WHEN_NOT / KEYWORDS
   （形如 `doc-eval (v1.2)`）——否则「版本」就只是个装饰。
 
 改这几处（记忆分层、技能注册、编排调度）时的操作规程，见 `skills/self-verification/`。
+
+### 5. 仓库里的脚本：谁常住、谁是一次性的
+
+判据只有一条：**这条断言三个月后还要不要跑。**
+
+| 脚本 | 寿命 | 守着什么 |
+|---|---|---|
+| `tools/test_readcache.py` | 常驻（11 项） | 只读调用共享缓存：命中/回放计数/失效/容量/线程安全 |
+| `tools/test_verify_gate.py` | 常驻（73 项） | 收尾验证闸门：命令提取与执行、谎报识别、产物核查、四条编排路径 |
+| `tools/bench.py` | 工具 | 本地模型性能基准（加载耗时 / 提示 / 生成 / 显存分布） |
+| `tools/fastpull.py` | 工具 | 模型拉取通道测速与推荐、权重 sha256 体检、镜像整包重拉 |
+
+`tools/verify_*.py` 是**批次证据**，不是回归网：为某一批改动而写，跑完即达目的，时过境迁就退休。
+`verify_gen_logic.py`、`verify_layer_graph.py`、`verify_efficiency.py`、`verify_edit_guard.py`
+都已按此退休——它们守的规矩留在上面四节和「第 9 步」「第 12 步」里，脚本本身可从 git 历史取回。
+
+于是新增验证时先问一句：**三个月后还要不要跑？** 要 → 写成 `tools/test_*.py` 常驻；
+只是这一批的临时证据 → `tools/verify_*.py`，用它换一次结论，然后让它退休。
 
 ## 本地模型性能基准
 
