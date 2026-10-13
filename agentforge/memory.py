@@ -287,6 +287,28 @@ class MemoryStore:
         keep = [e["index"] for e in items if e["index"] != index]
         return self._rewrite(keep)
 
+    def drop_indices(self, indices: list[int]) -> int:
+        """删掉指定的若干条（按 entries() 给出的行号）。
+
+        清空任务弹窗支持逐条勾选记忆，勾中的行号从这里进来。行号是「当时看到的
+        那一版文件」里的位置，期间文件可能被别的写入改过，所以先用当前 entries()
+        做一次交集——认不出来的行号忽略，避免删错行。
+        """
+        wanted: set[int] = set()
+        for raw in (indices or []):
+            try:
+                wanted.add(int(raw))
+            except (TypeError, ValueError):
+                continue
+        if not wanted:
+            return 0
+        items = self.entries()
+        hit = wanted & {e["index"] for e in items}
+        if not hit:
+            return 0
+        keep = [e["index"] for e in items if e["index"] not in hit]
+        return self._rewrite(keep)
+
     def clear(self) -> int:
         """清空全部记忆（连文件一起删掉，下次写入会重新生成表头）。"""
         with self._lock:

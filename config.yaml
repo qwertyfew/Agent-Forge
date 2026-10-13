@@ -10,6 +10,13 @@ ollama:
   # 模型在显存中保持存活的时间，避免每次调用重新加载 18GB 权重
   keep_alive: 15m
   request_timeout: 900
+  # 检测到 Ollama 没起来时自动拉起（Windows 优先拉起桌面版「ollama app.exe」，
+  # 没有就退回 `ollama serve`）。长期不关机的机器上，Ollama 可能被手动退出或
+  # 升级时重启，本地模型会静默失效——开着这个就不用每次都自己去看。
+  # 想完全自己掌控就设成 false，此时界面只提示「Ollama 无响应」，不做任何动作。
+  auto_start: true
+  # 拉起后最多等多少秒才判定失败（冷启动要加载模型索引，别给太短）。
+  auto_start_wait: 45
 
 models:
   # 2026 小模型综合第一（LCB 72.0 / MMLU-Pro 77.2 / GPQA 78.8，256K 上下文，

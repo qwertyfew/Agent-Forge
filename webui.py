@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from agentforge import artifact, autonote, autoskill, runcontrol
+from agentforge import artifact, autonote, autoskill, ollamaguard, runcontrol
 from agentforge.cli import CLI
 from agentforge.config import Config
 from agentforge.memory import LAYER_LABEL, MemoryStore
@@ -202,7 +202,15 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/api/tools":
             self._json(self._tools_snapshot())
         elif path == "/api/health":
-            self._json({"ollama": self.cli.client.ping()})
+            self._json({
+                "ollama": self.cli.client.ping(),
+                # 界面发现 ollama=false 时会去 /api/ollama/ensure 拉一把；
+                # auto_start 关掉时就不发这个请求，别做无谓动作
+                "ollama_auto_start": bool(self.cfg.ollama_auto_start),
+                "ollama_host": self.cfg.ollama_host,
+                "ollama_launcher": ollamaguard.launcher_label(),
+                "ollama_last": ollamaguard.last_result(),
+            })
         else:
             self._json({"error": "not found"}, 404)
 
@@ -637,33 +645,93 @@ class _Handler(BaseHTTPRequestHandler):
         self._json({"error": f"未知动作 {action}"}, 400)
 
     def _do_clear(self, req: dict) -> None:
-        """按勾选项清理：对话记录 / 任务新建的文件 / 任务改过的文件 / 任务记忆。
+        """按勾选项清理：对话记录 / 磁盘文件 / 记忆条目。
 
         设计成「各勾各的」而不是一键全清：多数时候用户只想清对话，
         而文件是他真正的工作产出，不该被顺手删掉。
+
+        前端把勾选结果摊平成两份清单（files / mem_indices）传进来，这里**逐条与
+        清理快照比对**：只认快照里出现过的路径与记忆行号，认不出来的一律跳过。
+        也就是说，删不删由用户在弹窗里勾出来的东西决定，接口本身不接受任意路径——
+        即使有人直接调这个接口，也删不掉本次可清理范围之外的任何文件。
+        旧前端只传布尔开关（created/modified/memory），仍按类别整片处理。
         """
         history = bool(req.get("history", True))
-        wipe_created = bool(req.get("created", False))
-        wipe_modified = bool(req.get("modified", False))
-        wipe_memory = bool(req.get("memory", False))
+        raw_files = req.get("files")
+        raw_mem = req.get("mem_indices")
+        legacy = raw_files is None and raw_mem is None
 
         finished = self.tasks.finished()
         ids = [t.id for t in finished]
         removed_files = {"removed": [], "failed": [], "skipped": []}
+        dropped_mem = 0
 
-        if wipe_created or wipe_modified:
+        root = Path(self.cfg.workspace_root).resolve()
+
+        def _as_key(raw) -> str:
+            """归一到「绝对路径 + 小写」，用于和快照比对、顺手去重。"""
+            p = Path(str(raw))
+            if not p.is_absolute():
+                p = root / p
+            try:
+                return str(p.resolve()).lower()
+            except OSError:
+                return str(p).lower()
+
+        if legacy:
+            # 兼容旧前端：只给了类别开关，就按类别整片清（仍然只清过渡/中间文件）
             snap = self._cleanup_snapshot()
             targets = []
-            if wipe_created:
-                # 只清过渡/中间文件（「created」键已收窄为这一类），最终产出保留
+            if req.get("created"):
                 targets += [f["path"] for f in snap["created"]["items"]]
-            if wipe_modified:
+            if req.get("modified"):
                 targets += [f["path"] for f in snap["modified"]["items"]]
-            removed_files = self._purge_files(targets)
-            # 只把已删除文件的记录从台账摘掉；保留的最终产出继续跟着任务走
-            self.tasks.drop_file_paths(removed_files["removed"])
+            if targets:
+                removed_files = self._purge_files(targets)
+                self.tasks.drop_file_paths(removed_files["removed"])
+            if req.get("memory"):
+                dropped_mem = self.mem.drop_tasks(ids)
+        else:
+            snap = self._cleanup_snapshot()
+            # 允许删的路径 = 本次快照里的三类文件（过渡/中间、最终产出、被改动）
+            allowed = {}
+            for group in ("created", "final", "modified"):
+                for f in snap[group]["items"]:
+                    if f.get("path"):
+                        allowed[_as_key(f["path"])] = f["path"]
+            targets, rejected = [], []
+            seen = set()
+            for raw in (raw_files or []):
+                key = _as_key(raw)
+                real = allowed.get(key)
+                if real is None:
+                    rejected.append({"path": str(raw), "why": "不在本次可清理清单内，已跳过"})
+                    continue
+                if key in seen:      # 同一文件可能同时落在两个类别里
+                    continue
+                seen.add(key)
+                targets.append(real)
+            if targets:
+                removed_files = self._purge_files(targets)
+                # 只把已删除文件的记录从台账摘掉；没删的继续跟着任务走
+                self.tasks.drop_file_paths(removed_files["removed"])
+            removed_files["skipped"] += rejected
+            if raw_mem:
+                # 记忆按行号删，但只认「属于本次这些已结束任务」的行号：行号是前端
+                # 打开弹窗那一刻文件里的位置，这里再跟当前文件对一次，免得删到别的
+                # 任务写的记忆。
+                allowed_mem = {e["index"] for e in self.mem.entries()
+                               if e.get("task") in set(ids)}
+                wanted = []
+                for raw in raw_mem:
+                    try:
+                        n = int(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if n in allowed_mem:
+                        wanted.append(n)
+                dropped_mem = self.mem.drop_indices(wanted)
 
-        dropped_mem = self.mem.drop_tasks(ids) if wipe_memory else 0
         removed_tasks = self.tasks.clear() if history else 0
 
         parts = []
@@ -677,13 +745,13 @@ class _Handler(BaseHTTPRequestHandler):
             parts.append(f"{len(removed_files['failed'])} 个文件删除失败")
         if removed_files["skipped"]:
             parts.append(f"{len(removed_files['skipped'])} 个跳过")
-        if not parts:
-            parts.append("没有可清理的内容")
+        # 一项都没勾时别说「已没有可清理的内容」——那听着像活儿全干完了
+        note = "已" + "，".join(parts) if parts else "没有勾选任何要清理的内容，什么都没动"
 
         self._json(
             {
                 "ok": True,
-                "note": "已" + "，".join(parts),
+                "note": note,
                 "removed": removed_tasks,
                 "files": {
                     "removed": removed_files["removed"][:200],
@@ -1089,6 +1157,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/skills":
             self._handle_skills()
+            return
+        if path == "/api/ollama/ensure":
+            self._handle_ollama_ensure()
             return
         if path == "/api/open-folder":
             self._handle_open_folder()
@@ -1565,6 +1636,21 @@ class _Handler(BaseHTTPRequestHandler):
             }
         )
 
+    # ---------- 拉起 Ollama（本地模型的上游） ----------
+    def _handle_ollama_ensure(self):
+        """界面发现 Ollama 无响应时来敲一下，把本地模型的上游拉回来。
+
+        幂等 + 带冷却：已经在跑就直接返回 already_up；刚试过没多久返回 cooldown，
+        免得界面反复轮询把 ollama 进程刷爆（见 ollamaguard.RETRY_COOLDOWN）。
+        用户明确点「立即拉起」时传 force=true 跳过冷却。
+        """
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            req = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            req = {}
+        self._json(ollamaguard.ensure(self.cfg, force=bool(req.get("force"))))
+
     # ---------- 打开工作区文件夹（资源管理器） ----------
     def _handle_open_folder(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -1654,7 +1740,12 @@ def serve(cfg: Config, auto_approve: bool, port: int, host: str = "127.0.0.1"):
     url = f"http://{host}:{port}"
     print(f"AgentForge Web UI: {url}")
     print(f"工作区: {cfg.workspace_root}")
+    # 本地模型的上游就是 Ollama：启动时先确保它在，否则界面一打开就是
+    # 「Ollama 无响应」，而本地模型全废。已经在跑的话这里什么都不做。
+    guard = ollamaguard.ensure(cfg)
     print(f"Ollama: {cfg.ollama_host}  可用模型: {len(cli.store.enabled())}/{len(cli.store.catalog())} 已启用")
+    if guard["action"] != "already_up":
+        print(f"本地模型: {guard['detail']}")
     print(f"当前组合: {cli.store.summary_line()}")
     print(f"新建任务默认权限: {PERMISSION_LABEL.get(prefs.permission, prefs.permission)}"
           f"（在界面上改权限会更新这份默认值）")

@@ -91,6 +91,11 @@ class Config:
     # 本地模型串行执行：同一时刻只跑一个本地模型，避免两个并发任务同时压 Ollama
     # 抢 GPU/显存互相拖累。付费/在线模型不受此限制，可并行。
     local_serial: bool = True
+    # Ollama 没起来时自动拉起（见 agentforge/ollamaguard.py）。
+    # 本机长期不关机，Ollama 可能被手动退出或升级时重启，本地模型会静默失效。
+    ollama_auto_start: bool = True
+    # 拉起后最多等多少秒才判定失败。冷启动要加载模型索引，别给太短。
+    ollama_wait: int = 45
 
     models: dict[str, ModelSpec] = field(default_factory=dict)
     routing_default: str = "general"
@@ -191,6 +196,8 @@ class Config:
         cfg.keep_alive = str(o.get("keep_alive", cfg.keep_alive))
         cfg.request_timeout = int(o.get("request_timeout", cfg.request_timeout))
         cfg.local_serial = bool(o.get("local_serial", cfg.local_serial))
+        cfg.ollama_auto_start = bool(o.get("auto_start", cfg.ollama_auto_start))
+        cfg.ollama_wait = int(o.get("auto_start_wait", cfg.ollama_wait))
 
         for key, spec in (raw.get("models", {}) or {}).items():
             cfg.models[key] = ModelSpec(

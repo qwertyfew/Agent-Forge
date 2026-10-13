@@ -214,6 +214,9 @@
   .dot{width:7px;height:7px;border-radius:50%;background:#c0beba;flex:none;transition:background .3s}
   .dot.ok{background:#2fa46a;box-shadow:0 0 0 3px rgba(47,164,106,.15)}
   .dot.bad{background:var(--err)}
+  /* 正在自动拉起 Ollama：呼吸一下，别让用户以为界面卡住了 */
+  .dot.wait{background:var(--orange,#d08700);animation:dotPulse 1s ease-in-out infinite}
+  @keyframes dotPulse{0%,100%{opacity:1}50%{opacity:.3}}
   .meta .ws{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
   .side-scrim{display:none}
 
@@ -231,6 +234,22 @@
     scrollbar-width:thin;padding:0 2px 4px}
   .task-empty{font-size:12px;color:var(--ink3);padding:8px;line-height:1.55;
     border:1px dashed var(--line2);border-radius:12px}
+  /* 「后端没连上」必须和「确实没有数据」长得不一样。
+     教训：服务挂了一次，记忆/技能面板静默渲染成「还没有…」，用户以为数据被清空了。 */
+  .task-empty.offline{color:var(--err);border:1px solid var(--err);background:var(--err-soft)}
+  .task-empty .retry{display:inline-block;margin-top:7px;font-size:11.5px;color:var(--ink);
+    border:1px solid var(--line2);border-radius:8px;padding:3px 10px;background:var(--card);cursor:pointer}
+  .task-empty .retry:hover{border-color:var(--ink3)}
+  /* 侧栏离线横幅：接口失败时点亮。侧栏列表会保留上次成功的数据，
+     不标出来的话「12 条任务」和「没有可清理的任务」会同时出现在屏幕上。 */
+  .offline-bar{display:flex;align-items:center;gap:8px;margin:0 10px 8px;padding:6px 9px;
+    font-size:11.5px;line-height:1.5;color:var(--err);background:var(--err-soft);
+    border:1px solid var(--err);border-radius:10px}
+  .offline-bar[hidden]{display:none}
+  .offline-bar .ob-txt{flex:1;min-width:0}
+  .offline-bar .ob-retry{flex:none;font-size:11px;color:var(--err);background:transparent;
+    border:1px solid var(--err);border-radius:7px;padding:1px 8px;cursor:pointer}
+  .offline-bar .ob-retry:hover{background:var(--err);color:#fff}
   /* 任务条目平时不加框，仅悬停微亮、点击选中时描边高亮 */
   .task-item{display:flex;align-items:flex-start;gap:9px;padding:9px 11px;border-radius:12px;
     cursor:pointer;border:1px solid transparent;background:transparent;
@@ -738,8 +757,9 @@
     border-top:1px solid var(--line);margin-top:12px}
   .modal-foot .spacer{flex:1}
   .modal-foot .note{font-size:11.5px;color:var(--ink3)}
-  /* 勾选项：整行可点，选中态用左侧高亮表示 */
-  .mopt{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;margin-bottom:7px;
+  /* 勾选项：整行可点，选中态用边框表示。
+     分类勾选框与下方明细行的勾选框同尺寸、同左边界（12px），落在同一列上。 */
+  .mopt{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;
     border:1px solid var(--line);border-radius:12px;background:var(--card);cursor:pointer}
   .mopt:hover{border-color:var(--line2)}
   .mopt.on{border-color:var(--ink3);background:var(--panel)}
@@ -750,20 +770,43 @@
   .mopt .mt span{display:block;font-size:11.5px;color:var(--ink3);margin-top:3px;line-height:1.55}
   .mopt .mc{flex:none;font-size:11.5px;color:var(--ink2);border:1px solid var(--line2);
     border-radius:7px;padding:1px 7px;line-height:1.7}
-  /* 待删除文件清单 */
+  /* 「删 / 留」状态标签：不再写死，跟着勾选实时换 */
+  .mopt .mstate{flex:none;font-size:11px;border:1px solid var(--line2);border-radius:7px;
+    padding:1px 7px;line-height:1.7;color:var(--ink3);white-space:nowrap}
+  .mopt .mstate.del{color:var(--err);border-color:var(--err)}
+  /* 折叠箭头：点它展开/收起明细；点整行仍然是勾选，两者互不干扰 */
+  .mopt .mfold{flex:none;width:20px;height:20px;margin-top:1px;display:inline-flex;
+    align-items:center;justify-content:center;border-radius:6px;color:var(--ink3);
+    font-size:10px;line-height:1;cursor:pointer;user-select:none;
+    transition:background .15s ease,color .15s ease}
+  .mopt .mfold:hover{background:var(--hover);color:var(--ink)}
+  /* 一个分类 = 分类勾选行 + 它的明细清单，明细与分类行咬合成一块 */
+  .mgroup{margin-bottom:7px}
+  .mgroup .mopt{border-radius:12px}
+  .mgroup.has-detail .mopt{border-radius:12px 12px 0 0}
+  .mgroup .mfile{margin:0;border-top:0;border-radius:0 0 12px 12px;background:var(--panel)}
+  /* 明细清单 */
   .mfile{margin:2px 0 10px;border:1px solid var(--line);border-radius:12px;overflow:hidden}
-  .mfile .mf-head{display:flex;align-items:center;gap:8px;padding:8px 11px;
-    background:var(--card);font-size:11.5px;color:var(--ink2);border-bottom:1px solid var(--line)}
+  .mfile.hide{display:none}
   .mfile .mf-body{max-height:172px;overflow-y:auto;scrollbar-width:thin}
-  .mfile .mf-row{display:flex;align-items:center;gap:8px;padding:6px 11px;font-size:11.5px;
+  .mfile .mf-row{display:flex;align-items:center;gap:10px;padding:6px 12px;font-size:11.5px;
     border-bottom:1px solid var(--line)}
   .mfile .mf-row:last-child{border-bottom:none}
+  .mfile .mf-row input{width:15px;height:15px;margin:0;flex:none;accent-color:var(--send-bg);
+    cursor:pointer}
   .mfile .mf-row .p{flex:1;min-width:0;color:var(--ink);overflow:hidden;text-overflow:ellipsis;
     white-space:nowrap;direction:rtl;text-align:left;font-family:ui-monospace,Menlo,Consolas,monospace}
   .mfile .mf-row .tag{flex:none;font-size:10.5px;color:var(--ink3);border:1px solid var(--line2);
     border-radius:6px;padding:0 5px;line-height:1.7}
   .mfile .mf-row .tag.scan{color:var(--orange);border-color:var(--orange)}
   .mfile .mf-row .tag.out{color:var(--err);border-color:var(--err)}
+  /* 点开文件的提示图标：悬停才亮，避免每行都在喊「点我」 */
+  .mfile .mf-row .mopen{flex:none;font-size:11px;color:var(--ink3);opacity:.45;
+    transition:opacity .15s ease,color .15s ease}
+  .mfile .mf-row.lk:hover .mopen{opacity:1;color:var(--accent)}
+  /* 没勾选 = 保留不删，整行淡下去，一眼看出哪些会留下 */
+  .mfile .mf-row.keep{opacity:.5}
+  .mfile .mf-empty{padding:7px 12px;font-size:11.5px;color:var(--ink3)}
   .btn.danger{background:var(--err);color:#fff;border-color:var(--err)}
   .btn.danger:hover{opacity:.9}
   .btn.ghost{background:transparent}
@@ -815,7 +858,14 @@
       </div>
     </div>
 
+    <!-- 后端连不上时的横幅：侧栏列表还会显示上一次成功获取的数据，必须标出来 -->
+    <div class="offline-bar" id="offlineBar" hidden>
+      <span class="ob-txt" id="offlineTxt">服务未连接</span>
+      <button class="ob-retry" id="offlineRetry">重试</button>
+    </div>
+
     <div class="side-body">
+
       <div class="side-sec">
         <div class="side-title row">
           <span class="grow" id="taskSecTitle">任务</span>
@@ -1223,6 +1273,71 @@ function scrollBottom(){
 }
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+/* ================= 只读接口请求（失败必须说出来）=================
+   以前各面板都写成 fetch(...).catch(()=>({}))：后端一挂，异常被吞掉，
+   `d.entries || []` 一兜就渲染成「还没有记忆 / 还没有技能」，
+   「清空」那边更离谱——直接提示「还没有可清理的任务」。
+   数据其实好好躺在磁盘上，用户看到空列表只会以为被清掉了。
+   这里把「连不上 / HTTP 报错 / 返回的不是 JSON」都翻成人话异常，由调用方呈现。 */
+
+/* 连接状态：任何接口失败都点亮侧栏横幅，成功一次就熄灭。
+   侧栏的任务列表在轮询失败时会保留上次数据（不清空），所以必须有个
+   显式提示，否则「12 条任务」和「没有可清理的任务」会同屏出现。 */
+let connOk = true;
+function setConn(ok, msg){
+  const bar = $('offlineBar'), txt = $('offlineTxt');
+  if(!bar) return;
+  if(ok){
+    if(!connOk){ connOk = true; bar.hidden = true; }
+    return;
+  }
+  connOk = false;
+  if(txt){
+    txt.textContent = '服务未连接，列表为上次数据';
+    txt.title = msg || '';
+  }
+  bar.hidden = false;
+}
+
+async function apiGet(url){
+  let res;
+  try{
+    res = await fetch(url, {cache:'no-store'});
+  }catch(e){
+    const err = new Error('连不上本地服务 ' + location.host + '，请确认它还在运行');
+    err.offline = true; setConn(false, err.message); throw err;
+  }
+  if(!res.ok){
+    const err = new Error('后端返回 HTTP ' + res.status + '，服务可能已异常');
+    err.offline = true; setConn(false, err.message); throw err;
+  }
+  setConn(true);   // 服务答话了，先算连着
+  let body;
+  try{
+    body = await res.json();
+  }catch(e){
+    const err = new Error('后端返回的不是 JSON（HTTP ' + res.status + '）');
+    err.offline = true; setConn(false, err.message); throw err;
+  }
+  // 后端自己报的业务错（如 {"error":"没有找到该任务"}）不算离线，别误亮横幅
+  if(body && body.error) throw new Error(String(body.error));
+  return body;
+}
+
+/* 列表读不到时的占位：一句实话 + 一个重试按钮。
+   onRetry 重新跑一次加载函数。 */
+function renderListError(box, err, onRetry){
+  if(!box) return;
+  box.innerHTML = '';
+  const wrap = el('div','task-empty offline');
+  wrap.appendChild(el('div','', '读取失败：' + (err && err.message ? err.message : String(err))));
+  const btn = el('button','retry','重试');
+  btn.onclick = ()=>{ btn.disabled = true; onRetry(); };
+  wrap.appendChild(btn);
+  box.appendChild(wrap);
+}
+if($('offlineRetry')) $('offlineRetry').onclick = ()=> location.reload();
+
 /* ================= 空态（落地页）=================
    新建任务且还没输入时，输入框浮在页面中部（原来放默认问题的地方）；
    一旦开始输入/有附件/有对话/任务在执行，就落回底部。 */
@@ -1411,9 +1526,11 @@ function renderMemory(d){
 }
 async function loadMemory(){
   try{
-    const d = await (await fetch('/api/memory')).json();
-    renderMemory(d);
-  }catch(e){}
+    renderMemory(await apiGet('/api/memory'));
+  }catch(e){
+    // 读不到 ≠ 没有。明确报错并给重试，别让空列表冒充「记忆被清了」
+    renderListError($('memList'), e, loadMemory);
+  }
 }
 /* 前端记着「已知的记忆条数」，用来判断任务收尾后记忆有没有长出来 */
 let memKnownCount = 0;
@@ -1555,9 +1672,11 @@ function renderSkills(d){
 }
 async function loadSkills(){
   try{
-    const d = await (await fetch('/api/skills')).json();
-    renderSkills(d);
-  }catch(e){}
+    renderSkills(await apiGet('/api/skills'));
+  }catch(e){
+    renderListError($('skillExtractedList'), e, loadSkills);
+    renderListError($('skillInstalledList'), e, loadSkills);
+  }
 }
 /* 后台模型抽取可能晚于 done 才把 skill 落盘：收尾后核对一次，有新增就提示 */
 function checkSkillGrew(){
@@ -1879,9 +1998,18 @@ function toast(anchor, text, cls){
 
 /* ================= 模态弹窗 =================
    原生 confirm/alert 在深色主题下非常突兀，风格也和项目对不上。这里做一个
-   统一的弹窗：标题 + 说明 + 可选勾选项 + 可选清单 + 取消/确定。
-   返回 { close, values }；配置里可给 onOk(values) / onClose()。
-   onOk 返回 false 表示不关闭（用于校验失败的情况）。 */
+   统一的弹窗：标题 + 说明 + 可勾选项（可带明细清单）+ 取消/确定。
+
+   勾选项的结构是「分类勾选行 + 它的明细清单」：分类与明细的勾选框同尺寸、同左边界，
+   落在同一列上；点整行 = 勾选，点右侧箭头 = 展开/收起明细，两者互不干扰。
+   分类与明细双向联动：明细全勾上 → 分类自动勾上；勾掉一条 → 分类变半选。
+
+   文案不写死：desc / stateText 可以写成函数，okTextFor / noteFor / disableOkFor
+   也按当前选中状态实时求值——「删还是留」由勾选决定，而不是由文案替用户断言。
+
+   返回 { close, state, values, rows }；配置里可给 onOk(state) / onClose()。
+   onOk 返回 false 表示不关闭（用于校验失败的情况）。state = {values, rows}：
+   values 是各分类的勾选态，rows 是各分类下被勾中的明细（文件路径 / 记忆行号）。 */
 function openModal(cfg){
   const mask = el('div','modal-mask');
   const box  = el('div','modal');
@@ -1891,58 +2019,178 @@ function openModal(cfg){
   box.appendChild(head);
 
   const body = el('div','modal-body');
-  const inputs = {};
-  const sectionEls = {};   // key -> 区块 DOM，供勾选项联动显隐
+  const catBoxes = {};      // 分类 key -> 分类勾选框
+  const catRows  = {};      // 分类 key -> 分类行的 DOM（换 on 态）
+  const rowBoxes = {};      // 分类 key -> [明细勾选框]
+  const detailEls= {};      // 分类 key -> 明细 DOM（展开/收起）
+  const folding  = {};      // 分类 key -> 同步箭头方向的函数
+  const paints   = [];      // 每次勾选变化都要重算的函数（动态文案 / 状态标签）
+  const rowValues = new WeakMap();   // 明细勾选框 -> 勾中后要提交的值
+
   for(const opt of (cfg.options || [])){
-    const row = el('label','mopt' + (opt.checked ? ' on' : ''));
+    const items = ((opt.detail && opt.detail.items) || []).filter(Boolean);
+    const group = el('div','mgroup' + (items.length ? ' has-detail' : ''));
+    const row   = el('div','mopt' + (opt.checked ? ' on' : '') + (opt.disabled ? ' off' : ''));
+
     const cb = document.createElement('input');
     cb.type = 'checkbox';
+    cb.className = 'mcb';
     cb.checked = !!opt.checked;
     cb.disabled = !!opt.disabled;
-    cb.onchange = ()=>{
-      row.classList.toggle('on', cb.checked);
-      // 勾选项 ↔ 明细区块联动：勾上才显示「将删除」的文件/记忆清单
-      const sec = sectionEls[opt.key];
-      if(sec) sec.style.display = cb.checked ? '' : 'none';
-    };
-    inputs[opt.key] = cb;
-    const mt = el('div','mt');
+    catBoxes[opt.key] = cb;
+    catRows[opt.key] = row;
+
+    // desc 既可以是固定文案，也可以是 (on, partial)=>文案
+    const descOf = typeof opt.desc === 'function' ? opt.desc : (()=> opt.desc || '');
+    const mt  = el('div','mt');
+    const sEl = el('span','', descOf(!!opt.checked, false));
     mt.appendChild(el('b','', opt.label));
-    if(opt.desc) mt.appendChild(el('span','', opt.desc));
+    mt.appendChild(sEl);
+
     row.appendChild(cb);
     row.appendChild(mt);
+
+    // 「删 / 留」状态标签：只在给了 stateText 的分类上出现
+    const chip = el('span','mstate');
+    const stateOf = typeof opt.stateText === 'function' ? opt.stateText
+      : (opt.stateText ? (()=> String(opt.stateText)) : null);
+    if(stateOf) row.appendChild(chip);
+
     if(opt.count !== undefined) row.appendChild(el('span','mc', String(opt.count)));
-    body.appendChild(row);
-  }
-  for(const sec of (cfg.sections || [])){
-    const items = sec.items || [];
-    if(!items.length) continue;
-    const wrap = el('div','mfile');
-    const h = el('div','mf-head');
-    h.appendChild(el('span','', sec.title || ''));
-    h.appendChild(el('span','', items.length + ' 项' + (sec.more > items.length ? ` / 共 ${sec.more}` : '')));
-    wrap.appendChild(h);
-    const bd = el('div','mf-body');
-    for(const it of items){
-      const r = el('div','mf-row');
-      const p = el('span','p', it.text);
-      if(it.path) { r.classList.add('lk'); r.dataset.openpath = it.path; r.title = '点击打开'; }
-      r.appendChild(p);
-      if(it.tag) r.appendChild(el('span','tag ' + (it.cls || ''), it.tag));
-      bd.appendChild(r);
+
+    let detail = null, list = [], fold = null;
+    if(items.length){
+      detail = el('div','mfile');
+      const bd = el('div','mf-body');
+      for(const it of items){
+        const r = el('div','mf-row');
+        const rcb = document.createElement('input');
+        rcb.type = 'checkbox';
+        rcb.className = 'mcb';
+        rcb.checked = it.checked !== false;
+        // 提交值单独存：文件是路径（字符串），记忆是行号（数字），
+        // dataset 会把两者都变成字符串，别让后端去猜类型。
+        rowValues.set(rcb, it.value != null ? it.value : (it.path || ''));
+        list.push(rcb);
+        const p = el('span','p', it.text);
+        // 带 path 的行：点文件名用系统默认程序打开（全局点击代理 → /api/open-folder）
+        if(it.path){
+          r.classList.add('lk');
+          r.dataset.openpath = it.path;
+          r.title = '点击用系统默认程序打开（按文件后缀）';
+        }
+        r.appendChild(rcb);
+        r.appendChild(p);
+        if(it.tag) r.appendChild(el('span','tag ' + (it.cls || ''), it.tag));
+        if(it.path) r.appendChild(el('span','mopen','↗'));
+        rcb.onchange = () => syncFromRow(opt.key);
+        bd.appendChild(r);
+      }
+      detail.appendChild(bd);
+      rowBoxes[opt.key] = list;
+      detailEls[opt.key] = detail;
+
+      fold = el('span','mfold','▾');
+      fold.onclick = ev => {
+        ev.stopPropagation();
+        detail.classList.toggle('hide');
+        folding[opt.key] && folding[opt.key]();
+      };
+      folding[opt.key] = ()=>{
+        const open = !detail.classList.contains('hide');
+        fold.textContent = open ? '▾' : '▸';
+        fold.title = open ? '点击收起明细' : '点击展开明细';
+      };
+      row.appendChild(fold);
+      // 初始状态：勾上的类别摊开明细，没勾的先收着（点箭头展开）
+      const wantOpen = opt.detail && opt.detail.expanded !== undefined
+        ? !!opt.detail.expanded : !!opt.checked;
+      detail.classList.toggle('hide', !wantOpen);
+      folding[opt.key]();
+
+      group.appendChild(row);
+      group.appendChild(detail);
+    } else {
+      group.appendChild(row);
     }
-    wrap.appendChild(bd);
-    body.appendChild(wrap);
-    if(sec.key && inputs[sec.key]){
-      sectionEls[sec.key] = wrap;
-      // 初始状态与勾选框一致：没勾上的清单先收起
-      if(!inputs[sec.key].checked) wrap.style.display = 'none';
-    }
+
+    // 点整行 = 勾选；点箭头 = 展开/收起（箭头自己处理，这里让开）
+    cb.onclick = ev => ev.stopPropagation();
+    cb.onchange = () => syncCategory(opt.key);
+    row.onclick = ev => {
+      if(opt.disabled || ev.target === fold) return;
+      cb.checked = !cb.checked;
+      syncCategory(opt.key);
+    };
+
+    // 动态文案与状态标签的绘制函数
+    paints.push(st => {
+      const partial = !!cb.indeterminate;
+      const on = cb.checked;
+      sEl.textContent = descOf(on, partial);
+      if(stateOf){
+        chip.textContent = stateOf(on, partial);
+        chip.className = 'mstate' + (on || partial ? ' del' : '');
+      }
+    });
+
+    body.appendChild(group);
   }
   box.appendChild(body);
 
+  const state = ()=>{
+    const values = {}, rows = {};
+    for(const k in catBoxes) values[k] = catBoxes[k].checked;
+    for(const k in rowBoxes){
+      rows[k] = rowBoxes[k].filter(c=>c.checked)
+        .map(c=>rowValues.get(c)).filter(v=>v !== undefined && v !== '');
+    }
+    return { values, rows };
+  };
+  /* 分类变化 → 带上它的全部明细；明细变化 → 回算分类（全选=勾上，部分选=半选） */
+  function syncCategory(key){
+    const cb = catBoxes[key];
+    const list = rowBoxes[key] || [];
+    list.forEach(c => { c.checked = cb.checked; });
+    cb.indeterminate = false;
+    afterSync(key);
+  }
+  function syncFromRow(key){
+    const cb = catBoxes[key];
+    const list = rowBoxes[key] || [];
+    if(!cb || !list.length) return;
+    const on = list.filter(c=>c.checked).length;
+    cb.checked = on === list.length;
+    cb.indeterminate = on > 0 && on < list.length;
+    afterSync(key);
+  }
+  function afterSync(key){
+    // 勾上就把明细摊开，省得勾了却看不见勾了什么
+    const d = detailEls[key];
+    if(d && catBoxes[key].checked) d.classList.remove('hide');
+    folding[key] && folding[key]();
+    refresh();
+  }
+  function refresh(){
+    for(const k in catBoxes){
+      catRows[k] && catRows[k].classList.toggle('on', catBoxes[k].checked);
+    }
+    for(const k in rowBoxes){
+      for(const c of rowBoxes[k]){
+        const r = c.closest('.mf-row');
+        if(r) r.classList.toggle('keep', !c.checked);
+      }
+    }
+    const st = state();
+    for(const f of paints) f(st);
+    if(cfg.noteFor) noteEl.textContent = cfg.noteFor(st) || '';
+    if(cfg.okTextFor) ok.textContent = cfg.okTextFor(st);
+    if(cfg.disableOkFor) ok.disabled = !!cfg.disableOkFor(st);
+  }
+
   const foot = el('div','modal-foot');
-  if(cfg.note) foot.appendChild(el('span','note', cfg.note));
+  const noteEl = el('span','note', typeof cfg.note === 'string' ? cfg.note : '');
+  foot.appendChild(noteEl);
   foot.appendChild(el('span','spacer'));
   const cancel = el('button','btn ghost', cfg.cancelText || '取消');
   const ok = el('button','btn ' + (cfg.danger ? 'danger' : 'primary'), cfg.okText || '确定');
@@ -1952,7 +2200,8 @@ function openModal(cfg){
   mask.appendChild(box);
   document.body.appendChild(mask);
 
-  const values = ()=>{ const v = {}; for(const k in inputs) v[k] = inputs[k].checked; return v; };
+  refresh();          // 先按初始勾选把文案/按钮态算一遍，再交出去
+
   let closed = false;
   const close = ()=>{
     if(closed) return;
@@ -1968,13 +2217,17 @@ function openModal(cfg){
   ok.onclick = async ()=>{
     ok.disabled = true; cancel.disabled = true;
     let keep = true;
-    try{ keep = await (cfg.onOk ? cfg.onOk(values()) : true); }
+    try{ keep = await (cfg.onOk ? cfg.onOk(state()) : true); }
     catch(e){ keep = true; }
-    if(keep === false){ ok.disabled = false; cancel.disabled = false; return; }
+    if(keep === false){
+      ok.disabled = false; cancel.disabled = false;
+      if(cfg.disableOkFor) ok.disabled = !!cfg.disableOkFor(state());
+      return;
+    }
     close();
   };
   ok.focus();
-  return { close, values };
+  return { close, state, values: ()=> state().values, rows: ()=> state().rows };
 }
 
 /* 只需要一句话确认的场景（替代原生 confirm） */
@@ -2327,13 +2580,17 @@ function tickLive(){
 }
 setInterval(tickLive, 1000);
 
-function loadTasks(){
-  fetch('/api/tasks').then(r=>r.json()).then(d=>{
+async function loadTasks(){
+  try{
+    const d = await apiGet('/api/tasks');
     if(!Array.isArray(d.tasks)) return;
     taskData = d.tasks;
     renderTasks();
     adoptRunning();
-  }).catch(()=>{});
+  }catch(e){
+    // 拉不到就保持侧栏原样，别清空——清空会让「数据没了」和「服务挂了」更难分辨。
+    // 原因由侧栏的离线横幅交代（apiGet 已经点亮了它）。
+  }
 }
 
 /* ================= 执行中状态条（计时 / 进度 / 预估费用） =================
@@ -2562,17 +2819,24 @@ function openTask(id){
 }
 
 /* ================= 清空（可勾选一并清理的文件与记忆） =================
-   一条任务留下的东西其实分三类：对话记录、磁盘上的产出文件（含中间文件、
-   过渡文件、结果文件）、写进工作区记忆的条目。只清对话的话，后两类会一直
-   堆着，所以这里让用户自己勾。 */
+   一条任务留下的东西其实分几类：对话记录、磁盘上的产出文件（过渡 / 中间文件、
+   最终产出、被任务改过的既有文件）、写进工作区记忆的条目。只清对话的话，后几类
+   会一直堆着，所以这里让用户自己勾——**删什么完全由勾选决定**。
+
+   默认值取最保守的一组：对话记录、过渡 / 中间文件（连同它下面每一条明细）默认勾上；
+   最终产出、被改过的文件、任务记忆默认不勾（保留）。每一个分类都有勾选框，每条明细
+   也有勾选框，它们和「对话记录」的那个框同尺寸、同一边界，落在同一列上。 */
 const ACTION_LABEL = {created:'新建', modified:'修改', deleted:'删除'};
 
-function fileRow(f){
+function fileRow(f, checked){
   const tag = f.outside ? '工作区外 · 跳过'
     : (f.via === 'scan' ? '命令副作用 · ' + (ACTION_LABEL[f.action] || '改动')
                         : (ACTION_LABEL[f.action] || '改动'));
+  const path = f.outside ? '' : (f.path || '');
   return { text: f.rel || f.path, tag, cls: f.outside ? 'out' : (f.via === 'scan' ? 'scan' : ''),
-           path: f.outside ? '' : (f.path || '') };   // path 非空 = 可点击打开
+           path,                    // 非空 = 可点击，用系统默认程序打开
+           value: path,             // 非空 = 勾上后会随请求提交给后端删掉
+           checked: !!checked };
 }
 
 /* 回复结尾的产出文件卡片：显眼、可点击打开（全局点击代理 → /api/open-folder 校验工作区）。
@@ -2622,85 +2886,119 @@ function addFilesCard(files){
 async function openClearDialog(){
   const btn = $('btnClearTasks');
   const rect = btn ? btn.getBoundingClientRect() : null;
-  const r = await fetch('/api/tasks?cleanup=1').then(x=>x.json()).catch(()=>({}));
-  const c = r.cleanup || {};
-  const created = c.created || {count:0, items:[]};   // 过渡/中间文件（tmp/草稿/命令副作用…）
-  const finalOut = c.final || {count:0, items:[]};    // 最终产出（默认保留）
+  let c;
+  try{
+    c = (await apiGet('/api/tasks?cleanup=1')).cleanup || {};
+  }catch(e){
+    // 关键修复：以前这里 catch 成 {} → 落到下面的 !c.tasks → 提示「还没有可清理的任务」，
+    // 明明有 12 条历史任务却被说成没有，用户会以为台账丢了。现在把真实原因说出来。
+    toast(rect, '读取任务失败：' + e.message, 'bad');
+    return;
+  }
+  const created  = c.created  || {count:0, items:[]};   // 过渡/中间文件（tmp/草稿/命令副作用…）
+  const finalOut = c.final    || {count:0, items:[]};    // 最终产出（报告/代码/文档…）
   const modified = c.modified || {count:0, items:[]};
-  const mem = c.memory || {count:0, items:[]};
+  const mem      = c.memory   || {count:0, items:[]};
 
   if(!c.tasks){
     toast(rect, '还没有可清理的任务', 'mute');
     return;
   }
 
-  const total = (c.tasks || 0) + created.count + modified.count + mem.count;
+  // 一类文件 = 分类勾选行 + 明细清单；明细的默认勾选态与分类保持一致
+  const fileDetail = (list, checked)=>({
+    items: (list.items || []).map(f => fileRow(f, checked)),
+    expanded: checked          // 勾上的类别默认摊开，没勾的先收着（点箭头展开）
+  });
+  // 记忆是结论不是文件，默认一律留着
+  const memDetail = {
+    items: (mem.items || []).map(e=>({
+      text: e.text, tag: e.ts || '', cls: '', value: e.index, checked: false
+    })),
+    expanded: false
+  };
 
-  // 记忆清单只给一行行文字（它们是结论，不是文件）
-  const memRows = (mem.items || []).map(e=>({
-    text: e.text, tag: e.ts || '', cls: ''
-  }));
+  // 「删 / 留」不再写死：这行文案跟着勾选实时换
+  const stateLine = (on, partial)=> partial ? '部分删除' : (on ? '将被删除' : '全部保留');
 
-  const sections = [];
-  if(created.items.length){
-    // key 与上方勾选项对应：勾选「过渡/中间文件」才显示这份清单
-    sections.push({key:'created', title:'将删除 · 过渡 / 中间文件', items: created.items.map(fileRow), more: created.count});
-  }
-  if(finalOut.items.length){
-    // 无 key = 不随勾选联动，常显：让用户看清哪些结果会留下来，删得放心
-    sections.push({title:'将保留 · 最终产出（不会被删除）', items: finalOut.items.map(fileRow), more: finalOut.count});
-  }
-  if(modified.items.length){
-    sections.push({key:'modified', title:'将删除 · 任务修改过的文件', items: modified.items.map(fileRow), more: modified.count});
-  }
-  if(memRows.length){
-    sections.push({key:'memory', title:'将删除 · 任务写入的记忆', items: memRows, more: mem.count});
-  }
+  // 本次会动到多少东西：勾中的明细条数，对话记录按任务条数算
+  const pickedCount = st =>{
+    let n = 0;
+    for(const k in st.rows) n += (st.rows[k] || []).length;
+    if(st.values.history) n += c.tasks;
+    return n;
+  };
 
   let result = null;
   openModal({
     title: '清空任务',
-    sub: `将清理 ${c.tasks} 条已结束的任务。一条任务除了对话记录，还会留下磁盘文件和记忆条目，`
-       + `勾选后一并清理（正在执行的任务不受影响）。下方的文件/记忆清单会随勾选实时显示或收起。`,
+    sub: `共 ${c.tasks} 条已结束的任务。一条任务除了对话记录，还会在磁盘上留下过渡 / 中间文件`
+       + `与最终产出，并可能写入记忆条目。下面按类别列出：勾上哪一类就清哪一类，没勾的一律保留。`
+       + `正在执行的任务不受影响。`,
     options: [
       {
         key:'history', checked:true, label:'对话记录', count: c.tasks + ' 条',
-        desc:'任务列表与可回看的对话内容。清掉后侧栏不再有这条任务。'
+        stateText: stateLine,
+        desc: on => on
+          ? '任务列表与可回看的对话内容；清掉后侧栏不再有这些任务。'
+          : '保留：任务列表与对话内容原样留着。'
       },
       {
-        key:'created', checked:created.count > 0, disabled: !created.count,
-        label:'过渡 / 中间文件（保留最终产出）', count: created.count + ' 个',
-        desc: created.count
-          ? '临时文件、草稿、命令副产物这类过程产物。最终产出（报告/代码/文档）不受本项影响，始终保留。'
-          : '没有记录到过渡 / 中间文件。'
+        key:'created', checked: created.count > 0, disabled: !created.count,
+        label:'过渡 / 中间文件', count: created.count + ' 个',
+        stateText: stateLine,
+        desc: on => !created.count ? '这次没有记录到过渡 / 中间文件。'
+          : (on ? '临时文件、草稿、命令副产物这类过程产物；随本次清空一起删掉。'
+                : '保留不删：临时文件、草稿、命令副产物都留着。'),
+        detail: fileDetail(created, created.count > 0)
+      },
+      {
+        key:'final', checked:false, disabled: !finalOut.count,
+        label:'最终产出', count: finalOut.count + ' 个',
+        stateText: stateLine,
+        desc: (on, partial)=> !finalOut.count ? '这次没有记录到最终产出。'
+          : (partial ? '只删勾中的那几个，其余最终产出保留。'
+             : (on ? '报告 / 代码 / 文档这类最终成果；勾上会一起删掉，删除后不可恢复。'
+                   : '默认保留：报告 / 代码 / 文档这类最终成果不会被删除。')),
+        detail: fileDetail(finalOut, false)
       },
       {
         key:'modified', checked:false, disabled: !modified.count,
         label:'任务修改过的文件', count: modified.count + ' 个',
-        desc: modified.count
-          ? '任务动过的既有文件（默认不勾：它们可能是你原本就有的东西）。'
-          : '没有记录到被任务改动的文件。'
+        stateText: stateLine,
+        desc: (on, partial)=> !modified.count ? '这次没有记录到被任务改动的文件。'
+          : (partial ? '只删勾中的那几个，其余保留。'
+             : (on ? '任务动过的既有文件；勾上会一起删掉，删除后不可恢复。'
+                   : '默认保留（它们可能是你原本就有的东西）。')),
+        detail: fileDetail(modified, false)
       },
       {
         key:'memory', checked:false, disabled: !mem.count,
         label:'任务留下的记忆', count: mem.count + ' 条',
-        desc: mem.count
-          ? '写入工作区记忆的条目，它们会影响后续任务的判断（默认不勾，保留更稳）。'
-          : '这些任务没有写入记忆。'
+        stateText: stateLine,
+        desc: (on, partial)=> !mem.count ? '这些任务没有写入记忆。'
+          : (partial ? '只删勾中的那几条，其余记忆保留。'
+             : (on ? '写入工作区记忆的条目，勾上会删掉（它们本来会影响后续任务的判断）。'
+                   : '默认保留：后续任务还会读取这些条目。')),
+        detail: memDetail
       }
     ],
-    sections,
-    okText: '确认清理',
     danger: true,
-    note: total ? '' : '没有可清理的内容',
-    onOk: async (v)=>{
+    okTextFor: st => pickedCount(st) ? `确认清理（${pickedCount(st)} 项）` : '确认清理',
+    noteFor: st => pickedCount(st) ? '' : '还没勾选任何要清理的内容',
+    disableOkFor: st => pickedCount(st) === 0,
+    onOk: async (st)=>{
+      // 勾选结果摊平成两份清单：要删的文件路径 + 要删的记忆行号
+      const files = [].concat(st.rows.created || [], st.rows.final || [], st.rows.modified || []);
       const res = await fetch('/api/tasks',{
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
           action:'clear',
-          history: v.history, created: v.created, modified: v.modified, memory: v.memory
+          history: !!st.values.history,
+          files,
+          mem_indices: st.rows.memory || []
         })
-      }).then(x=>x.json()).catch(e=>({error:String(e)}));
+      }).then(x=>x.json()).catch(()=>({error:'连不上本地服务 ' + location.host + '，请确认它还在运行后重试'}));
       if(res.error){ toast(rect, res.error, 'bad'); return false; }
       result = res;
       return true;
@@ -2751,20 +3049,76 @@ fetch('/api/state').then(r=>r.json()).then(s=>{
 refreshModels();
 loadTasks();
 
-function checkHealth(){
-  const dot = $('ollamaDot'), txt = $('ollamaTxt');
-  fetch('/api/health').then(r=>r.json()).then(h=>{
-    const ok = !!h.ollama;
-    dot.className = 'dot ' + (ok ? 'ok' : 'bad');
-    txt.textContent = ok ? 'Ollama 已连接' : 'Ollama 无响应';
-  }).catch(()=>{ dot.className = 'dot bad'; txt.textContent = 'Ollama 无响应'; });
+function paintOllama(state, text, title){
+  const dot = $('ollamaDot'), txt = $('ollamaTxt'), meta = $('ollamaMeta');
+  dot.className = 'dot ' + state;             // ok / bad / wait
+  txt.textContent = text;
+  if(meta) meta.title = title || (state === 'ok' ? '点击打开 Ollama 服务页'
+                                                 : '点击立即重试自动拉起 Ollama');
+}
+let ollamaBusy = false;
+
+/* Ollama 是本地模型的上游。本机长期不关机，它可能被手动退出或升级时重启，
+   本地模型就静默失效了——这里发现没响应就自动拉一把（后端 ollamaguard 负责
+   找可执行文件、spawn、并等它真能应答；带冷却，不会把进程刷爆）。 */
+async function ensureOllama(force){
+  if(ollamaBusy) return;
+  ollamaBusy = true;
+  paintOllama('wait', '正在拉起 Ollama…', '正在自动拉起本机的 Ollama 服务');
+  let r = null;
+  try{
+    r = await fetch('/api/ollama/ensure',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({force: !!force})
+    }).then(x=>x.json());
+  }catch(e){
+    paintOllama('bad', 'Ollama 无响应', '连不上本地服务，无法拉起 Ollama');
+    ollamaBusy = false;
+    return;
+  }
+  ollamaBusy = false;
+  if(r && r.ok){
+    paintOllama('ok', 'Ollama 已连接', r.detail || '');
+    // 只有「这次真的把它拉起来了」才提示，本来就在跑的不打扰
+    if(r.action === 'started') toast(null, '已自动拉起 Ollama，本地模型恢复可用', 'ok');
+    return;
+  }
+  paintOllama('bad', 'Ollama 无响应', (r && r.detail) || '自动拉起失败');
+  // 冷却期内的重复尝试不弹提示，否则每 30 秒骚扰一次
+  if(r && r.action !== 'cooldown'){
+    toast(null, (r && r.detail) || '自动拉起 Ollama 失败', 'bad');
+  }
+}
+
+async function checkHealth(){
+  try{
+    const h = await apiGet('/api/health');
+    if(h.ollama){ paintOllama('ok', 'Ollama 已连接', '点击打开 Ollama 服务页'); return; }
+    if(h.ollama_auto_start === false){
+      paintOllama('bad', 'Ollama 无响应', '配置里已关闭自动拉起（ollama.auto_start: false）');
+      return;
+    }
+    // 后端刚试过（冷却中）就先别重复拉，等下一轮
+    const last = h.ollama_last || {};
+    if(last.action === 'cooldown'){
+      paintOllama('bad', 'Ollama 无响应', last.detail || '');
+      return;
+    }
+    await ensureOllama(false);
+  }catch(e){
+    paintOllama('bad', 'Ollama 无响应', (e && e.message) || '');
+  }
 }
 checkHealth();
 setInterval(checkHealth, 30000);
 setInterval(updateAIHeadTime, 1000);   // 头像行耗时实时跳动
 
 /* 左下角两个可点击入口：Ollama 服务页 / 工作区文件夹 */
-$('ollamaMeta').onclick = () => window.open(ollamaUrl, '_blank');
+$('ollamaMeta').onclick = () => {
+  // 有响应就跳服务页；没响应时点击 = 立即重试拉起（跳到一个打不开的页面没意义）
+  if($('ollamaDot').classList.contains('ok')) window.open(ollamaUrl, '_blank');
+  else ensureOllama(true);
+};
 $('wsMeta').onclick = async () => {
   const r = await fetch('/api/open-folder',{
     method:'POST', headers:{'Content-Type':'application/json'},
@@ -2874,20 +3228,25 @@ function takeAIHead(host){
   (host || log).appendChild(aiHead());
 }
 /* 全局点击代理：凡是带 data-openpath 的元素（产出文件卡片/清单行），点击就用系统默认
-   程序打开。后端 /api/open-folder 校验路径必须在工作区内，越界一律拒绝。 */
+   程序打开。后端 /api/open-folder 校验路径必须在工作区内，越界一律拒绝。
+   行内的勾选框不算「点这一行」——勾选是勾选，打开是打开。 */
 document.addEventListener('click', e=>{
   const t = e.target.closest('[data-openpath]');
   if(!t || !t.dataset.openpath) return;
+  if(e.target && e.target.tagName === 'INPUT') return;   // 点的是勾选框，别顺手开文件
   e.preventDefault();
   const body = { path: t.dataset.openpath };
   const prev = t.style.opacity;
   t.style.opacity = '.5';
+  const name = String(t.dataset.openpath).split(/[\\/]/).pop() || '';
+  // 先给一句即时反馈：系统默认程序是另开窗口的，不给反馈就像「点了没反应」
+  toast(null, `正在用系统默认程序打开 ${name}`, 'mute');
   fetch('/api/open-folder',{
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify(body)
   }).then(x=>x.json()).then(r=>{
     if(!r || r.ok === false) toast(null, (r && r.error) || '打开失败', 'bad');
-    else toast(null, r.note || '已用系统默认程序打开', 'ok');
+    else toast(null, r.note || `已打开 ${name}`, 'ok');
   }).catch(()=> toast(null, '打开失败（服务未响应）', 'bad'))
    .finally(()=>{ t.style.opacity = prev; });
 });

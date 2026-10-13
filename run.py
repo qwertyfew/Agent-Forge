@@ -31,6 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("-y", "--yes", action="store_true", help="自动批准写文件与执行命令")
     ap.add_argument("--web", action="store_true", help="启动 Web 界面")
     ap.add_argument("--port", type=int, default=8787, help="Web 界面端口，默认 8787")
+    ap.add_argument("--no-open", action="store_true",
+                    help="启动后不自动开浏览器（service.py 这类常驻托管用："
+                         "它会在崩溃重启时反复拉起，每次都弹标签页会刷屏）")
     return ap
 
 
@@ -49,12 +52,13 @@ def main() -> int:
         from webui import serve
 
         httpd, url = serve(cfg, args.yes, args.port)
-        try:
-            import webbrowser
+        if not args.no_open:
+            try:
+                import webbrowser
 
-            webbrowser.open(url)
-        except Exception:  # noqa: BLE001
-            pass
+                webbrowser.open(url)
+            except Exception:  # noqa: BLE001
+                pass
         try:
             import time
 
