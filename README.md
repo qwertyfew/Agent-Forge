@@ -175,9 +175,12 @@ start.bat --remove-autostart    # 卸载开机自启
 `start.bat` 第一次跑就会顺手登记好，之后每次登录自动把常驻服务拉起来，不需要你再操作。
 启动项里必须写**本机的绝对路径**，所以它不能进仓库，只能由入口脚本现场生成：
 
-- **Windows**：写进用户「启动」文件夹的 `AgentForge Web UI.bat`，内容就四行——
-  `cd` 到项目目录后 `start "" ".venv\Scripts\pythonw.exe" service.py`，**完全没有窗口**。
-  不需管理员、不写注册表；任务计划的 `schtasks.exe` 在某些安全策略下会被禁用，用启动文件夹更省事。
+- **Windows**：写进用户「启动」文件夹的 `AgentForge Web UI.bat`。它只负责把常驻服务拉起来
+  （`cd` 到项目目录后 `start "" ".venv\Scripts\pythonw.exe" service.py`）——**服务本身无窗口**，
+  任务栏里不会多出东西，也没有窗口可以误关。唯一代价是登录瞬间会闪过一个**极短的 cmd 窗口**，
+  那是 Windows 执行这个 `.bat` 启动器本身留下的；要做成完全零闪得建 `.lnk` 快捷方式，而创建
+  快捷方式所需的 COM 在部分安全策略收紧的机器上会被拦下，所以这里选了更稳的 `.bat`。
+  它不需管理员、不写注册表；任务计划的 `schtasks.exe` 在某些安全策略下同样会被禁用，用启动文件夹更省事。
   生成的文件是**纯 ASCII + CRLF**（`echo` 写出的编码与 cmd 当前代码页一致，即使项目路径含中文也不会错位）。
   不要了就跑 `start.bat --remove-autostart`（只删它自己写的那份启动项，不动正在跑的服务）。
 - **Linux**：写 XDG autostart 条目 `~/.config/autostart/agentforge.desktop`。
