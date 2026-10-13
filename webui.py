@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from agentforge import artifact, autonote, autoskill, ollamaguard, runcontrol
+from agentforge import artifact, autonote, autoskill, ollamaguard, reveal, runcontrol
 from agentforge.cli import CLI
 from agentforge.config import Config
 from agentforge.memory import LAYER_LABEL, MemoryStore
@@ -1677,19 +1677,15 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "文件不存在（可能已被清理）"}, 404)
             return
         try:
-            import os
-            import subprocess
-            if hasattr(os, "startfile"):
-                os.startfile(str(target))  # noqa: S606 - Windows 系统默认程序
-            else:
-                opener = "open" if sys.platform == "darwin" else "xdg-open"
-                subprocess.Popen([opener, str(target)])  # noqa: S603
-            self._json({"ok": True})
+            # 打开之后还要把窗口抬到前台：Windows 的前台锁会让后台进程开的窗口
+            # 停在后面，用户得再点一次任务栏才看得到（见 agentforge/reveal.py）。
+            front = reveal.open_path(target)
+            self._json({"ok": True, "front": front})
         except OSError:
             # 没有关联程序等打不开的情形：退一步在资源管理器里把文件定位出来，
             # 至少让用户拿到文件位置，而不是点了没反应。
             try:
-                subprocess.Popen(["explorer", "/select,", str(target)])  # noqa: S603
+                reveal.select_in_explorer(target)
                 self._json({"ok": True, "note": "没有关联的打开方式，已在资源管理器中定位文件"})
             except Exception as exc:  # noqa: BLE001
                 self._json({"ok": False, "error": str(exc)})
