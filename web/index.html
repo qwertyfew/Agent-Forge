@@ -1197,7 +1197,9 @@ const SVG = {
   spark: '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg>',
   spinner: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9"/></svg>',
   okico: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 7"/></svg>',
-  errico: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>'
+  errico: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  rectcheck: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="5"/><path d="M8.5 12.2l2.6 2.6L16 9"/></svg>',
+  rectx: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="5"/><path d="M9 9l6 6M15 9l-6 6"/></svg>'
 };
 function el(tag, cls, text){
   const n = document.createElement(tag);
@@ -2759,6 +2761,7 @@ function checkHealth(){
 }
 checkHealth();
 setInterval(checkHealth, 30000);
+setInterval(updateAIHeadTime, 1000);   // 头像行耗时实时跳动
 
 /* 左下角两个可点击入口：Ollama 服务页 / 工作区文件夹 */
 $('ollamaMeta').onclick = () => window.open(ollamaUrl, '_blank');
@@ -2824,6 +2827,7 @@ function addUser(text){
 /* AI 回复的头像行：圆形 logo + 名称 + 时间（对齐用户气泡之后，像聊天软件那样） */
 let needAIHead = false;
 let headTimeOverride = 0;   // 接管外部指派的任务时，头像时间用任务真实开始时间而不是"现在"
+let aiHeadTimeEl = null;    // 本轮头像行里的时间元素：运行中实时跳动，收尾冻结
 function aiHead(){
   const h = el('div','ai-head');
   const ava = el('span','ai-ava');
@@ -2832,10 +2836,36 @@ function aiHead(){
   const col = el('div','ai-id');
   const name = (lastStats && lastStats.model) ? lastStats.model : 'AgentForge';
   col.appendChild(el('b','ai-name', name));
-  const t = headTimeOverride ? new Date(headTimeOverride * 1000) : new Date();
-  col.appendChild(el('span','ai-time', t.getHours() + ':' + String(t.getMinutes()).padStart(2,'0')));
+  // 头像行下方的时间 = 本轮回复的总耗时（从用户发消息 / 开始执行算起），
+  // 不是某个子任务的耗时。运行中实时跳动显示「执行中 XmYs」，整段回复收尾冻结为「完成 XmYs」。
+  const base = headTimeOverride ? headTimeOverride * 1000
+            : (liveTask && liveTask.startedAt ? liveTask.startedAt * 1000 : Date.now());
+  const t = el('span','ai-time', '执行中 0m00s');
+  t.dataset.base = String(base);
+  t.dataset.done = '0';
+  aiHeadTimeEl = t;
+  col.appendChild(t);
   h.appendChild(col);
+  updateAIHeadTime();
   return h;
+}
+/* 头像行时间：运行中每帧刷新「执行中 XmYs」；done/stopped 调 freezeAIHeadTime 冻结。*/
+function updateAIHeadTime(){
+  const t = aiHeadTimeEl;
+  if(!t || t.dataset.done === '1') return;
+  const base = Number(t.dataset.base) || Date.now();
+  const sec = Math.max(0, Math.floor((Date.now() - base) / 1000));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  t.textContent = '执行中 ' + m + 'm' + String(s).padStart(2,'0') + 's';
+}
+function freezeAIHeadTime(label){
+  const t = aiHeadTimeEl;
+  if(!t) return;
+  const base = Number(t.dataset.base) || Date.now();
+  const sec = Math.max(0, Math.floor((Date.now() - base) / 1000));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  t.textContent = label + ' ' + m + 'm' + String(s).padStart(2,'0') + 's';
+  t.dataset.done = '1';
 }
 function takeAIHead(host){
   // 每轮回复只在第一个 AI 元素前插一次头像行
@@ -3069,11 +3099,12 @@ function toolHeadSummary(g){
     const n = i.querySelector('.tool-name').textContent;
     counts[n] = (counts[n]||0) + 1;
   });
-  const running = items.some(i=>i.querySelector('.tool-state').textContent === '运行中');
-  const denied  = items.some(i=>/已拒绝|未执行/.test(i.querySelector('.tool-state').textContent));
+  const running = items.some(i=>i.querySelector('.tool-state').dataset.run === '1');
+  const denied  = items.some(i=>/已拒绝|未执行|失败/.test(i.querySelector('.tool-state').textContent));
+  const kind = g.dataset.kind || 'tool';
   const head = g.querySelector('.tool-head');
   const ico = head.querySelector('.tool-ico');
-  ico.innerHTML = running ? SVG.spinner : (denied ? SVG.errico : SVG.okico);
+  ico.innerHTML = running ? SVG.spinner : (denied ? SVG.rectx : SVG.rectcheck);
   ico.classList.toggle('spin', running);
   const nameEl = head.querySelector('.tool-name');
   const argEl  = head.querySelector('.tool-arg');
@@ -3081,25 +3112,33 @@ function toolHeadSummary(g){
     nameEl.textContent = items[0].querySelector('.tool-name').textContent;
     argEl.textContent  = items[0].querySelector('.tool-arg').textContent;
   }else{
-    nameEl.textContent = items.length + ' 次工具调用';
+    nameEl.textContent = items.length + (kind === 'skill' ? ' 次技能调用' : ' 次工具调用');
     argEl.textContent  = Object.entries(counts).map(([n,c])=> n + (c>1 ? ' ×'+c : '')).join(' · ');
   }
   const st = head.querySelector('.tool-state');
-  st.textContent = running ? '运行中' : (denied ? '有异常' : '完成');
+  st.textContent = running ? (kind === 'skill' ? '执行中' : '调用中')
+                            : (denied ? '有异常' : (kind === 'skill' ? '已执行' : '已调用'));
   st.className = 'tool-state ' + (running ? '' : (denied ? 'deny' : 'ok'));
 }
 function addTool(name, args, parent){
   closeThinking(); hideShimmer();
+  // 技能调用（use_skill）与工具调用区分展示：运行中分别「执行中 / 调用中」，
+  // 完成后分别「已执行 / 已调用」。技能卡显示被调用的技能名而非 "use_skill"。
+  const isSkill = name === 'use_skill';
+  const kind = isSkill ? 'skill' : 'tool';
+  const dispName = isSkill ? ((args && args.name) || 'skill') : name;
   const host = parent || log;
   let g = (!parent && curToolGroup && curToolGroup.parentNode === host) ? curToolGroup : null;
   if(!g){
     if(!parent) takeAIHead(log);              // 一上来就是工具（先做后想），头像行插在组前
     g = el('div','toolrun');
+    g.dataset.kind = kind;
     const head = el('div','tool-head');
     head.appendChild(el('span','tool-ico', ''));
-    head.appendChild(el('span','tool-name', name));
+    head.appendChild(el('span','tool-name', dispName));
     head.appendChild(el('span','tool-arg', shortArgs(args)));
-    const state = el('span','tool-state','运行中');
+    const state = el('span','tool-state', kind === 'skill' ? '执行中' : '调用中');
+    state.dataset.run = '1';
     head.appendChild(state);
     head.insertAdjacentHTML('beforeend', SVG.chev);
     const items = el('div','tool-items');
@@ -3114,9 +3153,10 @@ function addTool(name, args, parent){
   ico.innerHTML = SVG.spinner;
   ico.classList.add('spin');
   ih.appendChild(ico);
-  ih.appendChild(el('span','tool-name', name));
+  ih.appendChild(el('span','tool-name', dispName));
   ih.appendChild(el('span','tool-arg', shortArgs(args)));
-  const state = el('span','tool-state','运行中');
+  const state = el('span','tool-state', kind === 'skill' ? '执行中' : '调用中');
+  state.dataset.run = '1';
   ih.appendChild(state);
   item.appendChild(ih);
   const body = el('div','tool-body');
@@ -3861,23 +3901,14 @@ function handleTaskEvent(ev, data){
         ln.cur.text += data.text;
         ln.cur.body.innerHTML = md(ln.cur.text);
         lastSeg = ln.cur;                        // 泳道内容也算本轮回复的正文段
-        // 分栏内同样遵守「输出在前、思考在后」
-        if(tb && !tb.moved && tb.d.parentNode){
-          ln.cur.m.insertAdjacentElement('afterend', tb.d);
-          tb.moved = true;
-        }
       }else{
         const tb = closeThinking();
         if(!cur) cur = addAssistant();
         curToolGroup = null;                    // 正式输出断开工具组：下一批工具另起一组
         cur.text += data.text;
         cur.body.innerHTML = md(cur.text);
-        lastSeg = cur;                           // 记住最后一段有正文的输出，complete 时挂工具条
-        // 思考挪到本段正式输出之后：输出 → 思考 → (下一次操作)
-        if(tb && !tb.moved && tb.d.parentNode){
-          cur.m.insertAdjacentElement('afterend', tb.d);
-          tb.moved = true;
-        }
+        lastSeg = cur;                           // 记住最后一段有正文的输出，done 时挂工具条
+        // 按生成顺序展示：思考块本就在输出之前（thinking 先于 delta 渲染），不挪动。
       }
       scrollBottom();
     }
@@ -3897,17 +3928,23 @@ function handleTaskEvent(ev, data){
       const card = ln ? ln.tool : curTool;
       if(card){
         card.body.textContent = data.output;
+        const kind = card.t.dataset.kind || 'tool';
+        const itemIco = card.item.querySelector('.tool-ico');
+        card.state.dataset.run = '0';        // 标记非运行中，供 toolHeadSummary 判定
         if(data.failed || /^\[错误\]/.test(data.output)){
           card.item.classList.add('denied');
           card.state.textContent = '失败';
           card.state.className = 'tool-state deny';
+          if(itemIco){ itemIco.innerHTML = SVG.rectx; itemIco.classList.remove('spin'); }
         }else if(/^\[已拒绝\]/.test(data.output)){
           card.item.classList.add('denied');
           card.state.textContent = '已拒绝';
           card.state.className = 'tool-state deny';
+          if(itemIco){ itemIco.innerHTML = SVG.rectx; itemIco.classList.remove('spin'); }
         }else{
-          card.state.textContent = '完成';
+          card.state.textContent = kind === 'skill' ? '已执行' : '已调用';
           card.state.className = 'tool-state ok';
+          if(itemIco){ itemIco.innerHTML = SVG.rectcheck; itemIco.classList.remove('spin'); }
         }
         toolHeadSummary(card.t);
         if(ln) ln.tool = null; else curTool = null;
@@ -3980,23 +4017,25 @@ function handleTaskEvent(ev, data){
       attachMsgFoot(lastSeg || undefined);   // 已生成的部分回复也带上工具条
       lastSeg = null;
       cur = null; curTool = null;
+      freezeAIHeadTime('已停止');             // 头像行耗时冻结
       addPillNote(`已停止：${esc(data.reason || '用户停止')}`
         + (data.total > 1 ? `（完成 ${data.steps}/${data.total} 步，已完成的产出保留在上下文里）` : ''));
       endLiveTask('stopped');
     }
     else if(ev === 'complete'){
       dropLanes();
-      // 回复真正收尾：复制/重新回答工具条挂在本轮最后一段有正文的输出上。
-      // 只在这里挂一次——回答过程中绝不出现（history 事件不再挂）。
-      attachMsgFoot(lastSeg);
-      lastSeg = null;
-      cur = null;
+      // 工具条不在 complete 挂：多步 / 多 agent 任务里 complete 可能早于整段回复真正收尾，
+      // 提前挂会出现「回答没完、工具条先出来」。工具条只在 done（整段回复结束）时挂一次。
       if(data.multi) for(let i=1;i<=data.steps;i++) markPlanStep(i,'done');
       if(liveTask) liveTask.stepIndex = data.steps, liveTask.stepTotal = data.steps;
+      cur = null;
+      // 注意：不在这里清空 lastSeg —— 留着给 done 用它挂整段回复的工具条
     }
     else if(ev === 'done'){
       dropLanes();
-      attachMsgFoot();
+      attachMsgFoot(lastSeg);   // 整段回复收尾：复制/重新回答/朗读工具条只挂这一次
+      lastSeg = null;
+      freezeAIHeadTime('完成');  // 头像行耗时冻结为「完成 XmYs」
       hideShimmer(); closeThinking();
       // 收尾把本任务的产出文件做成卡片挂在回复末尾（有产出才挂）
       if(liveTask && liveTask.id){
