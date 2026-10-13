@@ -2671,6 +2671,20 @@ function adoptRunning(){
   syncComposer();
 }
 
+/* 服务端的第一帧（task 事件）带回了台账里记的真实开始时间：把头像行的计时基准
+   校准到它上面。本地基准是「按下回车那一刻」，与它只差一个网络往返；校准之后，
+   页面上这条回复的计时与侧栏、台账是同一个口径（谁先谁后都不吃亏）。 */
+function rebaseAIHeadTime(sec){
+  const t = aiHeadTimeEl;
+  if(!t || t.dataset.done === '1') return;
+  const s = Number(sec) || 0;
+  if(s <= 0) return;
+  const target = s * 1000;
+  if(Math.abs((Number(t.dataset.base) || 0) - target) < 1500) return;   // 差得不多就别抖一下
+  t.dataset.base = String(target);
+  updateAIHeadTime();
+}
+
 function beginLiveTask(info){
   liveTask = {
     id: info.id || '', startedAt: info.created_at || (Date.now()/1000),
@@ -2678,6 +2692,7 @@ function beginLiveTask(info){
     progress: '准备中…', models: [], stopping: false,
     round: 0, stepIndex: 0, stepTotal: 0
   };
+  rebaseAIHeadTime(info.created_at);
   renderRunBar();
   syncComposer();
 }
@@ -2822,13 +2837,13 @@ function taskPrompt(task){
 /* 清空对话区（换任务 / 新对话）时必须一起复位的实时渲染状态。
    这些变量都指着刚被删掉的那批 DOM，不复位的话后面的事件会往脱离文档的节点里写：
    流明明还在跑，界面却是空的（而且看起来像「什么都没发生」）。
-   needAIHead 刻意留成 true——清场意味着「接下来还有内容要画」，
-   下一段输出仍然该带上头像行与计时（跑一半清屏后接着看尤其明显）。 */
+   清场之后「没有正在进行中的回复」，所以 replySettled 置 true——
+   下一条消息会在 beginReply 里把它重新打开，而在此之前不许挂工具条。 */
 function resetRenderState(){
   cur = null; curTool = null; curToolGroup = null;
   lastSeg = null; lastStats = null; lastAssign = null;
-  aiHeadTimeEl = null;
-  needAIHead = true;
+  aiHeadEl = null; aiHeadTimeEl = null;
+  replyStartAt = 0; replySettled = true;
   dropLanes();
 }
 
@@ -3254,16 +3269,32 @@ function addUser(text){
   m.appendChild(userCopyBtn(text));            // 先按钮后气泡，气泡右对齐时按钮落在其左下角
   m.appendChild(el('div','bub', text));
   log.appendChild(m);
-  needAIHead = true;                            // 下一个 AI 元素前要带头像行（输出→头像→时间→内容）
   lastSeg = null;                               // 新一轮：上一轮的「最后一段」作废
   curToolGroup = null;                          // 新一轮对话：上一轮的工具组封组
+  beginReply();                                 // 头像行与计时基准：提问落盘的这一刻就立起来
   scrollBottom();
   rebuildRail();
 }
 /* AI 回复的头像行：圆形 logo + 名称 + 时间（对齐用户气泡之后，像聊天软件那样） */
-let needAIHead = false;
+let aiHeadEl = null;        // 本轮头像行节点（提问落盘时立刻建，见 beginReply）
 let headTimeOverride = 0;   // 接管外部指派的任务时，头像时间用任务真实开始时间而不是"现在"
 let aiHeadTimeEl = null;    // 本轮头像行里的时间元素：运行中实时跳动，收尾冻结
+let replyStartAt = 0;       // 本轮提问落盘的时刻——计时基准的本地兜底
+let replySettled = false;   // 本轮回复是否已收尾（决定「复制/重新回答/朗读」能否存在）
+
+/* 本轮回复的「开场」：头像行与计时基准在**提问落盘的这一刻**就位。
+   刻意不看任何后端事件——模型首轮跑得慢、只吐胶囊、甚至一个字都不吐，
+   头像行照样在、计时照样从「人按下回车」算起。
+   历史教训：头像行原本是 lazy 的（`takeAIHead` 挂在 8 个渲染函数里，
+   谁先出现谁负责插），于是「头像与计时什么时候出现」被交给了
+   「模型什么时候吐第一个 token」——那是最不该由模型时序决定的东西。
+   同一件事也栽在 `addUser` 的三个调用点上（第 17 步），这里是把同一条
+   思路用到头像行：**开场是确定的，就该在确定的时刻发生**。 */
+function beginReply(){
+  replySettled = false;
+  replyStartAt = Date.now();
+  log.appendChild(aiHead());
+}
 function aiHead(){
   const h = el('div','ai-head');
   const ava = el('span','ai-ava');
@@ -3275,15 +3306,25 @@ function aiHead(){
   // 头像行下方的时间 = 本轮回复的总耗时（从用户发消息 / 开始执行算起），
   // 不是某个子任务的耗时。运行中实时跳动显示「执行中 XmYs」，整段回复收尾冻结为「完成 XmYs」。
   const base = headTimeOverride ? headTimeOverride * 1000
-            : (liveTask && liveTask.startedAt ? liveTask.startedAt * 1000 : Date.now());
+            : (liveTask && liveTask.startedAt ? liveTask.startedAt * 1000
+            : (replyStartAt || Date.now()));
   const t = el('span','ai-time', '执行中 0m00s');
   t.dataset.base = String(base);
   t.dataset.done = '0';
   aiHeadTimeEl = t;
+  aiHeadEl = h;
   col.appendChild(t);
   h.appendChild(col);
   updateAIHeadTime();
   return h;
+}
+/* 本轮的头像行若已在（提问落盘时建的），这里什么都不做；
+   只有没经过 addUser 就直接画 AI 元素的路径才需要补一个。
+   保留这个幂等入口而不是删掉调用点，是为了让「谁负责插头像行」不再成为
+   一个需要各调用点记住的约定——忘了带，也不会少一行。 */
+function takeAIHead(host){
+  if(aiHeadEl && aiHeadEl.isConnected) return;
+  (host || log).appendChild(aiHead());
 }
 /* 头像行时间：运行中每帧刷新「执行中 XmYs」；done/stopped 调 freezeAIHeadTime 冻结。*/
 function updateAIHeadTime(){
@@ -3294,41 +3335,48 @@ function updateAIHeadTime(){
   const m = Math.floor(sec / 60), s = sec % 60;
   t.textContent = '执行中 ' + m + 'm' + String(s).padStart(2,'0') + 's';
 }
-/* 头像行时间：运行中每帧刷新「执行中 XmYs」；done/stopped 调 freezeAIHeadTime 冻结。
-   secOverride 传数字时直接用（回看历史时用任务台账里记的真实耗时，比拿「现在」去减
-   一个早已过期的基准准确得多）。*/
-function freezeAIHeadTime(label, secOverride){
-  const t = aiHeadTimeEl;
-  if(!t) return;
+/* 冻结某一个头像行的时间。secOverride 传数字时直接用（回看历史时用任务台账里
+   记的真实耗时，比拿「现在」去减一个早已过期的基准准确得多）。
+   拆出「对某个元素」的版本，是因为回看一条多轮任务时画面上有多个头像行，
+   而 aiHeadTimeEl 只指着最后那一行（见 freezeHeadFor）。 */
+function freezeTimeEl(el2, label, secOverride){
+  if(!el2) return;
   let sec;
   if(typeof secOverride === 'number' && isFinite(secOverride) && secOverride >= 0){
     sec = Math.floor(secOverride);
   }else{
-    const base = Number(t.dataset.base) || Date.now();
+    const base = Number(el2.dataset.base) || Date.now();
     sec = Math.max(0, Math.floor((Date.now() - base) / 1000));
   }
   const m = Math.floor(sec / 60), s = sec % 60;
-  t.textContent = label + ' ' + m + 'm' + String(s).padStart(2,'0') + 's';
-  t.dataset.done = '1';
+  el2.textContent = label + ' ' + m + 'm' + String(s).padStart(2,'0') + 's';
+  el2.dataset.done = '1';
+}
+/* 头像行时间：运行中每帧刷新「执行中 XmYs」；收尾时冻结（见 settleReply）。*/
+function freezeAIHeadTime(label, secOverride){
+  freezeTimeEl(aiHeadTimeEl, label, secOverride);
 }
 /* 回看一条已结束的任务：头像行时间按台账冻结。
-   aiHead() 的初始文案是「执行中 0m00s」，而实时路径只在 done / stopped 时冻结——
+   aiHead() 的初始文案是「执行中 0m00s」，而实时路径只在收尾时冻结——
    回看不冻结的话，一条结束很久的回复会永远显示「执行中」（跟工具组头卡在
    「调用中」是同一类错觉）。耗时优先用台账里记的真实值，比拿「现在」减一个
    早已过期的基准准得多。任务还在跑时不冻结（那条路走实时流）。
    收口成一个函数：回看、摘要、以及将来任何「画一条已结束的任务」都走它，
-   免得各写各的又出现口径不一。 */
+   免得各写各的又出现口径不一。
+   **画面上每一行都要冻**：一条多轮任务回看时有多个头像行（每轮 addUser 建一个），
+   而 aiHeadTimeEl 只指着最后那一行——只冻它，前面几轮会永远停在「执行中 0m00s」。
+   台账里没有「每轮耗时」，就统一按任务总耗时冻，口径一致，也不会撒谎成 0。 */
 function freezeHeadFor(task){
   const st = (task && task.status) || '';
   if(st === 'running') return;
   const label = ({ done:'完成', stopped:'已停止', error:'已中断' })[st] || '完成';
-  freezeAIHeadTime(label, task && task.duration);
-}
-function takeAIHead(host){
-  // 每轮回复只在第一个 AI 元素前插一次头像行
-  if(!needAIHead) return;
-  needAIHead = false;
-  (host || log).appendChild(aiHead());
+  const sec = task && task.duration;
+  const heads = log.querySelectorAll('.ai-head .ai-time');
+  if(heads.length){
+    heads.forEach(el2=>{ if(el2.dataset.done !== '1') freezeTimeEl(el2, label, sec); });
+    return;
+  }
+  freezeAIHeadTime(label, sec);
 }
 /* 全局点击代理：凡是带 data-openpath 的元素（产出文件卡片/清单行），点击就用系统默认
    程序打开。后端 /api/open-folder 校验路径必须在工作区内，越界一律拒绝。
@@ -3695,12 +3743,75 @@ async function copyToClipboard(text){
   }catch(e){ return false; }
 }
 
+/* ============ 一条回复的收尾：唯一入口 ============
+   复制 / 重新回答 / 朗读工具条只属于「完整回复」，所以它挂不挂、什么时候挂，
+   由「这轮回复结束了没有」这一件事决定——而这句判断收在 settleReply 一处。
+   历史教训两条：
+     ① 工具条曾挂在 history 事件上，而 webui 对每轮 assistant 都发 history，
+        于是回答中途就冒出按钮；
+     ② error 那条路（模型调用失败、连接断）既没冻结头像行、也没落定工具，
+        出错的回复永远停在「执行中」；而 done 那条路一视同仁写「完成」，
+        把出错的也写成完成——**结局由「最后收到哪个事件」决定**是错的，
+        该由「结局本身」决定。
+   现在的规矩：done / stopped / error / 流意外结束，四条路都走 settleReply(status)，
+   它按结局决定标签、工具落定口径与工具条。收尾之后流程若又动起来（多步任务的
+   后续步骤、将来任何补写），unsettleReply 立刻把工具条撤回去——宁可晚一点有，
+   不要早一点有。 */
+const SETTLE_LABEL = { done:'完成', stopped:'已停止', error:'已中断' };
+function settleReply(status){
+  const st = SETTLE_LABEL[status] ? status : 'done';
+  replySettled = true;
+  finalizeRunningTools(st === 'error');   // 中断：把还在转圈的工具标成「中断」
+  // 一个字都没吐（连接一上来就断）：把空头像行收掉，别留一个孤零零的「已中断」
+  if(st === 'error' && aiHeadEl && aiHeadEl.isConnected && !replyHasContent()){
+    aiHeadEl.remove(); aiHeadEl = null; aiHeadTimeEl = null;
+  }else{
+    freezeAIHeadTime(SETTLE_LABEL[st]);
+  }
+  hideShimmer(); closeThinking();
+  attachMsgFoot(lastSeg || undefined);
+  lastSeg = null;      // 本条已入账；下一次收尾会用新的「最后一段」
+  curTool = null;      // 工具卡轮次结束
+  // 注意**不清 cur**：若收尾之后还有内容接上来（多步任务的后续步骤），
+  // 应当接着这一段往下写，而不是凭空多开一个气泡。曾经因为这里清了 cur，
+  // 续写变成新节点、旧节点上的工具条再也撤不掉（tools/test_reply_flow.mjs 用例 C 抓的）。
+  return st;
+}
+/* 流程又动起来了（又一段思考 / 正文 / 工具）：把「已收尾」连同它带来的工具条
+   一起撤回。多步任务的步骤边界、以及任何「先给个阶段性答复再继续」的路径，
+   都会走到这里——不然按钮会在回答中途挂出来。
+   撤销按 **DOM** 找，不靠变量记「工具条挂在谁身上」：变量会因收尾路径不同而漏
+   （done 清过 lastSeg / cur，靠变量撤就一个都撤不掉）。 */
+function unsettleReply(){
+  if(!replySettled) return;
+  replySettled = false;
+  log.querySelectorAll('.msg-foot').forEach(f => f.remove());
+  if(aiHeadTimeEl && aiHeadTimeEl.isConnected){
+    aiHeadTimeEl.dataset.done = '0';   // 这一轮又没结束了：计时回到「执行中」
+    updateAIHeadTime();                // 立刻反映，不等下一秒的 tick
+  }
+}
+/* 本轮头像行之后有没有真的画出过内容（思考 / 正文 / 工具卡…）。
+   用 DOM 问，而不是维护一个「记得设置」的标志——忘了设置就是又一次口径不一。 */
+function replyHasContent(){
+  if(!aiHeadEl || !aiHeadEl.isConnected) return !!(lastSeg || cur);
+  let n = aiHeadEl.nextElementSibling;
+  while(n){
+    if(!n.classList.contains('pillnote')) return true;   // 胶囊不算内容
+    n = n.nextElementSibling;
+  }
+  return false;
+}
+
 function attachMsgFoot(seg){
-  /* 复制/重新回答/朗读工具条：只属于「完整回复」——只在回复真正收尾时挂
-     （complete/stopped/历史回看）。之前挂在 history 事件上，而 webui 对每轮
-     assistant 都发 history，导致回答中途就冒出工具条。 */
+  /* 复制/重新回答/朗读工具条：只属于「完整回复」。
+     回看（viewingHistory）时整条历史本来就是完整的，不受收尾状态约束。 */
+  if(!replySettled && !viewingHistory) return;
   const c = seg || cur;
-  if(!c || c.foot) return;
+  if(!c || !c.m) return;
+  // 防重复用 **DOM** 问，不用内存标志：标志会在「撤回 → 重挂」的来回里留下脏值
+  // （撤回时手上只有父元素，拿不到那个 JS 对象），于是重挂被自己挡掉。
+  if(c.m.querySelector(':scope > .msg-foot')) return;
   const text = c.text;
   if(!text || !text.trim()) return;      // 纯工具轮次没有正文，不加工具条
   const foot = el('div','msg-foot');
@@ -3754,8 +3865,7 @@ function attachMsgFoot(seg){
   meta.title = '本条回复的预估 token 消耗与所用模型';
   foot.appendChild(meta);
 
-  c.foot = foot;
-  c.m.appendChild(foot);
+  c.m.appendChild(foot);                 // 挂上去就算数；要不要再挂由 DOM 说话
   lastStats = null;                      // 本条已入账，累计器清零给下一条用
   scrollBottom();
 }
@@ -3780,8 +3890,11 @@ async function regenerate(){
   }else{
     log.innerHTML = '';
   }
-  cur = null; curTool = null;
+  // 清场（含刚被删掉的头像行）后把渲染状态复位，并重新立起本轮的头像行与计时——
+  // 「重新回答」也是回答：头像行、计时、收尾口径都该跟第一次一模一样。
+  resetRenderState();
   history = hist;
+  beginReply();
   setBusy(true);
   await streamChat(prompt, hist);
 }
@@ -4372,6 +4485,7 @@ function handleTaskEvent(ev, data){
     }
     else if(ev === 'thinking'){
       hideShimmer();
+      unsettleReply();                          // 又开始动了：撤回可能已挂上的「收尾」状态
       curToolGroup = null;                      // 新一轮思考开始：之前的工具组封组
       const ln = laneOf(data.task_id);
       if(ln){ addLaneThinking(ln).push(data.text); }
@@ -4384,6 +4498,7 @@ function handleTaskEvent(ev, data){
     }
     else if(ev === 'delta'){
       hideShimmer();
+      unsettleReply();                          // 还在产出正文：这轮没结束
       const ln = laneOf(data.task_id);
       if(ln){
         // 并行分栏：这一路输出只进自己那一列，和另一路互不干扰
@@ -4404,6 +4519,7 @@ function handleTaskEvent(ev, data){
       scrollBottom();
     }
     else if(ev === 'tool_start'){
+      unsettleReply();                          // 还在调工具：这轮没结束
       const ln = laneOf(data.task_id);
       if(ln){
         ln.cur = null;
@@ -4502,14 +4618,10 @@ function handleTaskEvent(ev, data){
       // 挂了就会出现「回答还没完，工具条先出来了」。工具条只在 done/stopped/回看时挂。
       history = data.messages; updateCompactBtn(); updateContextMeter(history, threshold);
     }
-    else if(ev === 'error'){ dropLanes(); finalizeRunningTools(true); addError(data.message); }
+    else if(ev === 'error'){ dropLanes(); settleReply('error'); addError(data.message); }
     else if(ev === 'stopped'){
       dropLanes();
-      finalizeRunningTools(false);
-      attachMsgFoot(lastSeg || undefined);   // 已生成的部分回复也带上工具条
-      lastSeg = null;
-      cur = null; curTool = null;
-      freezeAIHeadTime('已停止');             // 头像行耗时冻结
+      settleReply('stopped');                 // 冻结头像行 + 给已生成的部分回复挂工具条
       addPillNote(`已停止：${esc(data.reason || '用户停止')}`
         + (data.total > 1 ? `（完成 ${data.steps}/${data.total} 步，已完成的产出保留在上下文里）` : ''));
       endLiveTask('stopped');
@@ -4517,19 +4629,16 @@ function handleTaskEvent(ev, data){
     else if(ev === 'complete'){
       dropLanes();
       // 工具条不在 complete 挂：多步 / 多 agent 任务里 complete 可能早于整段回复真正收尾，
-      // 提前挂会出现「回答没完、工具条先出来」。工具条只在 done（整段回复结束）时挂一次。
+      // 提前挂会出现「回答没完、工具条先出来」。落定口径只有 settleReply 一处。
       if(data.multi) for(let i=1;i<=data.steps;i++) markPlanStep(i,'done');
       if(liveTask) liveTask.stepIndex = data.steps, liveTask.stepTotal = data.steps;
       cur = null;
-      // 注意：不在这里清空 lastSeg —— 留着给 done 用它挂整段回复的工具条
+      // 注意：不在这里清空 lastSeg —— 留着给 settleReply（done 时）挂整段回复的工具条
     }
     else if(ev === 'done'){
       dropLanes();
-      finalizeRunningTools(false);   // 收尾后不该再有转圈的工具
-      attachMsgFoot(lastSeg);   // 整段回复收尾：复制/重新回答/朗读工具条只挂这一次
-      lastSeg = null;
-      freezeAIHeadTime('完成');  // 头像行耗时冻结为「完成 XmYs」
-      hideShimmer(); closeThinking();
+      // 整段回复收尾：落定工具、冻结头像行、挂「复制/重新回答/朗读」工具条，一次做完
+      settleReply('done');
       // 收尾把本任务的产出文件做成卡片挂在回复末尾（有产出才挂）
       if(liveTask && liveTask.id){
         fetch('/api/tasks?id=' + encodeURIComponent(liveTask.id))
@@ -4589,6 +4698,10 @@ async function streamChat(text, hist){
   }catch(e){
     addError('连接中断：' + e);
   }
+  // 流读完 = 这一轮流程走完了。终态事件（done / stopped / error）正常会先到；
+  // 若没等到（服务进程崩了、连接被掐），由这里兜底收尾——「收尾」是「流程结束」
+  // 这件事的产物，不该依赖某个事件必须到达。回复本来就已收尾时什么都不做。
+  if(!replySettled) settleReply('error');
   hideShimmer(); closeThinking();
   setBusy(false);
 }

@@ -172,11 +172,23 @@ await flush();
   check('输入框里的草稿没被清掉（只换画面，不动用户正在写的东西）',
     input.value === '我正在打字', input.value);
 
-  // 第一段输出到达：头像行与计时是挂在提问之后的，这时才落位
+  // 头像行与计时在**提问落盘的这一刻**就该在——不用等第一段输出到达。
+  // （这条曾经是反的：头像行 lazy 挂在 8 个渲染函数里，谁先出现谁负责插，
+  //   于是「什么时候出现」被交给了「模型什么时候吐第一个 token」。）
+  check('头像行与计时在提问落盘时就位（没等任何 AI 事件）',
+    log.querySelectorAll('.ai-head').length === 1,
+    `头像行数=${log.querySelectorAll('.ai-head').length}`);
+  check('头像行紧跟在提问气泡之后',
+    kids()[0] === 'msg-user' && kids()[1] === 'ai-head', kids().join(' | '));
+
+  // 第一段输出到达：头像行本就在提问之后，这里确认它在 AI 内容之前
   af.handleTaskEvent('thinking', { text: '先查一下…' });
   check('提问之后紧跟头像行', kids()[1] === 'ai-head', kids().join(' | '));
   check('头像行在第一条 AI 内容之前',
     kids()[0] === 'msg-user' && kids()[2] === 'think-plain', kids().join(' | '));
+  check('头像行只有一个（没被后到的 AI 元素又插一个）',
+    log.querySelectorAll('.ai-head').length === 1,
+    `头像行数=${log.querySelectorAll('.ai-head').length}`);
   const timeEl = log.querySelector('.ai-head .ai-time');
   check('头像行带计时，且基准是任务真正的开始时间（不是「现在」）',
     timeEl && timeEl.dataset.base === String(t0 * 1000),

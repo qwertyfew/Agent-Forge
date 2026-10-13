@@ -13,6 +13,15 @@
     2. 任务里**从未**抓过一手来源（fetch_url / fetch_json / browser_snapshot）
     3. 最终总结里出现了外部事实的量化或时效性措辞（数字、版本、日期、star/fork…）
 
+**3 的补充（背景：同一批三跑的 A 组）**：它通篇是定性转述——「10 月初走红」
+这种说法一个阿拉伯数字都没有，于是旧判据静默放行。**「没写数字」不等于「有据」**，
+时效性说法同样是转述。所以第 3 条扩成两路，命中任一即可：
+
+    3a. 量化措辞（数字 / 版本 / 年月日）——判据在 _EXTERNAL_CLAIM；
+    3b. 时效性措辞（最近 / 月初 / 刚发布 / 最新版…）——**且**总结确实在谈搜过的
+        那个东西（从 web_search 的 query 里抽实词比对）。这一层附带的「谈的是
+        搜过的东西」条件，是为了不让本地任务里的「最近改的那块代码」误伤。
+
 **第四道 · 本机事实**（背景：端到端实测）：让它「列出工作区根目录下的文件」，
 25 秒、**0 次工具调用**，答复里凭空列着 `agent-forge.json` / `core/` / `ui/` /
 `venv/`——这些在工作区里都不存在。外部检索有闸门，本机检索却没有。
@@ -37,6 +46,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 # 联网搜索类工具：只提供「转述」（别人的摘要），不能作为事实依据。
@@ -123,9 +133,112 @@ def external_claim_hits(summary: str, cap: int = MAX_HITS) -> list[str]:
     return hits
 
 
+# ---------------------------------------------------------------------------
+# 时效性定性转述：没有数字，也还是「转述」
+# ---------------------------------------------------------------------------
+# 「10 月初走红」「最近刚发布的那个版本」——一个阿拉伯数字都没有，旧判据（只认
+# 数字 / 年月）静默放行。可它和「star 已达 1w+」是同一个东西：都是把别人摘要里的
+# 说法当结论写出来。所以要认时效性措辞，而不是只认数字。
+_TIMELINESS_RX = re.compile(
+    r"(?:最近|近期|日前|前些天|前几天|这两天|这段时间|本周|这周|上周|本月|这个月|上个月"
+    r"|月初|月底|上旬|中旬|下旬|今年|去年|刚发布|刚刚发布|刚上线|刚更新|刚推出|刚放出"
+    r"|最新版本|最新版|新版|新版本|新发布|新上线|近期更新|刚刚|才发布|近日)"
+)
+
+_WORD_EN = re.compile(r"[A-Za-z][A-Za-z0-9_.+-]{1,}")
+_CJK_SEG = re.compile(r"[\u4e00-\u9fff]{2,}")
+
+# 高频泛词：出现在几乎任何任务书里，不指向「要查的那个东西」，比对时要滤掉，
+# 否则「命中搜索词」这个条件会退化成恒真。
+_TERM_STOP = {
+    "项目", "东西", "什么", "怎么", "介绍", "查询", "一下", "帮我", "看看", "那个", "这个",
+    "资料", "信息", "知道", "了解", "关于", "情况", "相关", "内容", "上面", "下面", "以及",
+    "可以", "需要", "要求", "工作", "使用", "进行", "它是", "是什", "是一", "一个", "一下",
+}
+
+
+def _terms_of(text: str) -> set[str]:
+    """把一段文字切成比对用的「实词」（英文词 + 中文词段与二元组，去泛词）。"""
+    t = str(text or "")
+    out: set[str] = set()
+    for w in _WORD_EN.findall(t):
+        out.add(w.lower())
+    for seg in _CJK_SEG.findall(t):
+        if seg not in _TERM_STOP:
+            out.add(seg)
+        for i in range(len(seg) - 1):
+            g = seg[i:i + 2]
+            if g not in _TERM_STOP:
+                out.add(g)
+    return {x for x in out if x not in _TERM_STOP}
+
+
+def search_queries(convo: list[dict] | None) -> list[str]:
+    """从对话历史里取出所有联网搜索用过的查询串（工具调用的参数，不是模型自报）。"""
+    out: list[str] = []
+    for m in convo or []:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        for tc in (m.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            name = fn.get("name") or tc.get("name") or ""
+            if name not in SEARCH_TOOLS:
+                continue
+            args = fn.get("arguments")
+            if args is None:
+                args = tc.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except (ValueError, TypeError):
+                    args = {}
+            if isinstance(args, dict):
+                q = args.get("query") or args.get("q") or ""
+                if str(q).strip():
+                    out.append(str(q))
+    return out
+
+
+def timeliness_claim_hits(summary: str, convo: list[dict] | None,
+                          cap: int = MAX_HITS) -> list[str]:
+    """总结里的时效性措辞，且**总结确实在谈搜过的那个东西**时才算命中。
+
+    只认措辞会把本地任务误伤（「最近改的那块代码」也是「最近」），所以要求
+    总结与某次搜索的查询串有实词交集——用过搜索 + 谈的又是搜过的东西，
+    这时说「最近」才是在转述外部事实。
+    """
+    s = str(summary or "")
+    if not s:
+        return []
+    qterms: set[str] = set()
+    for q in search_queries(convo):
+        qterms |= _terms_of(q)
+    if not qterms:
+        return []
+    if not (qterms & _terms_of(s)):
+        return []
+    hits: list[str] = []
+    seen: set[str] = set()
+    for m in _TIMELINESS_RX.finditer(s):
+        k = m.group(0)
+        if k in seen:
+            continue
+        seen.add(k)
+        hits.append(k)
+        if len(hits) >= cap:
+            break
+    return hits
+
+
 def needs_external_note(summary: str, convo: list[dict] | None) -> list[str]:
-    """是否需要追加「转述·未核实」声明；需要就返回命中片段，否则空表。"""
+    """是否需要追加「转述·未核实」声明；需要就返回命中片段，否则空表。
+
+    两路判据命中任一即可：量化措辞（数字 / 年月日），或时效性措辞 + 谈的是搜过的
+    东西。后面两个「没抓一手来源」的否决条件对两路一视同仁。
+    """
     hits = external_claim_hits(summary)
+    if not hits:
+        hits = timeliness_claim_hits(summary, convo)
     if not hits:
         return []
     if not ran_search(convo):
@@ -140,7 +253,8 @@ def external_unverified_block(hits: list[str]) -> str:
     lines = [
         "【系统侧核查】本回复含来自联网检索的外部事实，但整个任务没有抓取过任何"
         "一手来源（`fetch_url` / `fetch_json` / `browser_snapshot`），下列内容属"
-        "「转述 · 未经核实」，请勿直接采信：",
+        "「转述 · 未经核实」，请勿直接采信。**时效性说法同样是转述**——「最近」"
+        "「月初」这类词和具体数字一样，需要一手来源支撑：",
     ]
     lines += [f"- {h}" for h in hits]
     lines.append(
@@ -305,6 +419,8 @@ __all__ = [
     "ran_search",
     "ran_first_party_fetch",
     "external_claim_hits",
+    "search_queries",
+    "timeliness_claim_hits",
     "needs_external_note",
     "external_unverified_block",
     "asks_workspace_state",

@@ -102,6 +102,40 @@ def test_detection() -> None:
           repr(sg.external_claim_hits("报告已写入 docs/x.md，新增了 2 处校验。")))
     check("空总结安全", sg.external_claim_hits("") == [])
 
+    # ---------- 时效性定性转述：没有数字，也还是转述 ----------
+    # A 组原句（实测）：通篇定性转述、一个阿拉伯数字都没有，旧判据静默放行。
+    A_SUMMARY = ("REA 项目最近在开发者社区走红，10 月初的热度明显上升，"
+                 "主打把逆向工程流程交给 agent。")
+    q_rea = [_call("web_search", {"query": "REA 项目"}), _tool("web_search")]
+
+    check("旧判据对纯定性转述确实不命中（这正是要补的缺口）",
+          sg.external_claim_hits(A_SUMMARY) == [],
+          repr(sg.external_claim_hits(A_SUMMARY)))
+    check("补上之后：无数字的时效性转述不再放行",
+          sg.needs_external_note(A_SUMMARY, q_rea) != [],
+          repr(sg.needs_external_note(A_SUMMARY, q_rea)))
+    check("命中片段就是那两个词本身（列出来读得懂）",
+          {"最近", "月初"} <= set(sg.timeliness_claim_hits(A_SUMMARY, q_rea)),
+          repr(sg.timeliness_claim_hits(A_SUMMARY, q_rea)))
+    check("抓了一手来源之后，时效性转述也不标",
+          sg.needs_external_note(
+              A_SUMMARY, q_rea + [_call("fetch_json"), _tool("fetch_json")]) == [])
+    check("没搜索（纯本地任务）时，时效词不误伤",
+          sg.needs_external_note(A_SUMMARY, [_call("read_file"), _tool("read_file")]) == [])
+    check("搜过但总结谈的是别的东西（与查询无实词交集）→ 不标",
+          sg.needs_external_note("我最近改了 loop.py 里的超时处理。", q_rea) == [],
+          repr(sg.needs_external_note("我最近改了 loop.py 里的超时处理。", q_rea)))
+    check("空总结的时效性判据安全", sg.timeliness_claim_hits("", q_rea) == [])
+
+    # ---------- 搜索词抽取：从工具参数里拿，不看模型自报 ----------
+    check("从 arguments（dict）里取 query",
+          sg.search_queries(q_rea) == ["REA 项目"], repr(sg.search_queries(q_rea)))
+    check("arguments 是 JSON 字符串也能解",
+          sg.search_queries([{"role": "assistant", "tool_calls": [
+              {"function": {"name": "web_search", "arguments": '{"query": "x y"}'}}]}]) == ["x y"])
+    check("非搜索工具的参数不会被当成搜索词",
+          sg.search_queries([_call("fetch_url", {"url": "https://a/b"})]) == [])
+
     # ---------- 三条件同时成立 ----------
     check("搜索 + 无一手来源 + 有数字 → 出手",
           sg.needs_external_note(REA_SUMMARY, only_search) != [])
@@ -170,6 +204,15 @@ def test_gate_wiring() -> None:
     holder4 = {"summary": REA_SUMMARY, "convo": [_call("read_file"), _tool("read_file")]}
     list(_verify_gate(FakeAgent(), brief, holder4))
     check("闸门接入：纯本地任务不误伤", holder4["summary"] == REA_SUMMARY)
+
+    # 5) 定性时效性转述（零阿拉伯数字）：也要走真闸门
+    q_rea = [_call("web_search", {"query": "REA 项目"}), _tool("web_search")]
+    summary5 = "REA 项目最近在开发者社区走红，10 月初的热度明显上升。"
+    holder5 = {"summary": summary5, "convo": q_rea}
+    list(_verify_gate(FakeAgent(), brief, holder5))
+    check("闸门接入：无数字的时效性转述也出手",
+          holder5["summary"] != summary5,
+          repr(holder5["summary"][:60]))
 
 
 def main() -> None:
