@@ -598,7 +598,7 @@ class _Handler(BaseHTTPRequestHandler):
             # 技能的删除入口是技能管理面板，那里删除前有整目录备份。
             skill_roots = [self._skills_root(), *(Path(x) for x in (self.cfg.skill_dirs or []))]
             if any(_path_under(resolved, sr.resolve()) for sr in skill_roots
-                   if self._safe_resolve(sr)):
+                   if _safe_resolve(sr)):
                 skipped.append({"path": str(raw), "why": "属于技能目录，不在这里删（去技能管理面板）"})
                 continue
             try:
