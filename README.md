@@ -14,9 +14,10 @@
   决策模型只做拆解/指派/交接和几句简单对话，重活一律派给最强执行模型；拆解失败自动回退规则编排。
 - **本地优先**：默认全部走 Ollama 本地模型，零 API 费用；付费模型（DeepSeek / SiliconFlow）按需勾选启用。
   Ollama 挂了会自动拉起（桌面版优先，退回 `ollama serve`），判定标准是「真能应答」而非「进程生出来了」。
-- **Web 服务常驻**：`start-service.bat`（Windows）/ `start-service.sh`（Linux、macOS）起一个无窗口
-  保姆进程，端口没人服务就补位拉起，只补位不抢占、不杀进程（跑着任务时重启的代价远大于等它自己好）。
-  `install-autostart.bat` / `install-autostart.sh` 一条命令把开机自启装上——换台机器 clone 完即可复现。
+- **Web 服务常驻**：双击一次 `start.bat`（Windows）/ 跑一次 `./scripts/start.sh`（Linux、macOS）就够了——
+  它建好虚拟环境、登记开机自启，再起一个**无窗口**的保姆进程：端口没人服务就补位拉起，
+  只补位不抢占、不杀进程（跑着任务时重启的代价远大于等它自己好）。
+  服务本身不占任务栏、没有窗口可以误关，开机自启也随之装好——换台机器 clone 完即可复现。
 - **任务台账**：每个任务记录状态、耗时、token 与预估费用、产出文件、对话历史，重启后自动把遗留的
   「执行中」标记为已中断。
 - **产出追踪**：写文件工具精确记录 + 任务前后工作区快照对比，任务产出了哪些文件一目了然。
@@ -67,27 +68,19 @@ ollama pull qwen3.5:4b      # 轻量：速度快，长上下文
 git clone git@github.com:qwertyfew/Agent-Forge.git
 cd Agent-Forge
 
-# Windows：双击 start-web.bat
+# Windows：双击 start.bat（就这一个文件，不用挑）
 # Linux / macOS：
-./start-web.sh
+./scripts/start.sh
 ```
 
-两个脚本都会在缺虚拟环境时**自动创建并安装依赖**，然后起服务（`http://127.0.0.1:8787`）。
+这一个入口会把三件事一次做完，而且**可重复执行、没有副作用**：
 
-想让它**一直在**（推荐：装完就不必再管，页面随时打得开）：
+1. 缺虚拟环境就自动建 `.venv` 并装依赖；
+2. 登记开机自启（下次登录自动把服务拉起来）；
+3. 把常驻服务放到后台无窗口跑 —— 页面从此随时打得开。
 
-```
-# Windows —— 双击这两个文件，各一次即可，可重复执行
-#   start-service.bat       起常驻服务，现在就能用
-#   install-autostart.bat   装上开机自启，下次登录自动起
-
-# Linux / macOS
-./start-service.sh
-./install-autostart.sh
-```
-
-四个脚本都是幂等的，卸载自启用 `install-autostart.bat /remove`
-或 `./install-autostart.sh --remove`（只删它自己写的那份启动项，不动正在跑的服务）。
+Windows 上双击后你会看到一段说明文字然后窗口自动关闭：**这是正常的**，服务已经在后台了，
+不必留着那个窗口。要停：终端里跑 `start.bat --stop`。
 
 `config.yaml` 里不含任何绝对路径，但**在线模型的 API Key 不在版本库里**（见下文「配置」），
 所以 clone 下来只需做一次「复制模板 + 填 Key」，就能直接用在线模型开工，
@@ -119,20 +112,30 @@ python run.py --web
 python run.py -c config.lanrun.yaml --web --port 8787   # 用本机专属配置（若已创建）
 ```
 
-Windows 下可直接双击 `start-web.bat` 后台起服务，日志写入 `.run/web.log`。
+Windows 下双击 `start.bat` 即可：它把常驻服务放到后台无窗口跑，Web 日志写入 `.run/web.log`。
 
-### 启动脚本一览
+### 启动脚本只有一个：`start.bat`（Windows）/ `scripts/start.sh`（Linux、macOS）
 
-根目录下的启动脚本都会「缺虚拟环境就自动建 .venv 并装依赖」，可重复执行、不会互相冲突：
+以前根目录堆着 `start-web`、`start-service`、`install-autostart` 各一对 `.bat`/`.sh`，
+Windows 又默认隐藏扩展名，于是看着像四个重名文件，每次都要猜该点哪个。现在**只剩一个入口**：
 
-| 脚本 | 作用 |
+| 入口 | 作用 |
 |---|---|
-| `start-web.bat` / `start-web.sh` | 一次性起 Web 服务，适合临时开一下 |
-| `start-service.bat` / `start-service.sh` | 起**常驻服务**（后台无窗口的保姆进程） |
-| `install-autostart.bat` / `install-autostart.sh` | 装开机自启（`/remove` 可卸掉） |
+| `start.bat`（Windows，双击） | 建虚拟环境 + 装依赖 → 登记开机自启 → 起常驻服务 |
+| `scripts/start.sh`（Linux、macOS） | 同上（Unix 侧脚本放在 `scripts/`，免得在 Windows 里跟 `.bat` 撞名） |
 
-`.bat` 是 Windows、`.sh` 是 Linux / macOS，两边功能一一对应，**不是重复文件**（这就是根目录看着有两个
-`start-web` 的原因）。另外 `service.py` 是常驻服务本体，也可以直接用命令行调：
+参数（日常不需要，都是从终端里用）：
+
+```bash
+start.bat --status              # 现在什么状态（服务在不在、Ollama 通不通）
+start.bat --stop                # 停掉常驻服务与 Web 服务
+start.bat --no-autostart        # 这次不碰开机自启条目
+start.bat --remove-autostart    # 卸载开机自启
+
+./scripts/start.sh --status     # Linux / macOS 同一套参数
+```
+
+`service.py` 是常驻服务本体，也可以直接命令行调：
 
 ```bash
 # Windows
@@ -144,36 +147,42 @@ Windows 下可直接双击 `start-web.bat` 后台起服务，日志写入 `.run/
 .venv/bin/python service.py --stop
 ```
 
-### 让它一直开着：`start-service.bat` / `start-service.sh`
+### 它怎么「一直开着」
 
-`start-web.bat` 起的是一次性进程，它一旦退出（异常、误关窗口、升级时重启）网页就打不开了。
-要「随时都能打开」，用 **`start-service.bat`**（Windows）或 **`./start-service.sh`**（Linux、macOS）：
-它把 `service.py` 放到后台无窗口跑（Windows 用 `pythonw`，Unix 用 `nohup`），由这个常驻脚本当保姆：
+`start.bat` 起的是常驻服务：`service.py` 在后台当保姆，端口没人服务就补位拉起 Web 服务。
+它退出（异常、误关窗口、升级重启）也会被拉回来——所以页面随时都打得开。
 
-- **只补位，不抢占**：端口上已经有人（比如你手动开过一次 `start-web.bat`）就什么都不做；
+- **只补位，不抢占**：端口上已经有人（比如你手动开过一次 `run.py --web`）就什么都不做；
   **绝不杀进程**——杀掉可能正在跑的任务，代价远大于等它自己好；
 - 发现 8787 没人服务就立刻拉起来，连续失败按指数退避，日志在 `.run/service.log`；
 - 每约 1 分钟顺带复查一次 Ollama（见下节），掉了同样拉回来。
 
-### 开机自启：`install-autostart.bat` / `install-autostart.sh`
+#### 为什么不占任务栏
 
-跑一次即可，之后每次登录自动把常驻服务拉起来。启动项里必须写**本机的绝对路径**，
-所以它不能进仓库，只能由脚本现场生成（这也是它要单独存在的原因）：
+服务进程用 `pythonw` 起，它拉起 Web 服务时给的创建标志是 **`CREATE_NO_WINDOW`**：
 
-```
-install-autostart.bat            # 安装（或刷新）
-install-autostart.bat /status    # 看装没装、装的什么内容
-install-autostart.bat /remove    # 卸载
+- Web 服务自己拿到的是一个「看不见的控制台」，所以**没有窗口可关、任务栏里没有它**；
+- 它再去跑任务命令（`run_command`）时，子进程会**继承这个隐藏控制台**，所以也不会弹一串黑框。
+  实测：父进程用 `CREATE_NO_WINDOW` 时，子进程 `GetConsoleWindow()` 返回 0（不弹窗）；
+  而父进程用 `pythonw` 时子进程反而会拿到一个**可见**窗口——所以这里不能图省事换成 `pythonw`。
+- 曾经的 bug 就是用了 `DETACHED_PROCESS`：它给控制台程序**新开一个可见窗口**，
+  一关掉服务就死、保姆又拉起来，于是「关了又弹、关了又弹」。
 
-./install-autostart.sh           # Linux / macOS 同一套参数
-```
+任务里要打开的**新**命令行/程序不受影响，照旧正常出现在任务栏——隐藏的只有 AgentForge 自己这两个进程。
 
-- **Windows**：写进用户「启动」文件夹的 `AgentForge Web UI.bat`（内容就一行 `call "<绝对路径>\start-service.bat"`）。
+### 开机自启
+
+`start.bat` 第一次跑就会顺手登记好，之后每次登录自动把常驻服务拉起来，不需要你再操作。
+启动项里必须写**本机的绝对路径**，所以它不能进仓库，只能由入口脚本现场生成：
+
+- **Windows**：写进用户「启动」文件夹的 `AgentForge Web UI.bat`，内容就四行——
+  `cd` 到项目目录后 `start "" ".venv\Scripts\pythonw.exe" service.py`，**完全没有窗口**。
   不需管理员、不写注册表；任务计划的 `schtasks.exe` 在某些安全策略下会被禁用，用启动文件夹更省事。
   生成的文件是**纯 ASCII + CRLF**（`echo` 写出的编码与 cmd 当前代码页一致，即使项目路径含中文也不会错位）。
+  不要了就跑 `start.bat --remove-autostart`（只删它自己写的那份启动项，不动正在跑的服务）。
 - **Linux**：写 XDG autostart 条目 `~/.config/autostart/agentforge.desktop`。
-- **macOS**：不读 XDG autostart，脚本会直说并让你改用 launchd（或每次手动跑 `./start-service.sh`）。
-- 在 Windows 的 Git Bash / MSYS 里跑 `.sh` 版本会被直接拦下——那里 `pwd` 返回 `/d/...` 这类 MSYS
+- **macOS**：不读 XDG autostart，入口脚本会直说并让你改用 launchd（或每次手动跑 `./scripts/start.sh`）。
+- 在 Windows 的 Git Bash / MSYS 里跑 `.sh` 会被直接拦下——那里 `pwd` 返回 `/d/...` 这类 MSYS
   路径，写进启动项在真实登录流程里解析不了；脚本会提示改用对应的 `.bat`。
 
 ## 本地模型的上游：Ollama 自动拉起
@@ -189,6 +198,7 @@ install-autostart.bat /remove    # 卸载
 
 拉起策略：优先 **Ollama 桌面版**（`ollama app.exe`，就是用户平时开机自启那一份，单实例不会抢端口），
 找不到才退回 `ollama serve`。判定成功以「`/api/tags` 真能应答」为准，不是「进程生出来了」就算数。
+拉起时用 `CREATE_NO_WINDOW`，所以退回 `ollama serve` 那条路也不会在任务栏留一个黑框。
 日志在 `.run/ollama.log`。
 
 ```yaml
@@ -252,9 +262,8 @@ run.py                 入口（交互 / 单任务 / Web）
 service.py             常驻服务：端口没人就补位拉起 Web 服务，顺带守 Ollama
 webui.py               Web 后端：SSE 事件流 + /api/* 接口
 web/index.html         全部前端（零依赖单文件）
-start-web.bat / .sh     一次性起 Web 服务（.bat=Windows，.sh=Linux/macOS）
-start-service.bat / .sh 常驻服务：无窗口保姆进程，端口没人就补位拉起
-install-autostart.bat / .sh  装开机自启（启动项含本机绝对路径，由它现场生成）
+start.bat              Windows 唯一入口：建环境 + 装自启 + 起常驻服务（双击它就行）
+scripts/start.sh       Linux / macOS 同一件事（放在子目录，免得在 Windows 里与 .bat 撞名）
 agentforge/
   loop.py              单轮智能体循环（推理 → 工具 → 回灌）
   orchestrator.py      任务编排：拆解、分配、限步、停止
@@ -445,9 +454,23 @@ agent 没读工具返回的错误信息、也没重跑测试，就在总结里�
    没人服务就补位拉起（**只补位不抢占、绝不杀进程**——杀进程会连带杀掉正在跑的任务）。
 3. **常驻与自启从「手工配置」变成「仓库里的一步」**。以前「开机自启」只存在于这台机器的
    启动文件夹里——换台机器 clone 下来就没了，而启动项又无法入库（它必须写死本机的绝对路径）。
-   现在 `install-autostart.bat` / `install-autostart.sh` 现场生成启动项，`start-service.sh` 补齐
-   Unix 侧的常驻入口，`start-web.bat` / `start-service.bat` 加 `.sh` 一一对应：
-   clone 完双击一次就复现整套「随时打得开」，卸载各留一条 `/remove`。
+   现在由入口脚本 `start.bat` / `scripts/start.sh` 现场生成启动项，clone 完点一次就复现整套
+   「随时打得开」，卸载留一条 `--remove-autostart`。
+
+**第 14 步：入口收敛与「不占任务栏」（10-13）**
+
+1. **四个看着重名的启动脚本收成一个**。`start-web`、`start-service`、`install-autostart`
+   各有 `.bat` / `.sh` 一对，Windows 默认隐藏扩展名，于是根目录看着像四个同名文件，
+   每次都要猜点哪个。现在根目录只剩 `start.bat`（Windows 双击），Unix 侧挪到
+   `scripts/start.sh`（放子目录是为了不在 Windows 里跟 `.bat` 撞名）；开机自启不再单独一个脚本，
+   由入口顺手登记。语义也简化成一句话：**点它，服务就一直开着**。
+2. **服务彻底离开任务栏**。原来 `service.py` 拉 Web 服务用的是 `DETACHED_PROCESS`——
+   实测它会给控制台程序**新开一个可见窗口**：一关掉 Web 服务就死，保姆又把它拉起来，
+   于是任务栏里「关了又弹、关了又弹」。改用 `CREATE_NO_WINDOW` 后，服务自己没窗口，
+   它拉起的任务命令继承隐藏控制台也不会弹黑框（实测父进程 `CREATE_NO_WINDOW` 时子进程
+   `GetConsoleWindow()` 为 0；换成 `pythonw` 父进程反而会拿到可见窗口）。
+   注意隐藏的只有 AgentForge 自己的这两个进程——任务里新开的命令行/程序照旧正常出现在任务栏。
+   同一个坑也修在了 `ollamaguard._spawn`（退回 `ollama serve` 时）。
 
 一个值得记下的坑：Windows 上不能用 `os.kill(pid, 0)` 探测进程存活——Windows 没有信号，
 Python 的 `os.kill` 对非 CTRL_* 会直接调 `TerminateProcess`，「查一下你在不在」把人杀了。

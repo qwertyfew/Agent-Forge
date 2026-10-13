@@ -5,13 +5,13 @@
 升级时重启），网页就打不开了，而这时人往往不在电脑前。这个脚本当「保姆」：
 
   1. 盯着端口：发现 8787 没人服务，就把 Web 服务拉起来；
-  2. **只补位，不抢占**：端口上已经有人（比如你手动双击了 start-web.bat）就什么都不做，
+  2. **只补位，不抢占**：端口上已经有人（比如你手动开了一次 `run.py --web`）就什么都不做，
      也绝不杀进程——杀掉可能正在跑的任务，代价远大于「等着它自己好」；
   3. 定时复查 Ollama（本地模型的上游），掉了同样拉回来；
   4. 日志只往 .run/service.log 写，不占窗口。
 
 用法：
-    pythonw service.py            # 无窗口常驻（推荐，start-service.bat 就是这么起）
+    pythonw service.py            # 无窗口常驻（推荐，start.bat 就是这么起）
     python  service.py            # 前台跑，Ctrl+C 停（适合排查）
     python  service.py --status   # 看一眼现在什么状态
     python  service.py --stop     # 停掉常驻服务与它拉起的 Web 服务
@@ -67,7 +67,7 @@ def log(msg: str) -> None:
 
 # ---------------------------------------------------------------- 环境探测
 def pick_config() -> str:
-    """和 start-web.bat 保持同一优先级：本机配置优先，通用模板兜底。"""
+    """和 start.bat 保持同一优先级：本机配置优先，通用模板兜底。"""
     for name in ("config.lanrun.yaml", "config.local.yaml"):
         if (ROOT / name).exists():
             return name
@@ -183,8 +183,17 @@ def start_server(cfg_name: str, port: int) -> None:
     kwargs: dict = {"cwd": str(ROOT), "stdout": out, "stderr": subprocess.STDOUT,
                     "stdin": subprocess.DEVNULL}
     if sys.platform == "win32":
-        # 独立进程组：服务重启 / 被关掉时，它不会跟着被连坐
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        # 这里**必须是 CREATE_NO_WINDOW，绝不能用 DETACHED_PROCESS**。
+        # DETACHED_PROCESS 会让这个控制台程序新开一个【可见的控制台窗口】——就是
+        # 任务栏里那个命令行框；用户一关掉，Web 服务就死，保姆又把服务拉起来，
+        # 于是「关了又弹、关了又弹」。
+        # CREATE_NO_WINDOW 则给它一个不显示的控制台，两个好处：
+        #   1. Web 服务自己不占任务栏、没有窗口可关；
+        #   2. 它启动的子命令（任务里的 run_command 等）会继承这个隐藏控制台，
+        #      不会再弹新窗口——实测默认标志下 GetConsoleWindow() 返回 0，
+        #      而 pythonw 父进程下会返回一个可见窗口（所以不要改成 pythonw）。
+        # CREATE_NEW_PROCESS_GROUP：服务被重启时它不会跟着被连坐。
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     else:
         kwargs["start_new_session"] = True
     proc = subprocess.Popen(cmd, **kwargs)
@@ -283,8 +292,8 @@ def cmd_stop(port: int) -> int:
     if port_open(port, timeout=3.0):
         print(f"注意：{port} 端口仍有进程在监听（可能不是这个服务拉起的）。")
         return 1
-    print("已停止。下次要用：Windows 双击 start-service.bat，"
-          "Linux / macOS 跑 ./start-service.sh。")
+    print("已停止。下次要用：Windows 双击 start.bat，"
+          "Linux / macOS 跑 ./scripts/start.sh。")
     return 0
 
 

@@ -139,9 +139,11 @@ def _spawn(exe: str, args: list[str], host: str, log_path: Path) -> subprocess.P
         "env": env, "close_fds": True,
     }
     if sys.platform == "win32":
-        # DETACHED_PROCESS：不挂到我们的控制台，也不跟我们的进程树一起被回收；
-        # 这样 Web 界面重启、Ollama 都还在。
-        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        # CREATE_NO_WINDOW 而不是 DETACHED_PROCESS：DETACHED_PROCESS 会给控制台程序
+        # （退回 `ollama serve` 那条路）新开一个【可见】的控制台窗口，白白占住任务栏；
+        # 桌面版（ollama app.exe）是 GUI 程序，这个标志对它没有影响。
+        # 两者都不挂到我们的控制台、也不跟我们的进程树一起被回收——重启用 Ollama 时它还在。
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     else:
         kwargs["start_new_session"] = True
     return subprocess.Popen([exe, *args], **kwargs)

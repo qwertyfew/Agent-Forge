@@ -178,6 +178,10 @@ agentforge/dispatcher.py         Bug 6（DISPATCH_SYSTEM 禁止缩小范围）
 本轮的评测脚本 `_eval_novel.py` 用的是 **8795**，而且结尾会 `httpd.shutdown()`。
 诊断时 `netstat` 显示 8787 上没有任何 LISTENING → 浏览器只能得到连接被拒绝。
 
+> 注：本报告写于当时。后来启动脚本收成了一个 `start.bat`（Windows）/ `scripts/start.sh`（Unix），
+> 并加了常驻服务 + 开机自启，`start-web.bat` 这个名字已不存在——但下面关于 **`.bat` 必须是
+> 纯 ASCII + CRLF** 的结论至今有效，是 `start.bat` 的硬约束。
+
 ### 6.2 为什么你启动不起来：`start-web.bat` 本身是坏的
 
 文件是**纯 LF 行尾**（CR 数量 0，LF 数量 29），而 `.gitattributes` 明确要求
