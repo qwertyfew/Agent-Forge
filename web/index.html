@@ -211,6 +211,8 @@
   .dot.bad{background:var(--err)}
   /* 正在自动拉起 Ollama：呼吸一下，别让用户以为界面卡住了 */
   .dot.wait{background:var(--orange,#d08700);animation:dotPulse 1s ease-in-out infinite}
+  /* 服务重启中：红褐色（区别于「挂了」的红色） */
+  .dot.busy{background:#a3541e;animation:dotPulse 1s ease-in-out infinite}
   @keyframes dotPulse{0%,100%{opacity:1}50%{opacity:.3}}
   .meta .ws{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
   .side-scrim{display:none}
@@ -325,6 +327,21 @@
   .sk-sec-head{display:flex;align-items:baseline;gap:9px;padding:0 2px 8px;
     border-bottom:1px solid var(--line)}
   .sk-sec-head h4{margin:0;font-size:13px;font-weight:650;color:var(--ink)}
+  /* ============ 评测台 ============ */
+  .eval-runrow{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 2px;border-bottom:1px solid var(--line)}
+  .eval-runrow label{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink3)}
+  .eval-runrow select,.eval-runrow input{font:inherit;font-size:12.5px;padding:4px 8px;border:1px solid var(--line2);border-radius:8px;background:var(--panel);color:var(--ink)}
+  .eval-runhint{font-size:12px;color:var(--ink3)}
+  .eval-status{display:flex;align-items:center;gap:8px;padding:10px 12px;margin-top:12px;border:1px solid var(--line2);border-radius:10px;background:var(--panel);font-size:12.5px;color:var(--ink)}
+  .eval-spin{width:12px;height:12px;flex:none;border:2px solid var(--line2);border-top-color:var(--ink2);border-radius:50%;animation:evalspin 1s linear infinite}
+  @keyframes evalspin{to{transform:rotate(360deg)}}
+  .eval-edit{margin-top:8px;padding:10px;border:1px solid var(--line2);border-radius:10px;display:flex;flex-direction:column;gap:8px}
+  .eval-edit textarea,.eval-edit input{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;width:100%;padding:6px 8px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);color:var(--ink);box-sizing:border-box}
+  .eval-edit textarea{resize:vertical}
+  .eval-edit .ee-row{display:flex;gap:8px}
+  .eval-edit .ee-row > *{flex:1;min-width:0}
+  .eval-edit .ee-foot{display:flex;gap:8px;justify-content:flex-end}
+  .eval-report{max-height:420px;overflow:auto;padding:12px;border:1px solid var(--line2);border-radius:10px;background:var(--panel);font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word;margin-top:10px;color:var(--ink)}
   .sk-count{font-size:11px;color:var(--ink3);border:1px solid var(--line2);
     border-radius:999px;padding:1px 7px;white-space:nowrap}
   .sk-hint{font-size:11px;color:var(--ink3);margin-left:auto;text-align:right}
@@ -598,9 +615,8 @@
   .send.stopping svg{animation:none}
   @keyframes rot{to{transform:rotate(360deg)}}
   .hint{max-width:760px;margin:7px auto 0;text-align:center;font-size:11.5px;color:var(--ink3)}
-  /* 权限说明平时收起来，鼠标停到「默认权限」上才展开（见 bindPermHint） */
-  .composer-wrap .hint{display:none}
-  .composer-wrap.show-hint .hint{display:block}
+  /* 对话框下沿的权限说明段落已删（原 .composer-wrap .hint 展开规则一并移除）：
+     悬停说明统一走 tip-card，不再有「展开一段话、对话框上移」的布局位移 */
   .pool-hint{max-width:760px;margin:6px auto 0;text-align:center;font-size:11.5px;color:var(--ink3);opacity:.85}
 
   /* ============ 设置页 ============ */
@@ -718,6 +734,28 @@
   .toast.bad{background:var(--err);color:#fff}
   .toast.mute{background:var(--ink2);color:var(--bg)}
   html[data-theme="dark"] .toast{box-shadow:0 6px 16px rgba(0,0,0,.4),0 14px 34px rgba(0,0,0,.35)}
+  /* ---- 统一悬停卡片（tip-card）----
+     全站所有 title 悬停提示的统一形态：圆角矩形、单行优先，
+     超过上限宽度才折行（width:max-content + max-width），
+     位置贴近触发元素、下方放不下翻上方，绝不挤压布局。 */
+  .tip-card{
+    position:fixed;z-index:80;pointer-events:none;
+    max-width:min(280px, calc(100vw - 16px));
+    padding:7px 12px;border-radius:11px;
+    background:var(--panel);color:var(--ink);
+    border:1px solid var(--line2);
+    font-size:12.5px;line-height:1.55;font-weight:500;
+    white-space:pre-line;overflow-wrap:break-word;
+    box-shadow:0 6px 16px rgba(20,18,12,.14),0 14px 34px rgba(20,18,12,.10);
+    opacity:0;transition:opacity .1s ease;
+  }
+  /* 这条规则是卡片的「可见开关」——少了它卡片永远 opacity:0（看不见，
+     但文本和布局都在，属于最阴的一种坏法）。改动时务必保留。 */
+  /* pointer-events 跟着 show 走：隐藏时 none（透明卡片绝不挡底下的点击），
+     显示时 auto（鼠标能进卡片——离开触发元素但还在卡片上时不消失，
+     卡片里的文字也能选中）。 */
+  .tip-card.show{opacity:1;pointer-events:auto}
+  html[data-theme="dark"] .tip-card{box-shadow:0 6px 16px rgba(0,0,0,.4),0 14px 34px rgba(0,0,0,.35)}
   @keyframes toastFloat{
     0%  {transform:translateY(0) scale(.97);opacity:0}
     10% {transform:translateY(0) scale(1);opacity:1}
@@ -730,6 +768,8 @@
   .kv .k{width:120px;color:var(--ink3);flex:none}
   .kv .v{color:var(--ink);word-break:break-all}
   .segbtns{display:flex;gap:8px}
+  /* 通用设置里的悬停延迟下拉 */
+  #genTipDelay{font:inherit;font-size:12.5px;padding:4px 8px;border:1px solid var(--line2);border-radius:8px;background:var(--panel);color:var(--ink);margin-right:6px}
 
   /* ============ 模态弹窗（替换浏览器原生 confirm/alert） ============ */
   .modal-mask{position:fixed;inset:0;z-index:70;background:rgba(18,17,15,.42);
@@ -849,6 +889,14 @@
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19a1 1 0 0 1 1 1v13a2.5 2.5 0 0 0-2.5-2.5H6.5A2.5 2.5 0 0 1 4 12z"/><path d="M4 12a2.5 2.5 0 0 1 2.5-2.5H20"/><path d="M9 8h7M9 11h5"/></svg>
           <span class="nt" id="skillNavLabel">技能管理</span>
         </button>
+        <button class="nav-item" id="navGaps" title="查看任务暴露出的缺失工具与技能，明确该补什么">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+          <span class="nt" id="gapsNavLabel">能力缺口</span>
+        </button>
+        <button class="nav-item" id="navEval" title="运行 harness 评测集、查看评测报告、增删评测任务">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6.5L4.6 18a2 2 0 0 0 1.8 3h11.2a2 2 0 0 0 1.8-3L14 9.5V3"/><path d="M7.5 15h9"/></svg>
+          <span class="nt" id="evalNavLabel">评测台</span>
+        </button>
       </div>
     </div>
 
@@ -877,10 +925,12 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 2.6 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 9.5 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21.4 11a2 2 0 1 1 0 4 1.7 1.7 0 0 0-1.2 1.2z"/></svg>
         设置
       </button>
-      <div class="meta clickable" id="ollamaMeta" title="点击打开 Ollama 服务页">
+      <!-- 本地部署：点击 = 重启本地服务（stop.bat → start.bat）；
+           云端部署：常绿不可点。状态由 /api/health 轮询决定 -->
+      <button class="meta clickable" id="ollamaMeta" title="正在检查本地服务与 Ollama 状态" style="background:none;border:0;padding:0;cursor:pointer;font:inherit;color:inherit">
         <span class="dot" id="ollamaDot"></span>
-        <span id="ollamaTxt">Ollama 检测中…</span>
-      </div>
+        <span id="ollamaTxt">服务检测中…</span>
+      </button>
       <div class="meta clickable" id="wsMeta" title="点击在工作区的资源管理器中打开">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
         <span class="ws" id="ws" title=""></span>
@@ -962,7 +1012,9 @@
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/></svg>
               <span id="permTxt">默认权限</span>
             </button>
-            <button class="cbtn" id="btnModelConfig" title="打开设置 → 可用模型管理">
+            <!-- 不设 title：这颗按钮的悬停说明由专属的 modelPop 卡片承担，
+                 再挂 title 会被全局悬停卡片引擎接管、弹出第二张卡（双层弹窗） -->
+            <button class="cbtn" id="btnModelConfig">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
               <span id="modelCfgTxt">模型配置</span>
             </button>
@@ -981,7 +1033,8 @@
         </div>
       </div>
       <div class="pool-hint hide" id="poolHint"></div>
-      <div class="hint">「默认权限」下写文件与执行命令需人工确认，越出工作区的路径会被拦截；「完全访问权限」下直接执行，工作区之外的文件夹也允许读写（黑名单命令始终拦截）</div>
+      <!-- 权限说明段落已删：它的悬停展开会把对话框顶上去（布局位移），
+           说明内容改由统一悬停卡片（tip-card）承载，见 permBtn 的 title -->
     </div>
 
     <!-- ============ 设置视图 ============ -->
@@ -1107,6 +1160,17 @@
             <button class="btn" data-theme-set="dark">深色</button>
             <button class="btn" data-theme-set="auto">跟随系统</button>
           </span></div>
+          <div class="kv"><span class="k">悬停提示延迟</span><span class="v">
+            <select id="genTipDelay" title="悬停多久后弹出说明卡片">
+              <option value="500">0.5 秒</option>
+              <option value="1000">1 秒</option>
+              <option value="1500" selected>1.5 秒（默认）</option>
+              <option value="2000">2 秒</option>
+              <option value="3000">3 秒</option>
+              <option value="5000">5 秒</option>
+            </select>
+            <span class="sk-hint">悬停多久后弹出说明卡片；改完立即生效并记住</span>
+          </span></div>
           <div class="kv"><span class="k">工作区</span><span class="v mono" id="genWs"></span></div>
           <div class="kv"><span class="k">Ollama 地址</span><span class="v mono" id="genOllama"></span></div>
           <div class="kv"><span class="k">上下文阈值</span><span class="v" id="genThreshold"></span></div>
@@ -1187,18 +1251,101 @@
             <div class="alist" id="skillInstalledList"></div>
           </div>
 
+          <div class="kv" style="margin-top:18px;border-bottom:0">
+            <span class="k">检索目录</span><span class="v mono" id="skillDirs2"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="settings hide" id="viewGaps">
+      <div class="set-body">
+        <div class="set-pane">
+          <div class="pane-head">
+            <div>
+              <h3>能力缺口</h3>
+              <p>
+                由架构确定性记录、模型经由 report_gap 工具发起登记的缺失清单，不靠模型自报口径。
+                来源：模型调用不存在的工具（工具缺失）、工具预检判定任务需要的能力环境里没有
+                （能力缺失）、模型如实说明缺什么后主动登记（能力/技能缺失）、评测任务失败（评测失败）。
+                同类缺口合并计数，用来回答「该补什么工具 / 该沉淀什么技能」。
+              </p>
+            </div>
+            <div class="pane-actions">
+              <button class="btn" id="btnGapRefresh">刷新</button>
+              <button class="btn" id="btnGapClear">清空</button>
+            </div>
+          </div>
+
           <div class="sk-sec">
             <div class="sk-sec-head">
-              <h4>能力缺口</h4>
+              <h4>缺失记录</h4>
               <span class="sk-count" id="gapCount">0 条</span>
-              <span class="sk-hint">由架构自动记录，不靠模型自报：哪类任务缺工具、缺能力、反复失败，一眼看清该补什么</span>
-              <button class="mini-btn" id="btnGapClear">清空</button>
+              <span class="sk-hint">任务触发缺口时由架构自动登记，一键清空后可重新积累</span>
             </div>
             <div class="alist" id="gapList"></div>
           </div>
+        </div>
+      </div>
+    </section>
 
-          <div class="kv" style="margin-top:18px;border-bottom:0">
-            <span class="k">检索目录</span><span class="v mono" id="skillDirs2"></span>
+    <section class="settings hide" id="viewEvals">
+      <div class="set-body">
+        <div class="set-pane">
+          <div class="pane-head">
+            <div>
+              <h3>评测台</h3>
+              <p>
+                评测集（<span class="mono">evals/tasks.yaml</span>）是 harness 的标尺：每条任务喂给完整
+                agent 管线，判定全部走程序、零 LLM 调用——原文包含 → 归一包含 → 数值 → 关键词组 →
+                禁止内容 → 真跑命令核验，第一个失败的层就是失败归因（拆错了、答错了、产物坏了由此区分）。
+                每轮评测自动生成报告：时间、代码版本、模型、逐条表现与归因分布，用于持续优化 harness。
+                一轮全量评测要跑几分钟到更久（每条任务都是一次真实任务执行），期间可以切到别的栏目。
+              </p>
+            </div>
+            <div class="pane-actions">
+              <button class="btn" id="btnEvalRun">开始评测</button>
+              <button class="btn hide" id="btnEvalStop">停止</button>
+              <button class="btn" id="btnEvalRefresh">刷新</button>
+            </div>
+          </div>
+
+          <div class="eval-runrow" id="evalRunRow">
+            <label>分类 <select id="evalCat"><option value="">全部</option></select></label>
+            <label>每条遍数 <select id="evalRepeat">
+              <option value="1" selected>1（单次）</option>
+              <option value="2">2</option>
+              <option value="3">3（pass³）</option>
+              <option value="5">5（pass⁵）</option>
+            </select></label>
+            <label>报告名 <input type="text" id="evalLabel" placeholder="web" maxlength="40"></label>
+            <span class="eval-runhint">评测在后台线程执行，可切走；跑完会弹提示</span>
+          </div>
+
+          <div class="eval-status hide" id="evalStatus">
+            <span class="eval-spin"></span>
+            <span id="evalStatusText"></span>
+          </div>
+
+          <div class="sk-sec">
+            <div class="sk-sec-head">
+              <h4>评测任务</h4>
+              <span class="sk-count" id="evalTaskCount">0 条</span>
+              <span class="sk-hint">带 🔒 的任务被常驻回归钉死（诚实性簇/安全策略），不能删除；改动需保存后才生效</span>
+              <button class="mini-btn" id="btnEvalAdd">新增任务</button>
+              <button class="mini-btn" id="btnEvalSave">保存任务集</button>
+            </div>
+            <div class="alist" id="evalTaskList"></div>
+          </div>
+
+          <div class="sk-sec">
+            <div class="sk-sec-head">
+              <h4>评测报告</h4>
+              <span class="sk-count" id="evalReportCount">0 份</span>
+              <span class="sk-hint">每轮评测自动生成；JSON 同名文件在 evals/results/，bench_compare 可直接使用</span>
+            </div>
+            <div class="alist" id="evalReportList"></div>
+            <pre class="eval-report hide" id="evalReportView"></pre>
           </div>
         </div>
       </div>
@@ -1220,6 +1367,9 @@ let viewingHistory = false;   // 当前画面是不是「回看某条历史任�
 let threshold = 60000;
 let autoPlan = true;
 let multiPath = false;   // 多路径尝试：某一步失败时换模型换路重试（默认关）
+/* 悬停卡片弹出延迟（毫秒）：真正生效值，来源是服务端持久化偏好
+   （设置 → 通用 → 悬停提示延迟）。bindTipCard / bindModelPop 都读它。 */
+let tipDelayMs = 1500;
 let catalog = null;        // /api/models 的完整快照
 let view = 'chat';
 /* 对话区的滚动位置：切到设置/记忆页时对话区会被 display:none，浏览器顺手把
@@ -1245,6 +1395,26 @@ applyTheme((()=>{ try{ return localStorage.getItem(THEME_KEY) || 'auto'; }catch(
 document.querySelectorAll('[data-theme-set]').forEach(b=>{
   b.onclick = ()=> applyTheme(b.dataset.themeSet);
 });
+/* 悬停提示延迟：通用设置里改 → 存服务端偏好 → 立即生效（两个卡片引擎都读 tipDelayMs） */
+function syncGenTipDelay(){
+  const sel = $('genTipDelay');
+  if(!sel) return;
+  sel.value = [...sel.options].some(o => +o.value === tipDelayMs) ? String(tipDelayMs) : '1500';
+}
+$('genTipDelay').onchange = async ()=>{
+  const ms = +($('genTipDelay').value || 1500);
+  try{
+    const r = await fetch('/api/prefs',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({tip_delay: ms})
+    }).then(x=>x.json());
+    if(r.error){ toast(null, '设置没保存上：' + r.error, 'bad'); return; }
+    tipDelayMs = r.tip_delay || ms;
+    syncGenTipDelay();
+    const sec = Math.round(tipDelayMs / 100) / 10;   // 1500 → 1.5
+    toast(null, r.note || `悬停提示延迟已设为 ${sec} 秒`, 'ok');
+  }catch(e){ toast($('genTipDelay'), '设置失败：' + e.message, 'bad'); }
+};
 
 const SVG = {
   chev : '<svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
@@ -1424,26 +1594,34 @@ function showView(v){
   const isSet = v === 'settings';
   const isMem = v === 'memory';
   const isSkill = v === 'skills';
+  const isGaps = v === 'gaps';
+  const isEval = v === 'evals';
   $('viewSettings').classList.toggle('hide', !isSet);
   $('viewMemory').classList.toggle('hide', !isMem);
   $('viewSkills').classList.toggle('hide', !isSkill);
-  $('composerWrap').classList.toggle('hide', isSet || isMem || isSkill);
+  $('viewGaps').classList.toggle('hide', !isGaps);
+  $('viewEvals').classList.toggle('hide', !isEval);
+  $('composerWrap').classList.toggle('hide', isSet || isMem || isSkill || isGaps || isEval);
   // 空态时输入框挂在 hero 里（页面中部），否则挂在底部常驻位置
   renderLanding();
   const land = isLanding();
-  hero.classList.toggle('hide', isSet || isMem || isSkill || !land);
-  setThreadHidden(isSet || isMem || isSkill || history.length === 0);
-  if(!isSet && !isMem && !isSkill) rebuildRail();   // 离开对话视图时收起右侧回溯导航
-  $('btnBack').classList.toggle('hide', !(isSet || isMem || isSkill));
-  $('btnMenu').classList.toggle('hide', isSet || isMem || isSkill);
+  hero.classList.toggle('hide', isSet || isMem || isSkill || isGaps || isEval || !land);
+  setThreadHidden(isSet || isMem || isSkill || isGaps || isEval || history.length === 0);
+  if(!isSet && !isMem && !isSkill && !isGaps && !isEval) rebuildRail();   // 离开对话视图时收起右侧回溯导航
+  $('btnBack').classList.toggle('hide', !(isSet || isMem || isSkill || isGaps || isEval));
+  $('btnMenu').classList.toggle('hide', isSet || isMem || isSkill || isGaps || isEval);
   if(isSet) $('topTitle').textContent = '设置';
   else if(isMem) $('topTitle').textContent = '记忆管理';
   else if(isSkill) $('topTitle').textContent = '技能管理';
+  else if(isGaps) $('topTitle').textContent = '能力缺口';
+  else if(isEval) $('topTitle').textContent = '评测台';
   else $('topTitle').textContent = chatTitle;
   $('navMemory').classList.toggle('on', isMem);
   $('navSkill').classList.toggle('on', isSkill);
-  // 栏目互斥高亮：进设置/记忆管理/技能管理时，「新建任务」也跟着变淡
-  $('btnNew').classList.toggle('dim', isMem || isSkill || isSet);
+  $('navGaps').classList.toggle('on', isGaps);
+  $('navEval').classList.toggle('on', isEval);
+  // 栏目互斥高亮：进设置/记忆管理/技能管理/能力缺口/评测台时，「新建任务」也跟着变淡
+  $('btnNew').classList.toggle('dim', isMem || isSkill || isSet || isGaps || isEval);
   updateCompactBtn();
   closeSidebar();
 }
@@ -1460,9 +1638,10 @@ $('btnModelConfig').onclick = () => openSettings('models');
 /* 悬停「模型配置」看当前组合明细：不再常驻侧栏，鼠标离开或点开设置就收起 */
 (function bindModelPop(){
   const btn = $('btnModelConfig');
-  let timer = null;
-  btn.addEventListener('mouseenter', ()=>{ clearTimeout(timer); showModelPop(); });
-  btn.addEventListener('mouseleave', ()=>{ timer = setTimeout(hideModelPop, 160); });
+  let timer = null, showT = null;
+  // 与全局悬停卡片同款纪律：延迟后才弹（扫过不算悬停），离开即取消
+  btn.addEventListener('mouseenter', ()=>{ clearTimeout(timer); clearTimeout(showT); showT = setTimeout(showModelPop, tipDelayMs); });
+  btn.addEventListener('mouseleave', ()=>{ clearTimeout(showT); timer = setTimeout(hideModelPop, 160); });
   $('modelPop').addEventListener('mouseenter', ()=> clearTimeout(timer));
   $('modelPop').addEventListener('mouseleave', ()=>{ timer = setTimeout(hideModelPop, 160); });
   window.addEventListener('scroll', hideModelPop, true);
@@ -1712,7 +1891,12 @@ $('btnGapClear').onclick = async ()=>{
   const r = await fetch('/api/gaps',{
     method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
   }).then(r=>r.json()).catch(()=>null);
-  if(r){ renderGaps(r); toast(null, '已清空能力缺口记录', 'mute'); }
+  if(r){
+    renderGaps(r);
+    // 基线跟着清零：清空后的新登记才不会被旧基线误判成「没有新增」
+    gapsKnownTotal = 0; gapsKnownKeys = [];
+    toast(null, '已清空能力缺口记录', 'mute');
+  }
   else toast($('btnGapClear'), '清空失败', 'bad');
 };
 /* 后台模型抽取可能晚于 done 才把 skill 落盘：收尾后核对一次，有新增就提示 */
@@ -1725,8 +1909,275 @@ function checkSkillGrew(){
     skillKnownCount = now;
   }).catch(()=>{});
 }
-$('navSkill').onclick = ()=>{ showView('skills'); loadSkills(); loadGaps(); };
-$('btnSkillRefresh').onclick = ()=>{ loadSkills(); loadGaps(); };
+/* 能力缺口同款核对：任务全程都可能登记（预检 / 调用不存在的工具 /
+   report_gap），收尾后核对两次（刚收尾 + 稍后补查），总量涨了就提示。
+   首次调用只建基线不提示——页面加载时已有的历史缺口不该弹。 */
+let gapsKnownTotal = null;
+let gapsKnownKeys = [];
+function checkGapsGrew(){
+  fetch('/api/gaps').then(r=>r.json()).then(d=>{
+    const items = (d && d.items) || [];
+    const total = (d && d.total) || 0;
+    if(gapsKnownTotal !== null && total > gapsKnownTotal){
+      const known = new Set(gapsKnownKeys);
+      const fresh = items.filter(g=>!known.has((g.kind||'') + ':' + (g.key||'')));
+      const names = fresh.length ? fresh.map(g=>g.key).join('、') : '';
+      toast(null, `新增能力缺口 ${total - gapsKnownTotal} 条`
+            + (names ? `：${names}` : '') + '，可在「能力缺口」栏目查看', 'mute');
+    }
+    gapsKnownTotal = total;
+    gapsKnownKeys = items.map(g=>(g.kind||'') + ':' + (g.key||''));
+  }).catch(()=>{});
+}
+$('navSkill').onclick = ()=>{ showView('skills'); loadSkills(); };
+$('navGaps').onclick = ()=>{ showView('gaps'); loadGaps(); };
+$('btnSkillRefresh').onclick = ()=>{ loadSkills(); };
+$('btnGapRefresh').onclick = ()=>{ loadGaps(); };
+/* ================= 评测台 =================
+   评测集是 harness 的标尺。这个栏目负责三件事：
+   1. 一键运行（后台线程，前端轮询进度，跑完弹提示并打开报告）；
+   2. 报告查看（时间、代码版本、逐条表现、失败归因分布，落 evals/results/）；
+   3. 任务集增删改（前端改好整体提交；受保护任务服务端拒绝删除，
+      保存前自动备份、保存后回读校验，坏了自动回滚）。 */
+let evalData = {cases: [], protected: [], categories: {}};
+let evalEditRef = null;    // 正在展开编辑的任务对象（null = 无）
+let evalTimer = null;      // 轮询评测进度的定时器
+
+async function loadEvals(){
+  try{
+    const d = await apiGet('/api/evals');
+    evalData = {cases: (d.tasks && d.tasks.cases) || [],
+                protected: (d.tasks && d.tasks.protected) || [],
+                categories: (d.tasks && d.tasks.categories) || {}};
+    renderEvalCatOptions();
+    renderEvalTasks();
+    renderEvalReports(d.reports || []);
+    applyEvalState(d.state || {});
+  }catch(e){
+    renderListError($('evalTaskList'), e, loadEvals);
+  }
+}
+function renderEvalCatOptions(){
+  const sel = $('evalCat');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">全部</option>'
+    + Object.keys(evalData.categories)
+        .map(c => `<option value="${c}">${c}（${evalData.categories[c]}）</option>`).join('');
+  sel.value = [...sel.options].some(o => o.value === cur) ? cur : '';
+}
+function renderEvalTasks(){
+  const box = $('evalTaskList');
+  box.innerHTML = '';
+  $('evalTaskCount').textContent = evalData.cases.length + ' 条';
+  if(!evalData.cases.length){
+    box.appendChild(el('div','task-empty','任务集是空的。点「新增任务」加一条（旧文件每次保存前都备份在 evals/.run/）。'));
+    return;
+  }
+  let lastCat = null;
+  for(const c of evalData.cases){
+    const cat = c.category || 'general';
+    if(cat !== lastCat){
+      box.appendChild(el('div','sk-path', `—— ${cat} ——`));
+      lastCat = cat;
+    }
+    box.appendChild(evalTaskItem(c));
+  }
+}
+function evalTaskItem(c){
+  const prot = evalData.protected.includes(c.id);
+  const it = el('div','sk-item');
+  const head = el('div','sk-head');
+  head.appendChild(el('span','sk-name', (prot ? '🔒 ' : '') + (c.id || '(无 id)')));
+  head.appendChild(el('span','sk-tag', c.category || 'general'));
+  const layers = Object.keys(c.expect || {}).join('/');
+  if(layers) head.appendChild(el('span','sk-ver', layers));
+  const edit = el('button','mini-btn','编辑');
+  edit.onclick = ()=>{ evalEditRef = evalEditRef === c ? null : c; renderEvalTasks(); };
+  const del = el('button','mini-btn','删除');
+  del.onclick = ()=> delEvalTask(c);
+  head.appendChild(edit);
+  head.appendChild(del);
+  it.appendChild(head);
+  const p = c.prompt || '';
+  it.appendChild(el('div','sk-desc', p.slice(0, 160) + (p.length > 160 ? '…' : '')));
+  if(c.notes) it.appendChild(el('div','sk-path', c.notes));
+  if(evalEditRef === c) it.appendChild(evalEditor(c));
+  return it;
+}
+function evalEditor(c){
+  const box = el('div','eval-edit');
+  const row1 = el('div','ee-row');
+  const idIn = document.createElement('input');
+  idIn.placeholder = 'id（唯一，如 c6-xxx）'; idIn.value = c.id || '';
+  if(!c._isNew) idIn.disabled = true;   // 改 id 等于删旧建新，语义模糊——新建时才可填
+  const catSel = document.createElement('select');
+  for(const cat of ['coding','fileops','writing','analysis','ops','honesty','policy'])
+    catSel.appendChild(new Option(cat, cat));
+  catSel.value = c.category || 'coding';
+  row1.appendChild(idIn); row1.appendChild(catSel);
+  const promptTa = document.createElement('textarea');
+  promptTa.rows = 2; promptTa.placeholder = '任务指令（会原样喂给完整 agent 管线）';
+  promptTa.value = c.prompt || '';
+  const expectTa = document.createElement('textarea');
+  expectTa.rows = 4;
+  expectTa.placeholder = '判定条件 expect（JSON）：contains/contains_norm/numbers/keywords/must_not/check/check_contains/min_ratio';
+  expectTa.value = JSON.stringify(c.expect || {}, null, 1);
+  const seedTa = document.createElement('textarea');
+  seedTa.rows = 3; seedTa.placeholder = 'seed 文件（JSON：{"相对路径":"内容"}，可空 {}）';
+  seedTa.value = JSON.stringify(c.seed || {}, null, 1);
+  const notesIn = document.createElement('input');
+  notesIn.placeholder = '备注（可空）'; notesIn.value = c.notes || '';
+  const foot = el('div','ee-foot');
+  const cancel = el('button','mini-btn','取消');
+  cancel.onclick = ()=>{
+    if(c._isNew) evalData.cases = evalData.cases.filter(x => x !== c);
+    evalEditRef = null; renderEvalTasks();
+  };
+  const save = el('button','mini-btn','保存到此任务集');
+  save.onclick = async ()=>{
+    let expect, seed;
+    try{ expect = JSON.parse(expectTa.value || '{}'); }
+    catch(e){ toast(save, 'expect 不是合法 JSON：' + e.message, 'bad'); return; }
+    try{ seed = JSON.parse(seedTa.value || '{}'); }
+    catch(e){ toast(save, 'seed 不是合法 JSON：' + e.message, 'bad'); return; }
+    const cid = idIn.value.trim();
+    if(!cid){ toast(save, 'id 不能为空', 'bad'); return; }
+    if(c._isNew && evalData.cases.some(x => x.id === cid)){
+      toast(save, 'id 已存在：' + cid, 'bad'); return;
+    }
+    Object.assign(c, {id: cid, category: catSel.value, prompt: promptTa.value,
+                      expect, seed, notes: notesIn.value.trim()});
+    delete c._isNew;
+    await saveEvalTasks(save);
+  };
+  foot.appendChild(cancel); foot.appendChild(save);
+  box.appendChild(row1); box.appendChild(promptTa);
+  box.appendChild(expectTa); box.appendChild(seedTa);
+  box.appendChild(notesIn); box.appendChild(foot);
+  return box;
+}
+async function saveEvalTasks(anchor){
+  try{
+    const r = await fetch('/api/evals/tasks',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'save', cases: evalData.cases})
+    }).then(x=>x.json());
+    if(r.error){ toast(anchor, r.error, 'bad'); return; }   // 服务端已回滚，保留本地改动供修正
+    evalEditRef = null;
+    toast(null, `任务集已保存（${r.count} 条，旧文件已备份）`, 'ok');
+    loadEvals();
+  }catch(e){ toast(anchor, '保存失败：' + e.message, 'bad'); }
+}
+async function delEvalTask(c){
+  if(evalData.protected.includes(c.id)){
+    toast(null, `「${c.id}」被常驻回归钉死（诚实性簇/安全策略），不能删除`, 'bad');
+    return;
+  }
+  const ok = await confirmModal({
+    title: `删除评测任务 ${c.id}？`,
+    sub: '从 evals/tasks.yaml 移除，保存即生效；旧文件自动备份到 evals/.run/。',
+    danger: true, okText: '删除'
+  });
+  if(!ok) return;
+  evalData.cases = evalData.cases.filter(x => x !== c);
+  await saveEvalTasks(null);
+}
+/* ---- 运行与进度 ---- */
+function applyEvalState(st){
+  if(st.running){ showEvalRunning(st); startEvalPoll(); }
+  else if((st.results || []).length){
+    const passed = st.results.filter(r => r.verdict === 'pass').length;
+    $('evalStatus').classList.remove('hide');
+    $('evalStatus').querySelector('.eval-spin').style.display = 'none';
+    $('evalStatusText').textContent = `上次评测（${st.finished_at || '—'}）：${passed}/${st.results.length} 通过`
+      + (st.report ? ` · 报告 ${st.report}` : '');
+  }
+}
+function showEvalRunning(st){
+  $('evalStatus').classList.remove('hide');
+  $('evalStatus').querySelector('.eval-spin').style.display = '';
+  $('evalStatusText').textContent = `评测中 ${st.done || 0}/${st.total || '?'} · 当前 ${st.current || '—'}`
+    + (st.repeat > 1 ? ` · pass^${st.repeat}` : '')
+    + (st.stop_requested ? ' ·（已请求停止，跑完当前任务收工）' : '');
+  $('btnEvalRun').classList.add('hide');
+  $('btnEvalStop').classList.remove('hide');
+}
+function hideEvalRunning(){
+  $('evalStatus').classList.add('hide');
+  $('btnEvalRun').classList.remove('hide');
+  $('btnEvalStop').classList.add('hide');
+}
+function startEvalPoll(){
+  if(evalTimer) return;
+  evalTimer = setInterval(async ()=>{
+    let st;
+    try{ st = await apiGet('/api/evals/status'); }
+    catch(e){ return; }                      // 单次轮询失败不算事，下一轮再看
+    if(st.running){ showEvalRunning(st); return; }
+    clearInterval(evalTimer); evalTimer = null;
+    hideEvalRunning();
+    if(st.error) toast(null, '评测失败：' + st.error, 'bad');
+    else{
+      const passed = (st.results || []).filter(r => r.verdict === 'pass').length;
+      toast(null, `评测完成：${passed}/${(st.results || []).length} 通过，报告已生成`, 'ok');
+      if(st.report) openEvalReport(st.report);
+    }
+    loadEvals();
+  }, 2000);
+}
+$('btnEvalRun').onclick = async ()=>{
+  const repeat = +($('evalRepeat').value || 1);
+  const body = {category: $('evalCat').value, repeat,
+                label: $('evalLabel').value.trim()};
+  try{
+    const r = await fetch('/api/evals/run',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    }).then(x=>x.json());
+    if(r.error){ toast($('btnEvalRun'), r.error, 'bad'); return; }
+    toast(null, `评测已启动：${r.total} 条任务，可在本页看进度`, 'ok');
+    showEvalRunning({running:true, done:0, total:r.total, current:'准备中', repeat});
+    startEvalPoll();
+  }catch(e){ toast($('btnEvalRun'), '启动失败：' + e.message, 'bad'); }
+};
+$('btnEvalStop').onclick = async ()=>{
+  const r = await fetch('/api/evals/stop',{
+    method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
+  }).then(x=>x.json()).catch(()=>null);
+  toast(null, r && r.ok ? '已请求停止：当前任务跑完后收工' : (r && r.error) || '停止失败', 'mute');
+};
+$('btnEvalRefresh').onclick = ()=> loadEvals();
+/* ---- 报告 ---- */
+function renderEvalReports(reports){
+  const box = $('evalReportList');
+  box.innerHTML = '';
+  $('evalReportCount').textContent = reports.length + ' 份';
+  if(!reports.length){
+    box.appendChild(el('div','task-empty','还没有报告。点「开始评测」跑一轮，报告会自动生成在这里。'));
+    return;
+  }
+  for(const r of reports){
+    const it = el('div','sk-item');
+    const head = el('div','sk-head');
+    head.appendChild(el('span','sk-name', r.name));
+    head.appendChild(el('span','sk-ver', r.mtime || ''));
+    const view = el('button','mini-btn','查看');
+    view.onclick = ()=> openEvalReport(r.name);
+    head.appendChild(view);
+    it.appendChild(head);
+    box.appendChild(it);
+  }
+}
+async function openEvalReport(name){
+  try{
+    const d = await apiGet('/api/evals/report?name=' + encodeURIComponent(name));
+    const pre = $('evalReportView');
+    pre.textContent = d.markdown || '(空报告)';
+    pre.classList.remove('hide');
+    pre.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }catch(e){ toast(null, '报告打开失败：' + e.message, 'bad'); }
+}
+$('navEval').onclick = ()=>{ showView('evals'); loadEvals(); };
 $('btnSkillClear').onclick = async ()=>{
   const ok = await confirmModal({
     title: '清空全部技能？',
@@ -1748,6 +2199,7 @@ function refreshSkillCount(){
 }
 refreshMemCount();
 refreshSkillCount();
+checkGapsGrew();   // 首次调用只建基线：启动时已有的缺口不弹提示
 const PANES = {models:'paneModels', skills:'paneSkills', tools:'paneTools', general:'paneGeneral'};
 function openSettings(tab){
   hideModelPop();
@@ -3176,6 +3628,11 @@ fetch('/api/state').then(r=>r.json()).then(s=>{
     allowWrite = s.prefs.permission === 'full';
     renderPerm();
   }
+  // 悬停卡片延迟：通用设置里可调，持久化在服务端
+  if(s.prefs && s.prefs.tip_delay){
+    tipDelayMs = +s.prefs.tip_delay || 1500;
+    syncGenTipDelay();
+  }
   if(s.memory){
     $('genMemory').textContent = s.memory.count
       ? `${s.memory.count} 条（新任务会自动读取）`
@@ -3186,14 +3643,24 @@ fetch('/api/state').then(r=>r.json()).then(s=>{
 refreshModels();
 loadTasks();
 
-function paintOllama(state, text, title){
+/* ================= 侧栏服务按钮 =================
+   本地部署：指示灯 + 一键重启（stop.bat → start.bat）。
+   状态口径——
+   - 绿：Ollama 与 Web 服务都在（本地）；
+   - 红：有一个没开启（Ollama 无响应 / 服务未响应）；
+   - 红褐色：重启中或服务正在恢复。
+   云端部署：/api/health 报 local=false → 一律绿、不可点（服务由托管
+   平台管理，stop/start 脚本在云端根本不存在，用它们的在不在来判定）。 */
+function paintSvc(state, text, title){
   const dot = $('ollamaDot'), txt = $('ollamaTxt'), meta = $('ollamaMeta');
-  dot.className = 'dot ' + state;             // ok / bad / wait
+  dot.className = 'dot ' + state;             // ok / bad / busy / wait
   txt.textContent = text;
-  if(meta) meta.title = title || (state === 'ok' ? '点击打开 Ollama 服务页'
-                                                 : '点击立即重试自动拉起 Ollama');
+  if(meta) meta.title = title || '';
 }
 let ollamaBusy = false;
+let svcLocal = true;        // 本地部署才可重启；云端由 /api/health 判定后置 false
+let svcRestarting = false;  // 重启流程进行中：期间轮询不与其抢状态
+const svcWait = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Ollama 是本地模型的上游。本机长期不关机，它可能被手动退出或升级时重启，
    本地模型就静默失效了——这里发现没响应就自动拉一把（后端 ollamaguard 负责
@@ -3201,7 +3668,7 @@ let ollamaBusy = false;
 async function ensureOllama(force){
   if(ollamaBusy) return;
   ollamaBusy = true;
-  paintOllama('wait', '正在拉起 Ollama…', '正在自动拉起本机的 Ollama 服务');
+  paintSvc('wait', '正在拉起 Ollama…', '正在自动拉起本机的 Ollama 服务');
   let r = null;
   try{
     r = await fetch('/api/ollama/ensure',{
@@ -3209,18 +3676,18 @@ async function ensureOllama(force){
       body: JSON.stringify({force: !!force})
     }).then(x=>x.json());
   }catch(e){
-    paintOllama('bad', 'Ollama 无响应', '连不上本地服务，无法拉起 Ollama');
+    paintSvc('bad', 'Ollama 无响应', '连不上本地服务，无法拉起 Ollama');
     ollamaBusy = false;
     return;
   }
   ollamaBusy = false;
   if(r && r.ok){
-    paintOllama('ok', 'Ollama 已连接', r.detail || '');
+    paintSvc('ok', '本地服务运行中', 'Ollama 已就绪。点击重启本地服务');
     // 只有「这次真的把它拉起来了」才提示，本来就在跑的不打扰
     if(r.action === 'started') toast(null, '已自动拉起 Ollama，本地模型恢复可用', 'ok');
     return;
   }
-  paintOllama('bad', 'Ollama 无响应', (r && r.detail) || '自动拉起失败');
+  paintSvc('bad', 'Ollama 未连接', (r && r.detail) || '自动拉起失败');
   // 冷却期内的重复尝试不弹提示，否则每 30 秒骚扰一次
   if(r && r.action !== 'cooldown'){
     toast(null, (r && r.detail) || '自动拉起 Ollama 失败', 'bad');
@@ -3228,33 +3695,93 @@ async function ensureOllama(force){
 }
 
 async function checkHealth(){
+  if(svcRestarting) return;   // 重启流程自己管状态，别打架
   try{
     const h = await apiGet('/api/health');
-    if(h.ollama){ paintOllama('ok', 'Ollama 已连接', '点击打开 Ollama 服务页'); return; }
+    if(h.local === false){
+      // 云端：一律绿、不可点；工作区路径在云端操作不了，整行隐藏
+      svcLocal = false;
+      const wsRow = $('wsMeta');
+      if(wsRow) wsRow.classList.add('hide');
+      paintSvc('ok', '云端部署 · 服务运行中', '云端部署：服务由托管平台管理，无需本地重启');
+      return;
+    }
+    if(h.ollama){ paintSvc('ok', '本地服务运行中', 'Ollama 与 Web 服务都正常。点击重启本地服务'); return; }
     if(h.ollama_auto_start === false){
-      paintOllama('bad', 'Ollama 无响应', '配置里已关闭自动拉起（ollama.auto_start: false）');
+      paintSvc('bad', 'Ollama 未连接', '配置里已关闭自动拉起（ollama.auto_start: false）');
       return;
     }
     // 后端刚试过（冷却中）就先别重复拉，等下一轮
     const last = h.ollama_last || {};
     if(last.action === 'cooldown'){
-      paintOllama('bad', 'Ollama 无响应', last.detail || '');
+      paintSvc('bad', 'Ollama 未连接', last.detail || '');
       return;
     }
     await ensureOllama(false);
   }catch(e){
-    paintOllama('bad', 'Ollama 无响应', (e && e.message) || '');
+    // 服务没应答：重启中 → 红褐色「重启中」；否则红「服务未响应」
+    paintSvc(svcRestarting ? 'busy' : 'bad',
+             svcRestarting ? '服务重启中…' : '服务未响应',
+             svcRestarting ? '正在重启本地服务，稍候自动恢复' : 'Web 服务没有应答');
   }
 }
 checkHealth();
 setInterval(checkHealth, 30000);
 setInterval(updateAIHeadTime, 1000);   // 头像行耗时实时跳动
 
-/* 左下角两个可点击入口：Ollama 服务页 / 工作区文件夹 */
-$('ollamaMeta').onclick = () => {
-  // 有响应就跳服务页；没响应时点击 = 立即重试拉起（跳到一个打不开的页面没意义）
-  if($('ollamaDot').classList.contains('ok')) window.open(ollamaUrl, '_blank');
-  else ensureOllama(true);
+/* 左下角服务按钮：本地 = 确认后重启（stop.bat → start.bat）；云端 = 只读 */
+$('ollamaMeta').onclick = async () => {
+  if(!svcLocal){
+    toast(null, '云端部署：服务由托管平台管理，无需重启', 'mute');
+    return;
+  }
+  if(svcRestarting || $('ollamaDot').classList.contains('busy')) return;
+  const okGo = await confirmModal({
+    title: '重启本地服务？',
+    sub: '复用项目根目录的 stop.bat / start.bat：先停常驻服务与 Web 服务，再重新拉起。期间页面会短暂失联（这里变红褐色），恢复后自动变绿。',
+    okText: '重启'
+  });
+  if(!okGo) return;
+  svcRestarting = true;
+  paintSvc('busy', '正在重启服务…', '已发出重启指令：stop.bat → start.bat，稍候自动恢复');
+  let issued = false;
+  try{
+    const r = await fetch('/api/service/restart',{
+      method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
+    }).then(x=>x.json());
+    if(r && r.error){
+      toast(null, r.error, 'bad');
+      svcRestarting = false;
+      paintSvc('bad', '重启未执行', '服务仍在运行，可再次尝试');
+      return;
+    }
+    issued = true;
+  }catch(e){ /* 请求没送到（服务骤停）：多半已经在重启，交给轮询判断 */ }
+  if(!issued){
+    await svcWait(4000);
+    try{ await apiGet('/api/health'); svcRestarting = false; }catch(e){ /* 仍在重启 */ }
+  }
+  const t0 = Date.now();
+  const iv = setInterval(async ()=>{
+    try{
+      const h = await apiGet('/api/health');
+      if(h.ollama){
+        clearInterval(iv);
+        svcRestarting = false;
+        paintSvc('ok', '本地服务运行中', '重启完成：Ollama 与 Web 服务都正常。点击可再次重启');
+        toast(null, '本地服务已重启完成', 'ok');
+      }else if(Date.now() - t0 > 120000){
+        clearInterval(iv); svcRestarting = false;
+        paintSvc('bad', 'Ollama 未连接', '服务已恢复但 Ollama 未就绪；可稍后再点一次重启');
+      }
+    }catch(e){
+      paintSvc('busy', '服务重启中…', '正在重启本地服务，稍候自动恢复');
+      if(Date.now() - t0 > 120000){
+        clearInterval(iv); svcRestarting = false;
+        paintSvc('bad', '服务未恢复', '重启超时：请到项目目录手动运行 start.bat');
+      }
+    }
+  }, 2000);
 };
 $('wsMeta').onclick = async () => {
   const r = await fetch('/api/open-folder',{
@@ -3877,6 +4404,10 @@ function settleReply(status){
   // 注意**不清 cur**：若收尾之后还有内容接上来（多步任务的后续步骤），
   // 应当接着这一段往下写，而不是凭空多开一个气泡。曾经因为这里清了 cur，
   // 续写变成新节点、旧节点上的工具条再也撤不掉（tools/test_reply_flow.mjs 用例 C 抓的）。
+  // 缺口登记贯穿任务全程（预检在开工前、report_gap 在收尾前），四条收尾路
+  // 都要核对一次：稍等落盘后查，稍后再补查一次防晚到。
+  setTimeout(checkGapsGrew, 600);
+  setTimeout(checkGapsGrew, 7000);
   return st;
 }
 /* 流程又动起来了（又一段思考 / 正文 / 工具）：把「已收尾」连同它带来的工具条
@@ -4414,21 +4945,91 @@ $('pathBtn').onclick = ()=>{
 /* 那条权限说明（「越出工作区的路径与黑名单命令仍会被拦截…」）平时不占地方，
    只有把鼠标停到「默认权限 / 完全访问权限」这颗按钮上时才展开；焦点落到按钮上
    （键盘 Tab）也一样展开。离开时留一点宽限，方便把鼠标顺势移到说明本体上。 */
-(function bindPermHint(){
-  const wrap = composerWrapEl, btn = permBtn;
-  if(!wrap || !btn) return;
-  const hint = wrap.querySelector('.hint');
-  let t = null;
-  const show = ()=>{ clearTimeout(t); wrap.classList.add('show-hint'); };
-  const hide = ()=>{ clearTimeout(t); t = setTimeout(()=> wrap.classList.remove('show-hint'), 200); };
-  btn.addEventListener('mouseenter', show);
-  btn.addEventListener('mouseleave', hide);
-  btn.addEventListener('focus', show);
-  btn.addEventListener('blur', hide);
-  if(hint){
-    hint.addEventListener('mouseenter', show);
-    hint.addEventListener('mouseleave', hide);
+/* ================= 统一悬停卡片（tip-card） =================
+   全站接管 [title] 的悬停提示。原生 tooltip 的问题：宽度样式不受控——
+   「模型配置」这种短句是干净的单行圆角卡片，长句就被浏览器挤成方块；
+   「完全访问权限」还曾额外展开下方说明段落，把对话框顶得上下跳。
+   这里统一渲染成圆角卡片：单行优先（width:max-content），超过上限宽度
+   才折行；下方空间不够翻到元素上方，绝不挤压布局。
+   原生 title 暂存 data-tip、离开时还原——复制入口、读屏等依赖 title 的
+   行为不受影响；悬停期间 title 被动态更新过（renderPerm 这类）就不回写旧值。 */
+(function bindTipCard(){
+  const card = document.createElement('div');
+  card.className = 'tip-card';
+  document.body.appendChild(card);
+  let cur = null;        // 卡片正在显示的元素
+  let pending = null;    // 已接管 title、正在等 1.5s 延迟的元素
+  let showT = null, hideT = null;
+  let mx = 0, my = 0;    // 最近鼠标位置：卡片贴着它出现，移过去就能选中文字
+
+  function restore(el){
+    if(!el || !el.dataset || el.dataset.tip === undefined) return;
+    if(!el.hasAttribute('title')) el.setAttribute('title', el.dataset.tip);
+    delete el.dataset.tip;
   }
+  function cancelPending(){
+    clearTimeout(showT);
+    restore(pending);
+    pending = null;
+  }
+  function hide(){
+    clearTimeout(hideT);
+    cancelPending();
+    restore(cur);
+    cur = null;
+    card.classList.remove('show');
+  }
+  function showNow(){
+    const el = pending;
+    if(!el) return;
+    pending = null;
+    const text = String(el.dataset.tip ?? '');
+    if(!text.trim()){ hide(); return; }
+    cur = el;
+    card.textContent = text;
+    card.classList.add('show');
+    // 定位贴着**当前鼠标**（而不是元素外框）：以前贴元素 rect，悬停区大的
+    // 元素会把卡片甩到离光标很远的地方，想移过去选中文字都够不着
+    const cw = card.offsetWidth, ch = card.offsetHeight;
+    let x = mx + 12, y = my + 16;
+    if(x + cw > window.innerWidth - 8) x = Math.max(8, mx - cw - 12);
+    if(y + ch > window.innerHeight - 8) y = Math.max(8, my - ch - 12);
+    card.style.left = x + 'px';
+    card.style.top = y + 'px';
+  }
+  document.addEventListener('mouseover', (e)=>{
+    const t = e.target;
+    if(!t || !t.closest) return;
+    // 悬停在卡片自身上：保持现状（可悬停、文字可选中），并取消移动途中的消失定时
+    if(card.contains(t)){ clearTimeout(hideT); return; }
+    mx = e.clientX; my = e.clientY;
+    const el = t.closest('[title],[data-tip]');
+    if(el === cur || el === pending) return;   // 还是同一个元素：不重置延迟
+    hide();
+    if(!el) return;
+    // 立即接管原生 title：否则浏览器自带的 title 提示（约 1s）会抢在
+    // 我们 1.5s 之前冒出来，又变回双提示
+    if(el.hasAttribute('title')){ el.dataset.tip = el.getAttribute('title'); el.removeAttribute('title'); }
+    pending = el;
+    showT = setTimeout(showNow, tipDelayMs);   // 悬停够久才弹：扫过一排按钮不再连成一串卡片
+  });
+  document.addEventListener('mouseout', (e)=>{
+    const to = e.relatedTarget;
+    // 还在等待期的元素：真离开了（不是在它内部子节点间移动）就取消并还原 title
+    if(pending && !(to && to.closest && to.closest('[title],[data-tip]') === pending)){
+      cancelPending();
+      return;
+    }
+    if(!cur) return;
+    // 消失规则：脱离触发元素**且**脱离卡片才消失
+    if(to && card.contains(to)) return;
+    if(to && to.closest && to.closest('[title],[data-tip]') === cur) return;
+    clearTimeout(hideT);
+    hideT = setTimeout(hide, 60);
+  });
+  document.addEventListener('mousemove', (e)=>{ mx = e.clientX; my = e.clientY; });
+  window.addEventListener('scroll', hide, true);
+  window.addEventListener('blur', hide);
 })();
 $('permBtn').onclick = async ()=>{
   allowWrite = !allowWrite;
@@ -4841,7 +5442,9 @@ function handleTaskEvent(ev, data){
       // 真有新增就补提示（收尾时同步那批已经在 memory 事件里提示过了）
       setTimeout(checkMemoryGrew, 6000);
       // 技能沉淀同样在后台线程落盘，稍后核对是否自动产出了新技能
+      // （6s 一次常能赶上；大技能抽取慢，20s 再补查一次，别让用户白等）
       setTimeout(checkSkillGrew, 6000);
+      setTimeout(checkSkillGrew, 20000);
     }
     // 每条事件落地之后统一核对两条不变量（都问 DOM）：
     //   ① 工具条不许停在半途——下面又长出了本轮内容，就把它撤掉；

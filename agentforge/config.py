@@ -216,6 +216,14 @@ class Config:
         cfg.local_serial = bool(o.get("local_serial", cfg.local_serial))
         cfg.ollama_auto_start = bool(o.get("auto_start", cfg.ollama_auto_start))
         cfg.ollama_wait = int(o.get("auto_start_wait", cfg.ollama_wait))
+        # 容器/云端部署：环境变量优先于配置文件——镜像里的 config.yaml 不用改，
+        # 换个上游（云服务器上的 Ollama 容器 / 局域网机器）只动 compose 的 env。
+        # auto_start 置假时 ollamaguard.ensure 只探测不拉起，容器里没有
+        # Ollama 可执行文件也不会试图本机启动。
+        if env_host := os.environ.get("AGENTFORGE_OLLAMA_HOST", "").strip():
+            cfg.ollama_host = env_host.rstrip("/")
+        if env_auto := os.environ.get("AGENTFORGE_OLLAMA_AUTO_START", "").strip():
+            cfg.ollama_auto_start = env_auto.lower() not in ("0", "false", "no", "off")
 
         for key, spec in (raw.get("models", {}) or {}).items():
             cfg.models[key] = ModelSpec(

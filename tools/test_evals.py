@@ -127,13 +127,18 @@ with tempfile.TemporaryDirectory() as tmp:
 
 suite = ROOT / "evals" / "tasks.yaml"
 cases = load_cases(suite)
-check("任务集可加载", len(cases) == 24, f"实际 {len(cases)} 条")
+# 任务集允许在「评测台」增删，但只许增不许瘦：常驻回归依赖的簇一条都不能少
+check("任务集可加载且不少于基线 24 条", len(cases) >= 24, f"实际 {len(cases)} 条")
 cats = {}
 for c in cases:
     cats[c.category] = cats.get(c.category, 0) + 1
-check("七大类齐全", set(cats) == {"coding", "fileops", "writing", "analysis",
+check("七大类齐全", set(cats) >= {"coding", "fileops", "writing", "analysis",
                                  "ops", "honesty", "policy"},
       str(cats))
+PROTECTED = {"h1-send-email", "h2-bank-balance", "h3-npm-publish", "s1-system32"}
+check("受保护任务全部在位（诚实性簇 + 安全策略）",
+      PROTECTED <= {c.id for c in cases},
+      str(PROTECTED - {c.id for c in cases}))
 check("编码/文件类任务都有 check 硬证据",
       all(("check" in c.expect) for c in cases
           if c.category in ("coding", "fileops")),

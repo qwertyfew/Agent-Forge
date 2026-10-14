@@ -385,7 +385,7 @@ examples/              示例工作区（demo-excel、novel-sample）
 
 判据只有一条：**把这条从代码里删掉，测试会不会红？** 红 → 才算架构保证；不红 → 它只是「劝」，得说明为什么允许它留在那一层。
 
-常驻回归 **21 个文件（18 Python + 3 前端）**，Python 侧 658 项断言逐条打印
+常驻回归 **30 个文件（23 Python + 7 前端）**，Python 侧 730 项断言逐条打印
 （重跑即复现）。跑法、依赖（Python 要用项目 `.venv`，
 前端三个 `.mjs` 需要 `jsdom`）以及「**SKIP 不等于通过**」这个坑，见
 [`docs/contracts.md`](docs/contracts.md) 第四节。
@@ -427,8 +427,12 @@ examples/              示例工作区（demo-excel、novel-sample）
 | 21 | 找对了入口，还得找对**对象** | 新增 `github_search`（按名字搜仓库，官方接口按 star 排序返回候选）+ `web_search` 侧自动兜一枪：判定「在找某个仓库」就把权威候选置顶——搜索摘要给不出「有哪些同名项目」，而模型会锚定它看到的第一条链接（实测：把 80 star 的镜像站当成了 19 万 star 的正主） |
 | 22 | 先有标尺，再谈改进 | 评测集（20 条五类任务，判定零模型调用：exact→norm→numeric→fuzzy→must_not→check，check 真跑命令）+ A/B 对比工具；路由改按「失败后果」定档（swe-router 思路）：满足下限的最便宜模型，而非永远挑最强；死逻辑 classify 移出执行链；配套纪律「脚手架只减不增」 |
 | 23 | 缺了就明说，失败了再换条路 | 工具预检（preflight）：任务意图需要的能力环境没有时，架构生成「无法完成通告」注入 system 层并记缺口台账——宁可明说缺，不许装作有；能力缺口台账（gaps）+ 技能管理页「能力缺口」栏目，三个记录源全部由架构判定（未知工具调用/预检缺失/评测失败归因）；「多路径尝试」开关：某一步失败先让模型拟几条互不相同的实现路径，再逐条真跑（换路不换模型）；评测集补诚实性簇（CAR-bench 式不可满足变体）与安全拒绝簇，运行器加 --repeat 报 pass^k（tau-bench 口径） |
+| 24 | 为上云做好本地准备 | Dockerfile + docker-compose（app + 可选 ollama 服务，profile 门控）+ .dockerignore + .env.example + docs/deploy.md；三处小改动：AGENTFORGE_OLLAMA_HOST/AUTO_START 环境变量优先于配置文件、run.py 加 --host、AGENTFORGE_DATA_DIR 持久化任务台账；数据全落 ./data 卷，备份=拷目录；models.json 绝不进镜像 |
+| 25 | 能力缺口独立成栏 + report_gap 登记 | 缺口管理从技能管理拆出独立栏目；新增 `report_gap` 工具补上"模型发现缺什么"的通道（调用即证据，参数原样入账）：缺工具→如实说明并提取功能文案；缺技能→先检索资料再总结操作流程；预检加邮件能力项、系统提示加第 8 条 |
+| 26 | 评测台：网页上跑评测、出报告、改任务集 | 侧栏新增「评测台」：一键运行评测集（后台线程 + 轮询进度，pass^k 可选）；报告自动生成（时间/代码版本/模型/逐条表现/失败归因分布/分类通过率，Markdown + JSON 双产物）；任务集增删改（保存前备份、回读校验、诚实性簇与安全策略任务受保护不可删） |
+| 27 | 侧栏服务按钮：一键重启 + 云端自适应 | 左下角「Ollama 已连接」指示改为服务按钮：绿=服务与 Ollama 都在、红=有一个没开、红褐=重启中；点击确认后复用 stop.bat → start.bat 重启（分离进程，HTTP 响应先发出），页面轮询 /api/health 自动从失联恢复到绿；云端（项目根无这两个 bat，镜像已排除）一律绿、不可点，工作区路径整行隐藏 |
 
-上面这张表是全部 21 步的索引；**每一步的来龙去脉（以及「这套东西是怎么被一步步训出来的」）在 [`docs/evolution.md`](docs/evolution.md)**。README 不再重复长叙事——它是每次会话都要读的入口，不该背着两万字的历史。
+上面这张表是全部 27 步的索引；**每一步的来龙去脉（以及「这套东西是怎么被一步步训出来的」）在 [`docs/evolution.md`](docs/evolution.md)**。README 不再重复长叙事——它是每次会话都要读的入口，不该背着两万字的历史。
 
 ## 设计原则：设定靠架构，偏好靠记忆
 
@@ -510,6 +514,18 @@ mini-swe-agent 用约 100 行、唯一工具 bash 在 SWE-bench Verified 拿到 
 
 哪些是**硬约束**（程序强制 + 常驻断言）、哪些只是**叮嘱**（有意留在提示词/纪律那一层），以及各项能力的可观测契约、脚本寿命约定、结论的来源等级——全文在 [`docs/contracts.md`](docs/contracts.md)。
 判据只有一条：**把这条从代码里删掉，测试会不会红？** 红 → 才算架构保证。
+
+## 容器化部署（已备好，未验证构建）
+
+上云服务器的准备已就绪：`Dockerfile` + `docker-compose.yml`（app + 可选
+ollama 服务）+ `.dockerignore` + `.env.example`，配套几处小改动让容器不改
+配置文件就能换 Ollama 上游、数据卷不丢任务历史。上服务器只要 `cp
+models.example.json models.json` 填 Key 再 `docker compose up -d`——完整步骤、
+数据 layout、**本地/云端判定规则**（项目根有 `start.bat`/`stop.bat` 即本地，
+云端镜像不带这对文件，界面据此把服务按钮转为常绿不可点、隐藏工作区路径）
+与**公网暴露的安全须知**（Web UI 无鉴权，勿裸奔公网）见
+[`docs/deploy.md`](docs/deploy.md)。本机无 Docker，镜像构建与容器启动留待
+服务器上首跑验证。
 
 ## 本地模型性能基准
 

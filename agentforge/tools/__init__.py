@@ -6,6 +6,7 @@ from pathlib import Path
 from .base import EXEC, SAFE, WRITE, Tool
 from .ext import build_ext_tools
 from .fs import build_fs_tools
+from .gap import build_gap_tools
 from .git import build_git_tools
 from .graph import build_graph_tools
 from .memory import build_memory_tools
@@ -91,6 +92,7 @@ def build_registry(guard, cfg, enable_web: bool = True, skill_registry=None) -> 
     tools += build_notes_tools(guard, cfg)
     tools += build_remote_tools(guard, cfg)
     tools += build_novel_tools(guard, cfg)
+    tools += build_gap_tools(guard, cfg)
     if enable_web:
         tools += build_web_tools(guard, cfg)
     tools += load_plugin_tools(guard, cfg)

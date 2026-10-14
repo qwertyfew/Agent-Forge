@@ -25,6 +25,7 @@ _LOCK = threading.Lock()
 KIND_LABEL = {
     "tool_missing": "工具缺失",
     "capability_missing": "能力缺失",
+    "skill_missing": "技能缺失",
     "eval_fail": "评测失败",
 }
 

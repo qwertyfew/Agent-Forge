@@ -1,0 +1,30 @@
+# 构建上下文里不要的东西：进镜像等于泄密或白白变大
+.git
+.venv
+__pycache__
+**/__pycache__
+
+# 机密与本机状态：绝对不入镜像（models.json 里有在线模型 API Key）
+models.json
+models.local.json
+.tasks.json
+.prefs.json
+.agentforge
+.run
+
+# 运行产物与开发资料：镜像里用不到
+evals/.run
+evals/results
+skills/learned
+tools
+docs
+examples
+scripts
+tests
+
+# 本机脚本
+*.bat
+service.py
+Dockerfile
+docker-compose.yml
+.dockerignore

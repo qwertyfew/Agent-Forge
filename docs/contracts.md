@@ -92,23 +92,18 @@ A 与 B 常常成对出现：**A 是"挡"，B 是"证明挡得住"**。只有 A 
 ### 四、怎么自己复核这份清单
 
 ```bash
-# 全部常驻回归（Python）；前端三个需要 jsdom
+# 全部常驻回归（Python + 前端，按 test_* 通配——新增测试自动进清单）
 # 注意：Python 必须用项目自带的 .venv（yaml 只在里面）；
 #      前端找不到 jsdom 会 SKIP 并以 0 退出 —— SKIP 不等于通过
-python tools/test_readcache.py && python tools/test_verify_gate.py \
- && python tools/test_sources_gate.py && python tools/test_local_facts.py \
- && python tools/test_planner.py && python tools/test_reveal.py \
- && python tools/test_taskstore.py && python tools/test_web_tools.py \
- && python tools/test_toolselect.py && python tools/test_artifacts.py \
- && python tools/test_memory.py
-node tools/test_task_view.mjs && node tools/test_tool_panel.mjs && node tools/test_reply_flow.mjs
+for f in tools/test_*.py; do python "$f" || exit 1; done
+for f in tools/test_*.mjs; do NODE_PATH="<jsdom 所在 node_modules>" node "$f" || exit 1; done
 ```
 
 复核"某条到底是 A 还是 C"，就问一句：**把这条从代码里删掉，测试会不会红？**
 红 → 它是 A+B；不红 → 它只是 C/D，得说明为什么允许它待在那一层。
 
-**最近一次复核（2026-10-13）**：逐条比对代码符号，上表所有标 A / A+B 的条目**符号在位**；
-21 个常驻测试文件（18 Python + 3 前端）**全部通过**；Python 侧 658 项断言逐条打印，
+**最近一次复核（2026-10-14）**：逐条比对代码符号，上表所有标 A / A+B 的条目**符号在位**；
+30 个常驻测试文件（23 Python + 7 前端）**全部通过**；Python 侧 730 项断言逐条打印，
 重跑即复现——
 标 `A+B` 的每一条都有对应的红点可复现（本轮新增的保证逐条做过突变验证：
 关掉仓库意图识别 / 把 `sort=stars` 摘掉 / 把权威候选塞到后面 / 403 不再解释额度 /

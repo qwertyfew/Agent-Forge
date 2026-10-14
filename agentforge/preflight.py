@@ -57,6 +57,13 @@ _CAPABILITIES: list[dict] = [
         "signal": re.compile(
             r"\bgit\b|提交代码|版本提交|clone|克隆(仓库|项目)?|push|pull request|PR\b", re.I),
     },
+    {
+        "key": "email",
+        "label": "邮件发送",
+        "tools": ["send_email"],
+        "signal": re.compile(
+            r"发(一)?(封|个)?(邮件|电子邮件|邮箱)|发邮件|邮件发送|smtp|e-?mail", re.I),
+    },
 ]
 
 # 架构生成的「无法完成通告」。措辞是硬指令：缺的能力做不到，必须如实说明，
@@ -67,6 +74,8 @@ _INABILITY_NOTE = (
     "{missing}\n"
     "对涉及这些能力的部分，你必须如实告知用户「当前缺少该能力，无法完成」，"
     "并说明缺的是什么；**绝不允许**凭记忆编造结果、假装已执行或给出虚构的数据/链接。"
+    "同时用 report_gap 工具把缺失项登记下来（kind=tool，写清它需要做什么），"
+    "让用户能在「能力缺口」栏目里看到。"
     "其余不依赖这些能力的部分照常完成。"
 )
 

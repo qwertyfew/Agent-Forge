@@ -6,18 +6,21 @@
 from __future__ import annotations
 
 import json
-import re
+import os
 import queue
+import re
+import subprocess
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from agentforge import artifact, autonote, autoskill, gaps, ollamaguard, reveal, runcontrol
 from agentforge.cli import CLI
 from agentforge.config import Config
+from agentforge.evalsdesk import EvalsDesk
 from agentforge.memory import MemoryStore
 from agentforge.llm import ollama_probe, set_local_serial
 from agentforge.modelstore import ModelStore
@@ -28,6 +31,24 @@ from agentforge.taskstore import TaskStore
 
 HERE = Path(__file__).resolve().parent
 INDEX = HERE / "web" / "index.html"
+
+
+def _is_local_deployment(base: Path | None = None) -> bool:
+    """本地部署判定：项目根目录同时有 start.bat / stop.bat 即本地。
+
+    这两个 Windows 脚本只在本机有用，云端镜像不会带（.dockerignore 排除了
+    *.bat 与 service.py），所以「文件在不在」本身就是部署位置的权威信号——
+    据此决定侧栏服务按钮是可点击的重启入口，还是云端常绿的只读指示。
+    """
+    root = Path(base) if base else HERE
+    return (root / "start.bat").is_file() and (root / "stop.bat").is_file()
+
+
+def _restart_command() -> str:
+    """重启命令行：先等 2s 让 HTTP 响应发出去（stop 会连本服务一起停），
+    再停旧的、等端口释放、拉起新的。整个流程在分离的 cmd 里自己走完。"""
+    return ("timeout /t 2 /nobreak >nul & call stop.bat "
+            "& timeout /t 3 /nobreak >nul & call start.bat")
 
 # 从 Ollama 发现本地模型的动作不快也不慢，缓存几秒避免每次刷新都打一次
 _DISCOVER_TTL = 5.0
@@ -212,6 +233,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(self._skills_snapshot())
         elif path == "/api/gaps":
             self._json(gaps.snapshot(self.cfg))
+        elif path == "/api/evals":
+            # 评测台：任务清单 + 历史报告 + 运行状态，一次拿全
+            self._json({"tasks": self.evals.list_tasks(),
+                        "reports": self.evals.list_reports(),
+                        "state": self.evals.snapshot()})
+        elif path == "/api/evals/status":
+            self._json(self.evals.snapshot())
+        elif path == "/api/evals/report":
+            qs = parse_qs(urlparse(self.path).query)
+            name = (qs.get("name") or [""])[0]
+            self._json(self.evals.read_report(name))
         elif path == "/api/tools":
             self._json(self._tools_snapshot())
         elif path == "/api/health":
@@ -223,6 +255,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "ollama_host": self.cfg.ollama_host,
                 "ollama_launcher": ollamaguard.launcher_label(),
                 "ollama_last": ollamaguard.last_result(),
+                # 本地部署才有重启一说：云端一律绿 + 不可点（见侧栏服务按钮）
+                "local": _is_local_deployment(),
             })
         else:
             self._json({"error": "not found"}, 404)
@@ -375,6 +409,39 @@ class _Handler(BaseHTTPRequestHandler):
                              kind=str(req.get("kind") or ""),
                              key=str(req.get("key") or ""))
         self._json({"removed": removed, **gaps.snapshot(self.cfg)})
+
+    # ---------- 评测台 ----------
+    def _evals_body(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            return json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            return {"__error__": "invalid json"}
+
+    def _handle_evals_run(self):
+        """启动一轮评测：后台线程跑，前端轮询 /api/evals/status 看进度。"""
+        req = self._evals_body()
+        if "__error__" in req:
+            self._json({"error": req["__error__"]}, 400)
+            return
+        self._json(self.evals.start_run(
+            category=str(req.get("category") or ""),
+            cases=str(req.get("cases") or ""),
+            repeat=req.get("repeat") or 1,
+            model=str(req.get("model") or ""),
+            label=str(req.get("label") or ""),
+        ))
+
+    def _handle_evals_tasks(self):
+        """整体保存评测任务清单（新增/修改/删除都在前端改好整体提交）。"""
+        req = self._evals_body()
+        if "__error__" in req:
+            self._json({"error": req["__error__"]}, 400)
+            return
+        if str(req.get("action") or "") != "save":
+            self._json({"error": "action 只支持 save"}, 400)
+            return
+        self._json(self.evals.save_tasks(req.get("cases") or []))
 
     def _handle_skills(self):
         """技能管理：删除单个技能 / 清空全部技能。
@@ -1191,8 +1258,20 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/gaps":
             self._handle_gaps()
             return
+        if path == "/api/evals/run":
+            self._handle_evals_run()
+            return
+        if path == "/api/evals/stop":
+            self._json(self.evals.stop())
+            return
+        if path == "/api/evals/tasks":
+            self._handle_evals_tasks()
+            return
         if path == "/api/ollama/ensure":
             self._handle_ollama_ensure()
+            return
+        if path == "/api/service/restart":
+            self._handle_service_restart()
             return
         if path == "/api/open-folder":
             self._handle_open_folder()
@@ -1640,6 +1719,14 @@ class _Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._json({"error": "invalid json"}, 400)
             return
+        # 悬停卡片延迟（毫秒）：通用设置里调，立即生效并持久化
+        if req.get("tip_delay") is not None:
+            saved_delay = self.prefs.set_tip_delay(req.get("tip_delay"))
+            snap = self.prefs.snapshot()
+            snap["ok"] = True
+            snap["note"] = f"悬停卡片延迟已设为 {saved_delay / 1000:g} 秒"
+            self._json(snap)
+            return
         value = req.get("permission")
         if value is None:
             self._json(self.prefs.snapshot())
@@ -1730,6 +1817,31 @@ class _Handler(BaseHTTPRequestHandler):
             req = {}
         self._json(ollamaguard.ensure(self.cfg, force=bool(req.get("force"))))
 
+    def _handle_service_restart(self):
+        """重启本地常驻服务（stop.bat → start.bat）。仅本地部署可用。
+
+        stop.bat 会把本 Web 服务一起停掉，所以真正动手的是**分离的** cmd
+        进程：先等 2s 让这条 HTTP 响应发出去，再执行停与启。页面随后靠
+        /api/health 轮询感知「失联（红褐色）→ 恢复（绿色）」。
+        """
+        if not _is_local_deployment():
+            self._json({"error": "云端部署：本地重启脚本（start.bat / stop.bat）不可用"}, 400)
+            return
+        if os.name != "nt":
+            self._json({"error": "start.bat / stop.bat 仅适用于 Windows 本机部署"}, 400)
+            return
+        try:
+            subprocess.Popen(
+                _restart_command(), cwd=str(HERE), shell=True,
+                creationflags=0x00000008 | 0x00000200,   # DETACHED_PROCESS | NEW_PROCESS_GROUP
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:  # noqa: BLE001
+            self._json({"error": f"重启指令发起失败：{type(e).__name__}: {e}"}, 500)
+            return
+        self._json({"ok": True,
+                    "note": "重启指令已发出：stop.bat → start.bat，页面稍候自动恢复"})
+
     # ---------- 打开工作区文件夹（资源管理器） ----------
     def _handle_open_folder(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -1800,8 +1912,12 @@ class _Handler(BaseHTTPRequestHandler):
 
 def serve(cfg: Config, auto_approve: bool, port: int, host: str = "127.0.0.1"):
     cli = CLI(cfg, auto_approve=auto_approve)
-    tasks = TaskStore(HERE / ".tasks.json")
-    prefs = PrefsStore(HERE / ".prefs.json")
+    # 任务台账与偏好的落盘目录：默认跟代码走（项目根），容器/云部署用
+    # AGENTFORGE_DATA_DIR 指到持久卷——否则容器一重建，任务历史就没了。
+    data_dir = Path(os.environ.get("AGENTFORGE_DATA_DIR", "") or HERE)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    tasks = TaskStore(data_dir / ".tasks.json")
+    prefs = PrefsStore(data_dir / ".prefs.json")
     mem = MemoryStore(cfg.state() / "memory.md")
     # 上次进程退出时没来得及收尾的任务：标成「已中断」，别让界面一直转圈
     orphans = tasks.mark_orphaned()
@@ -1809,7 +1925,7 @@ def serve(cfg: Config, auto_approve: bool, port: int, host: str = "127.0.0.1"):
         "Handler",
         (_Handler,),
         {"cli": cli, "cfg": cfg, "store": cli.store, "tasks": tasks,
-         "prefs": prefs, "mem": mem},
+         "prefs": prefs, "mem": mem, "evals": EvalsDesk(cfg)},
     )
     httpd = ThreadingHTTPServer((host, port), handler)
     url = f"http://{host}:{port}"
@@ -1824,7 +1940,7 @@ def serve(cfg: Config, auto_approve: bool, port: int, host: str = "127.0.0.1"):
     print(f"当前组合: {cli.store.summary_line()}")
     print(f"新建任务默认权限: {PERMISSION_LABEL.get(prefs.permission, prefs.permission)}"
           f"（在界面上改权限会更新这份默认值）")
-    print(f"任务台账: {HERE / '.tasks.json'}（历史 {len(tasks.list())} 条）")
+    print(f"任务台账: {data_dir / '.tasks.json'}（历史 {len(tasks.list())} 条）")
     if mem.exists():
         print(f"工作区记忆: {mem.path}（{mem.count()} 条，新任务会自动读取）")
     if orphans:

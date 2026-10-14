@@ -45,3 +45,7 @@ models.local.json
 # 入库的是任务定义 tasks.yaml 与判定器 evals.py
 evals/.run/
 evals/results/
+
+# 容器化部署的本地数据卷与密钥环境文件（不入库）
+data/
+.env

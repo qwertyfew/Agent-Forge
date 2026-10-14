@@ -1,0 +1,71 @@
+# AgentForge 容器化部署（参照 show 项目的 compose 结构）。
+#
+# 首次上服务器前（缺一步起不来）：
+#   cp models.example.json models.json   # 然后填在线模型的 Key（此文件不入库）
+#
+# 只用在线模型（不想要本机 Ollama 容器）：
+#   docker compose up -d                 # 默认不启动 ollama 服务（有 profiles 门）
+# 带本机 Ollama 容器一起跑：
+#   docker compose --profile ollama up -d
+#
+# 数据都在 ./data 下，备份 = 拷走这个目录。
+
+services:
+  agentforge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentforge-web
+    restart: unless-stopped
+    # Ollama 上游与自动拉起都可用环境变量覆盖（agentforge/config.py 支持），
+    # 不用改镜像里的 config.yaml。用外部 Ollama 时改 .env 即可。
+    environment:
+      - AGENTFORGE_OLLAMA_HOST=${AGENTFORGE_OLLAMA_HOST:-http://ollama:11434}
+      # 容器里没有 Ollama 可执行文件：置假 = 只探测不拉起，远端没上线就明说不可用
+      - AGENTFORGE_OLLAMA_AUTO_START=${AGENTFORGE_OLLAMA_AUTO_START:-false}
+      - AGENTFORGE_DATA_DIR=/app/data-state
+      - PYTHONDONTWRITEBYTECODE=1
+    command:
+      ["python", "run.py", "--web", "--host", "0.0.0.0", "--port", "8787",
+       "--no-open", "-w", "/app/workspace"]
+    ports:
+      - "${AGENTFORGE_PORT:-8787}:8787"
+    volumes:
+      # 智能体的工作区（它读写的一切文件）+ 工作区记忆/任务笔记（.agentforge 在里面）
+      - ./data/workspace:/app/workspace
+      # 任务台账与偏好（.tasks.json/.prefs.json），容器重建不丢历史
+      - ./data/state:/app/data-state
+      # 模型池：UI 里的启用/禁用/新增会写回这个文件，所以挂 rw 不挂 ro
+      - ./models.json:/app/models.json
+      # 自动沉淀的技能（skills/learned）用命名卷持久化；一手技能留在镜像层
+      - learned-skills:/app/skills/learned
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8787/api/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # 可选：云服务器上自带的 Ollama（CPU 也能跑小模型，有 GPU 时按注释放开）。
+  # 不需要本机 Ollama（只走 models.json 里的在线模型）就别启动它：
+  # docker compose up -d 默认不会带 profile。
+  ollama:
+    image: ollama/ollama:latest
+    container_name: agentforge-ollama
+    restart: unless-stopped
+    profiles: ["ollama"]
+    volumes:
+      - ./data/ollama:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"   # 只暴露给宿主机回环，外面不用直连 Ollama
+    # 有 NVIDIA GPU + 装好 nvidia-container-toolkit 时打开：
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  learned-skills:
