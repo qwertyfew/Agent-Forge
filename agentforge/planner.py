@@ -75,6 +75,43 @@ KIND_SIGNALS: dict[str, list[str]] = {
     ],
 }
 
+# ------------------------------------------------- 「这是在让动手改东西吗」
+#
+# kind_of 的老优先级「编码优先于写作」只认「代码/函数/bug/脚本」这类**成品名**，
+# 认不出「改动物件 + 改动动作」这种**说法**。实测事故：用户说「每当思维链打印完就
+# 把它隐藏，并把结果总结成一句话」——这是要改 `web/index.html` 的渲染，只因为句子里
+# 有一个"总结"，整条被判成**写作**；按写作维度选的模型于是去"写一段说明"、
+# "记下您的偏好"，一个文件都没碰（用户原话：两个指令都不执行）。
+#
+# 判据刻意只看**搭配**、不猜意图：改动物件与改动动作出现在同一个小句里即为真。
+_CHANGE_OBJ = (
+    r"(?:代码|源码|文件|脚本|函数|方法|模块|组件|插件|接口|路由|配置|参数|"
+    r"页面|界面|前端|样式|布局|渲染|输出|显示|逻辑|机制|行为|流程|按钮|卡片|"
+    r"思维链|思考过程|推理过程|文案|提示词|系统提示|记忆|工具链|"
+    r"bug|缺陷|报错|异常|故障|"
+    r"\.py\b|\.js\b|\.ts\b|\.html\b|\.css\b|\.json\b|\.ya?ml\b|\.vue\b|\.tsx\b)"
+)
+_CHANGE_ACT = (
+    r"(?:修改|改成|改为|改一下|改掉|改动|调整|替换|换成|新增|添加|加上|补上|"
+    r"去掉|移除|删掉|删除|隐藏|收起|折叠|关闭|关掉|启用|停用|禁用|接入|接上|"
+    r"抽出来|抽成|收口|统一|重写|修复|修好|渲染|展示|输出)"
+)
+_CHANGE_RX = re.compile(
+    rf"(?:{_CHANGE_ACT}[^。；;\n]{{0,12}}?{_CHANGE_OBJ})"
+    rf"|(?:{_CHANGE_OBJ}[^。；;\n]{{0,12}}?{_CHANGE_ACT})",
+    re.I,
+)
+
+
+def looks_like_change(text: str) -> bool:
+    """这句话是不是在要求「动手改 / 加 / 去掉某样东西」。
+
+    只判一件事：把「改代码的活」从写作怀里抢回来。它**不是**「要不要动手」的唯一
+    判据——「把结论写进报告」不算（报告是产出物，不是改动物件），那是写作任务。
+    """
+    return bool(_CHANGE_RX.search(str(text or "")))
+
+
 # 连接词切分：这些词出现在句中，通常意味着"一件事做完了接着做下一件"
 SPLIT_RX = re.compile(
     r"(?:然后|接着|再然后|紧接着|随后|之后|最后|其次|另外|并且|同时|以及|再帮我|再帮我做|再)"
@@ -159,11 +196,14 @@ def split_task(text: str) -> list[str]:
 def kind_of(text: str) -> str:
     """判断一个片段属于哪种性质，取信号命中数最多的那一类。
 
-    两条刻意写死的优先级，都是实测误判逼出来的：
+    三条刻意写死的优先级，都是实测误判逼出来的：
 
     1. **编码优先于写作**：写作信号里的「写」「说明」「介绍」太泛，几乎任何请求都会
        命中一两个；而「写个脚本」里的那个"写"是"实现"，不是"写文章"。
-    2. **检视优先于写作/通用**：要读现场的任务，读不到就无从写起，所以先按「检视」定性。
+    2. **改动物件 + 改动动作 → 编码**（哪怕信号词只命中了"总结"）：写作信号的
+       「写/总结/说明/文档」描述的是**产出物是文本**，可「把思维链隐藏、结果总结成
+       一句话」说的是**要改的那段渲染**——产品是代码，不是文章。见 looks_like_change。
+    3. **检视优先于写作/通用**：要读现场的任务，读不到就无从写起，所以先按「检视」定性。
        实测：「先列出工作区根目录下的文件（不要读内容），然后用一句话说明你都做了什么」
        原本会被"说明"判成写作 → 交给擅长长文的模型 → 它没去读、直接编了份目录清单。
     """
@@ -178,10 +218,63 @@ def kind_of(text: str) -> str:
         return "general"
     if scores["coding"] > 0 and best == "writing" and scores["coding"] >= scores["writing"] - 1:
         return "coding"
+    if best == "writing" and looks_like_change(text):
+        return "coding"
     if (scores["inspect"] > 0 and best in ("writing", "general")
             and scores["inspect"] >= scores[best] - 1):
         return "inspect"
     return best
+
+
+def resolve_kind(text: str, proposed: str = "") -> str:
+    """定一个片段的性质；**上游（调度模型）给的标签要过一遍规则复核**。
+
+    proposed 是调度模型给的 kind，可空。刻意不是无条件采信——实测事故：
+    「修改思维链输出机制…把结果总结成一句话」这条**要改前端渲染**的任务书被调度
+    模型标成 writing（因为句子里有"总结"），于是按写作维度挑模型；模型于是去
+    "写一段说明""记下您的偏好"，一个文件都没碰。规则复核认得出「改动物件 + 改动
+    动作」，一律纠回 coding。
+
+    「分析」不纠：分析任务本就该走推理维度；「分析并修改…」这类会由 kind_of 的
+    计数规则自己落到 coding。
+    """
+    k = str(proposed or "").strip().lower()
+    if k not in KIND_LABEL:
+        return kind_of(text)
+    if k == "writing" and looks_like_change(text):
+        return "coding"
+    return k
+
+
+# ------------------------------------------------- 失败后果分档（swe-router 思路）
+
+# 路由的第二只眼：不看「任务像什么」，看「做错了会怎样」。
+# 同样是"写一段话"，随手草稿和发给客户的合同，对模型质量的要求完全不同。
+# 高后果 → 给模型能力设高下限；低后果 → 最便宜的够用模型就行。
+# 信号刻意保守：宁可不是高后果，也不要把日常任务误抬进高代价档。
+STAKES_LABEL = {"low": "低风险", "medium": "常规", "high": "高后果"}
+
+_STAKES_HIGH_RX = re.compile(
+    r"生产环境|上线|正式发布|发布到|部署|数据库|删库|支付|付款|账单|合同|客户|"
+    r"不可逆|不可恢复|覆盖写|系统配置|管理员权限|密钥|密码", re.I)
+_STAKES_LOW_RX = re.compile(
+    r"草稿|随便|试试|先看看|了解一下|练习|玩具|demo|示例|好奇|好玩|不用真的|假想|假设", re.I)
+
+
+def stakes_of(text: str) -> tuple[str, str]:
+    """判断任务的失败后果档位，返回 (档位, 一句话理由)。
+
+    high 优先于 low：一句话同时命中两类信号时，按后果大的一侧兜底——
+    误把高后果当低风险的代价（真删了库）远大于反过来（多花点算力）。
+    """
+    t = str(text or "")
+    mh = _STAKES_HIGH_RX.search(t)
+    if mh:
+        return "high", f"命中高后果信号「{mh.group(0)}」"
+    ml = _STAKES_LOW_RX.search(t)
+    if ml:
+        return "low", f"命中低风险信号「{ml.group(0)}」"
+    return "medium", "未命中特殊信号，按常规档"
 
 
 def needs_plan(text: str, pool_size: int) -> bool:
@@ -191,9 +284,78 @@ def needs_plan(text: str, pool_size: int) -> bool:
     return len(split_task(text)) >= 2
 
 
+# ---------------------------------------------------------------- 短标题
+
+# 子句边界：在这些字符之后收尾，读起来还是一个完整的短句。
+# 分两档是因为「，、；：」只是停顿（收尾时要抹掉，否则会出现「，…」这种别扭组合），
+# 而「。！？」本身就是句子的收尾，留着正好。
+_SOFT_END = "，、；：,;:"
+_HARD_END = "。！？!?"
+_CLOSERS = "）)】」》\"'”’"
+_BOUNDARY = _SOFT_END + _HARD_END + _CLOSERS
+# 成对符号的左半边：硬切不许切进它们里面，否则会留下「（如 ev」这种断头括号
+_OPENERS = "（(【[「『《<\"'“‘"
+_WORD_CHARS = "_-./\\+"
+
+
+def short_title(text: str, limit: int = 26) -> str:
+    """把一句任务书压成能读的短标题（计划卡、泳道、侧栏都用它）。
+
+    以前这里是两套写法：planner 的 `s[:limit-1] + "…"` 与 dispatcher 的
+    `goal[:26]`。都只按字数硬切，于是出现「定位并修复导致在对话中返回非本次
+    生成的文档（如 ev」——切在括号里面、断在半截单词上，收尾括号也没了。
+    这一行是用户看任务的第一眼，不该长这样。
+
+    依次退化，三种结果都补省略号（让人一眼看出这是被截断的，而不是任务本来
+    就叫这个名字）。**返回长度保证 <= limit**（省略号算在预算里）——侧栏标签有
+    硬上限，不能因为补了个省略号就超出一个字。
+
+      ① 在 limit 之前的子句边界收尾 —— 输出是一个完整的短句；
+      ② 退到 limit 之前最后一个未闭合的左括号之前 —— 不产出断头括号；
+      ③ 硬切；若正切在一个西文单词 / 路径中间，先退到它的开头。
+    """
+    s = " ".join(str(text or "").split())
+    if limit <= 1:
+        return s[: max(0, limit)]
+    if len(s) <= limit:
+        return s
+    budget = limit - 1                      # 省略号占一个位
+    floor = max(1, budget * 3 // 5)         # 别为了凑边界切得太短
+
+    # ① 子句边界（从 budget 往回找最近的一个）
+    for i in range(budget - 1, floor - 1, -1):
+        if s[i] in _BOUNDARY:
+            head = s[: i + 1].rstrip()
+            if head and head[-1] in _SOFT_END:
+                head = head[:-1].rstrip()   # 「，…」读起来别扭，抹掉再补省略号
+            if head:
+                return head + "…"
+
+    # ② 不切进括号里（「（如 evolution.md）」要整体退出，而不是留个断头括号）
+    opener = -1
+    for i, ch in enumerate(s[:budget]):
+        if ch in _OPENERS:
+            opener = i
+    if opener > floor:
+        head = s[:opener].rstrip(" \t" + _SOFT_END + _OPENERS)
+        if head:
+            return head + "…"
+
+    # ③ 硬切；避开切在西文单词 / 路径中间
+    cut = budget
+    prev_ch, next_ch = s[cut - 1], s[cut]
+    if prev_ch.isascii() and (prev_ch.isalnum() or prev_ch in _WORD_CHARS) \
+            and next_ch.isascii() and (next_ch.isalnum() or next_ch in _WORD_CHARS):
+        j = cut
+        while j > floor and s[j - 1].isascii() and (s[j - 1].isalnum() or s[j - 1] in _WORD_CHARS):
+            j -= 1
+        if j > floor:
+            cut = j
+    return s[:cut].rstrip() + "…"
+
+
 def _title_of(part: str, limit: int = 26) -> str:
-    s = re.sub(r"\s+", " ", part).strip()
-    return s if len(s) <= limit else s[: limit - 1] + "…"
+    return short_title(part, limit)
 
 
 # ---------------------------------------------------------------- 分配
@@ -251,6 +413,7 @@ def plan_summary(plan: list[Subtask]) -> str:
 
 
 __all__ = [
-    "Subtask", "make_plan", "split_task", "kind_of", "needs_plan",
-    "plan_summary", "KIND_LABEL", "KIND_DIM",
+    "Subtask", "make_plan", "split_task", "kind_of", "resolve_kind",
+    "looks_like_change", "needs_plan", "stakes_of",
+    "plan_summary", "short_title", "KIND_LABEL", "KIND_DIM", "STAKES_LABEL",
 ]

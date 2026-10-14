@@ -1,9 +1,9 @@
-"""网络工具族的自测：失败降级指路 + 泛查询自动收紧。
+"""网络工具族的自测：失败降级指路 + 泛查询自动收紧 + 按名字找 GitHub 项目。
 
 运行：python tools/test_web_tools.py
 全部断言内建，退出码 0 = 全过。**不联网**——requests.get 全程用替身。
 
-用例取自同一批真实事故（REA 检索三跑）的两个缺口：
+用例取自同一批真实事故（REA 检索三跑 + 四跑）的三个缺口：
 
   ① 失败后没有一等公民的降级路径。fetch_url 被代理拒之后，模型手里明明有
      fetch_json 却没用，转而去猜了个 browser（白烧两轮）——而「GitHub 仓库打
@@ -13,11 +13,17 @@
   ② 搜索词不设防。三跑的第一枪都是泛查询，返回的全是 GitHub 首页与教程站
      （白烧一轮）；第二枪加了 `site:github.com "..."` 才对。
 
-两件事都不该靠模型临场想起来。所以：失败指路由程序按失败类型与 URL 形态写出来；
-泛查询由程序自动补一枪精确的，把结果拼在同一次返回里。
+  ③ 找对了入口、找错了对象。四跑问「git 上叫 REA 的项目」，模型连搜四枪，
+     最后抓的是 `api.github.com/repos/bbylw/rea-cn`——一个 80 star 的中文镜像站，
+     而正主 `morluto/rea` 有 19 万 star。搜索结果里压根没有正主，模型只能锚定
+     它看到的第一个 GitHub 链接。**「有哪些同名候选、各自多少 star」搜索摘要
+     给不出来**，得由程序去查官方搜索接口，把候选摆到台面上。
+
+三件事都不该靠模型临场想起来。
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -233,12 +239,239 @@ def test_search_orchestration() -> None:
           "[下一步]" in out3 and "site:github.com" in out3, out3[:300])
 
 
+# ---------------------------------------------------------------------------
+# 缺口 ③：按名字找 GitHub 项目（REA 检索四跑）
+# ---------------------------------------------------------------------------
+_GH_ITEMS = [
+    {"full_name": "react/react", "html_url": "https://github.com/react/react",
+     "stargazers_count": 251004, "forks_count": 0, "language": "JavaScript",
+     "license": {"spdx_id": "MIT"}, "pushed_at": "2026-10-01T00:00:00Z",
+     "description": "The library for web and native user interfaces."},
+    {"full_name": "morluto/rea", "html_url": "https://github.com/morluto/rea",
+     "stargazers_count": 193790, "forks_count": 47212, "language": "TypeScript",
+     "license": {"spdx_id": "MIT"}, "pushed_at": "2026-10-13T14:59:23Z",
+     "description": "Reverse engineer anything with agents."},
+]
+
+
+class GhResp(FakeResp):
+    """GitHub 搜索接口的响应（JSON）。"""
+
+    def __init__(self, payload, status: int = 200):
+        super().__init__(json.dumps(payload), status=status, ctype="application/json")
+
+
+def with_router(router):
+    """按 URL 分派的 requests.get 替身（区别于只认 q 的 with_fake_get）。
+
+    返回 (calls, restore)，calls 是 [(url, params), ...]。
+    """
+    calls: list[tuple[str, dict]] = []
+
+    def fake_get(url, params=None, timeout=None, headers=None, **kw):
+        calls.append((url, dict(params or {})))
+        return router(url, params or {})
+
+    orig = W.requests.get
+    W.requests.get = fake_get
+    return calls, (lambda: setattr(W.requests, "get", orig))
+
+
+def test_github_search_api() -> None:
+    calls, restore = with_router(
+        lambda u, p: GhResp({"total_count": 6255050, "items": _GH_ITEMS}))
+    try:
+        got = W.github_repo_search("REA", sort="stars", limit=5)
+    finally:
+        restore()
+
+    url, params = calls[0]
+    check("打的是 GitHub 官方搜索接口",
+          url == "https://api.github.com/search/repositories", url)
+    check("带上查询词", params.get("q") == "REA", repr(params))
+    check("默认按 star 倒序",
+          params.get("sort") == "stars" and params.get("order") == "desc", repr(params))
+    check("取几条由 limit 决定（不把整页拉回来）", params.get("per_page") == 5, repr(params))
+
+    check("解析出候选仓库名",
+          [i["full_name"] for i in got["items"]] == ["react/react", "morluto/rea"],
+          repr(got["items"]))
+    r = got["items"][1]
+    check("解析出 star / fork", (r["stars"], r["forks"]) == (193790, 47212), repr(r))
+    check("解析出语言与协议", (r["language"], r["license"]) == ("TypeScript", "MIT"), repr(r))
+    check("最近更新只留日期", r["pushed_at"] == "2026-10-13", r["pushed_at"])
+    check("带出可点的仓库地址", r["url"] == "https://github.com/morluto/rea", r["url"])
+    check("回传命中总数", got["total"] == 6255050, str(got["total"]))
+    check("成功时 error 为空", got["error"] == "", got["error"])
+
+    # 空查询不该白打一次接口
+    calls2, restore2 = with_router(lambda u, p: GhResp({"total_count": 0, "items": []}))
+    try:
+        empty = W.github_repo_search("   ")
+    finally:
+        restore2()
+    check("空查询直接返回错误、不打接口",
+          empty["items"] == [] and bool(empty["error"]) and not calls2, repr(empty))
+
+    # 限流（未鉴权每小时 60 次）：要给出能照办的下一步，而不是抛栈
+    _, restore3 = with_router(
+        lambda u, p: GhResp({"message": "API rate limit exceeded"}, status=403))
+    try:
+        bad = W.github_repo_search("REA")
+    finally:
+        restore3()
+    check("限流（403）不抛异常、转成 error", bad["items"] == [] and bool(bad["error"]), repr(bad))
+    check("限流时说明怎么提高额度", "GITHUB_TOKEN" in bad["error"], bad["error"])
+
+    # 网络层异常同样吞掉（工具不能因为一次抖动抛栈）
+    def boom(url, params):
+        raise R.ConnectionError("proxy refused")
+
+    _, restore4 = with_router(boom)
+    try:
+        down = W.github_repo_search("REA")
+    finally:
+        restore4()
+    check("网络层失败也转成 error",
+          down["items"] == [] and "ConnectionError" in down["error"], down["error"])
+
+
+def test_github_render() -> None:
+    found = {"total": 6255050, "error": "",
+             "items": [{"full_name": "morluto/rea", "url": "https://github.com/morluto/rea",
+                        "stars": 193790, "forks": 47212, "language": "TypeScript",
+                        "license": "MIT", "pushed_at": "2026-10-13",
+                        "description": "Reverse engineer anything with agents."}]}
+    text = W.render_repo_rows(found, "REA", "stars")
+    check("渲染头标明这是官方接口实测（可直接引用）",
+          text.startswith("[实测 · API]"), text[:60])
+    check("带上 star 与 fork", "star=193790" in text and "fork=47212" in text, text)
+    check("带上主语言与最近更新", "lang=TypeScript" in text and "2026-10-13" in text, text)
+    check("带上仓库地址（下一步 fetch_json 直接用）",
+          "https://github.com/morluto/rea" in text, text)
+    check("带上描述（判断哪个是正主要用）", "Reverse engineer anything" in text, text)
+
+    miss = W.render_repo_rows({"items": [], "error": "接口拒绝（403）"}, "REA")
+    check("没有结果时也不崩、说清原因",
+          "没拿到结果" in miss and "403" in miss, miss)
+
+    # NOASSERTION 是「有 LICENSE 文件但识别不出协议」的占位值，不能当协议报出去
+    na = W.render_repo_rows(
+        {"total": 1, "items": [dict(found["items"][0], license="NOASSERTION")]}, "REA")
+    check("NOASSERTION 不当作协议渲染", "NOASSERTION" not in na, na)
+
+
+def test_repo_keyword() -> None:
+    check("事故原句：挑出全大写缩写 REA",
+          W.repo_keyword("帮我查一下 git 上叫 REA 的项目") == "REA")
+    check("口语版同样挑得出", W.repo_keyword("git 上那个 REA 项目") == "REA")
+    check("英文/站点限定版也认", W.repo_keyword('site:github.com "REA" repository') == "REA")
+    check("owner/repo 形态原样返回",
+          W.repo_keyword("看看 openai/whisper 这个仓库") == "openai/whisper")
+    check("没有 git/仓库 信号的查询不触发（不该拖去打 GitHub 接口）",
+          W.repo_keyword("今天天气怎么样") == "" and W.repo_keyword("python 项目推荐") == "")
+    check("只有泛词（项目 / 仓库）时不给关键词",
+          W.repo_keyword("帮我找找那个很出名的开源项目") == ""
+          and W.repo_keyword("git 上的仓库") == "")
+    check("空查询安全", W.repo_keyword("") == "" and W.repo_keyword(None) == "")
+
+
+def test_github_search_tool() -> None:
+    tools = make_tools()
+    gh = tools["github_search"]
+    check("github_search 是只读工具（自动执行，走不到审批）", gh.risk == "safe", gh.risk)
+    props = gh.parameters["properties"]
+    check("参数含 query / sort / limit", {"query", "sort", "limit"} <= set(props),
+          str(list(props)))
+    check("sort 的取值受枚举约束",
+          props["sort"]["enum"] == ["stars", "forks", "updated", "best-match"],
+          str(props["sort"]))
+    check("query 必填", gh.parameters.get("required") == ["query"],
+          str(gh.parameters.get("required")))
+    check("描述里点明这是官方接口实测、并说明已知仓库全名时改用 fetch_json",
+          "官方接口实测" in gh.description and "fetch_json" in gh.description,
+          gh.description[:80])
+
+    calls, restore = with_router(
+        lambda u, p: GhResp({"total_count": 1, "items": _GH_ITEMS[1:]}))
+    try:
+        out = gh.run(query="REA", limit=3)
+    finally:
+        restore()
+    check("工具真的打接口并渲染出候选",
+          "morluto/rea" in out and "star=193790" in out, out[:300])
+    check("limit 透传到接口", calls[0][1].get("per_page") == 3, repr(calls[0][1]))
+
+
+def test_repo_backstop() -> None:
+    """找某个仓库时，web_search 自动补一枪官方接口，并把权威候选排在最前。"""
+    tools = make_tools()
+    search = tools["web_search"]
+
+    def router(url, params):
+        if "api.github.com/search/repositories" in url:
+            return GhResp({"total_count": 6255050, "items": _GH_ITEMS})
+        return FakeResp(bing_html([
+            ("https://github.com/bbylw/rea-cn", "bbylw/rea-cn: REA：逆向一切",
+             "通过一个 MCP 服务，逆向分析二进制文件"),
+            ("https://rea.run/zh/", "REA 中英社区指南", "社区文档")]))
+
+    calls, restore = with_router(router)
+    try:
+        out = search.run(query="帮我查一下 git 上叫 REA 的项目")
+    finally:
+        restore()
+
+    api_calls = [(u, p) for u, p in calls if "api.github.com" in u]
+    check("识别到「在找仓库」后自动打了官方搜索接口", len(api_calls) == 1, repr(calls))
+    check("兜底那枪按 star 排序",
+          bool(api_calls) and api_calls[0][1].get("sort") == "stars", repr(calls))
+    check("兜底那枪搜的是挑出来的项目名（不是整句提问）",
+          bool(api_calls) and api_calls[0][1].get("q") == "REA", repr(calls))
+    check("权威候选排在最前面（先看到的是一手数据）",
+          out.index("GitHub 官方搜索接口") < out.index("[搜索摘要"), out[:200])
+    check("正主 morluto/rea 出现在输出里", "morluto/rea" in out, out[:600])
+    check("候选带 star 数（不用去摘要里捡数字）", "star=193790" in out, out[:600])
+    check("原始网页结果没有被吞掉", "bbylw/rea-cn" in out, out[:800])
+    check("尾部点明「哪个是正主以官方候选为准」",
+          "别拿搜索摘要里的转述判断" in out, out[-600:])
+    check("仍然要求抓一手来源核实", "fetch_json" in out)
+
+    # 不是仓库检索 → 不该多打这一枪
+    calls2, restore2 = with_router(router)
+    try:
+        search.run(query="今天天气怎么样")
+    finally:
+        restore2()
+    check("普通查询不触发 GitHub 接口",
+          not any("api.github.com" in u for u, _ in calls2), repr(calls2))
+
+    # 兜底接口挂了也不能把 web_search 拖死
+    def broken(url, params):
+        if "api.github.com" in url:
+            raise R.ConnectionError("down")
+        return FakeResp(bing_html([("https://example.com/a", "结果", "摘要")]))
+
+    _, restore3 = with_router(broken)
+    try:
+        out3 = search.run(query="帮我查一下 git 上叫 REA 的项目")
+    finally:
+        restore3()
+    check("兜底接口失败时静默降级（不塞错误、也不抛）",
+          "[搜索摘要" in out3 and "ConnectionError" not in out3, out3[:300])
+
+
 def main() -> None:
     test_failure_hint()
     test_fetch_url_wires_hint()
     test_query_judgement()
     test_tighten_query()
     test_search_orchestration()
+    test_github_search_api()
+    test_github_render()
+    test_repo_keyword()
+    test_github_search_tool()
+    test_repo_backstop()
     print("\n全部通过。")
 
 

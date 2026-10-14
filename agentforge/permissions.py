@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextvars
+import re
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -55,9 +56,13 @@ class Guard:
 
     # ---------- 命令 ----------
     def check_command(self, command: str) -> None:
-        low = command.strip().lower()
+        # 黑名单是「两种权限模式下都拦的底线」。匹配前先把连续空白归一成单个
+        # 空格（黑名单条目同样归一）：否则「del  /s」「del\t/s」「rm  -rf」这类
+        # 空白变体按原样做子串匹配时全部漏网，底线就成了筛子。
+        low = re.sub(r"\s+", " ", command.strip().lower())
         for bad in self.cfg.command_blocklist:
-            if low.startswith(bad) or f" {bad}" in f" {low}":
+            bad = re.sub(r"\s+", " ", str(bad).strip().lower())
+            if bad and (low.startswith(bad) or f" {bad}" in f" {low}"):
                 raise PermissionDenied(f"命令命中黑名单，已拒绝：{command}")
 
     # ---------- 审批 ----------

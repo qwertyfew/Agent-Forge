@@ -25,7 +25,7 @@ import threading
 from dataclasses import dataclass, field
 
 from .config import Config
-from .planner import KIND_DIM, KIND_LABEL, kind_of, split_task
+from .planner import KIND_DIM, KIND_LABEL, kind_of, resolve_kind, short_title, split_task
 
 # 决策模型不该“脑补”出候选里没有的模型名，所以提示词里给白名单并要求留空表示交给系统。
 DISPATCH_SYSTEM = """你是 AgentForge 的任务调度器（Dispatcher）。你的职责是把用户请求拆成若干
@@ -98,25 +98,34 @@ _TOOL_HINTS = (
     "修改", "编辑", "重构", "运行", "执行", "命令", "脚本", "安装", "部署", "提交", "推送",
     "拉取", "克隆", "编译", "调试", "报错", "异常", "测试", "搜索", "查找", "抓取", "下载",
     "爬取", "接口", "数据库", "表格", "文档", "技能", "工具", "代码", "函数", "算法",
+    # 检索/取数类：这类词意味着「结论要有外部来源」，是重活而不是闲聊。
+    # 实测漏过：「检索一下 GitHub 上叫 ERA 的项目」——一个信号词都没命中，
+    # 只因为短（31 字）就被判成简单对话，工具体系整个不给它。
+    "检索", "查询", "查一下", "搜一下", "调研", "评估", "核实", "取证", "比对", "对比",
+    "一手来源", "官方", "仓库", "github", "api",
     ".py", ".js", ".ts", ".json", ".yaml", ".yml", ".md", ".txt", ".csv", ".html",
     "read_file", "write_file", "edit_file", "list_dir", "run_command", "find_files",
     "skill", "tools", "file", "command", "script", "install", "deploy",
 )
 
-# 简单对话的字数上限：太长的一般不是「聊两句」，多半要真本事。
-SIMPLE_CHAT_MAX_CHARS = 120
+# 简单对话的单向上限：**只用来否决「太长」，绝不用来推断「短就是简单」**。
+# 「问题简短 ≠ 问题简单」——哥德巴赫猜想只有六个字。旧版把它当主判据，
+# 于是「问得短」被当成「不需要本事」；而篇幅本来就不是能力的证据，
+# 判据应该是「性质 general + 目标里没有任何要动手/要外部事实的信号」（见上表）。
+# 这个上限只保一件事：长目标不交给决策模型（它指令跟随弱，长活容易做砸）。
+SIMPLE_CHAT_HARD_CHARS = 120
 
 
 def is_simple_chat(t: "TaskSpec") -> bool:
-    """这个任务是不是「不涉及工具/代码/数学」的简单对话（可以交给决策模型做）。
+    """这个任务是不是「不涉及工具/代码/外部事实」的简单对话（可以交给决策模型做）。
 
-    判据刻意保守：只认 general 类、且目标里没有任何「要动手」的信号、且篇幅很短。
-    决策模型的理解与生成能力都有限，放给它做的活越少越安全。
+    两条判据：性质是 general，且目标里没有任何「要动手 / 要取外部事实」的信号。
+    篇幅只做单向否决（超过上限一律不给决策模型），不参与「简单」的推断。
     """
     if t.kind != "general":
         return False
     goal = (t.goal or "").strip()
-    if not goal or len(goal) > SIMPLE_CHAT_MAX_CHARS:
+    if not goal or len(goal) > SIMPLE_CHAT_HARD_CHARS:
         return False
     low = goal.lower()
     return not any(h in low for h in _TOOL_HINTS)
@@ -150,7 +159,7 @@ class TaskSpec:
         return {
             "id": self.id,
             "index": self.index,
-            "title": self.title or self.goal[:26],
+            "title": self.title or short_title(self.goal),
             "detail": self.goal,
             "kind": self.kind,
             "kind_label": KIND_LABEL.get(self.kind, self.kind),
@@ -210,7 +219,7 @@ class SharedState:
     def register(self, tasks: list[TaskSpec]) -> None:
         with self._lock:
             for t in tasks:
-                self.results[t.id] = TaskResult(task_id=t.id, title=t.title or t.goal[:32])
+                self.results[t.id] = TaskResult(task_id=t.id, title=t.title or short_title(t.goal))
 
     def start(self, task_id: str) -> None:
         with self._lock:
@@ -388,9 +397,10 @@ class Dispatcher:
             goal = str(item.get("goal") or "").strip()
             if not goal:
                 continue
-            kind = str(item.get("kind") or "").strip().lower()
-            if kind not in KIND_LABEL:
-                kind = kind_of(goal)
+            # 调度模型给的 kind 要过一遍规则复核（见 planner.resolve_kind）：
+            # 它把「修改思维链输出机制…总结成一句话」这条改代码的活标成了 writing，
+            # 于是按写作维度挑模型，模型就去"写一段说明""记下您的偏好"，一个文件没碰。
+            kind = resolve_kind(goal, item.get("kind"))
             model = str(item.get("model") or "").strip()
             if model not in valid_names:
                 model = ""                    # 模型瞎报名字时忽略，交给系统按能力挑
@@ -406,6 +416,9 @@ class Dispatcher:
                 model=model,
                 depends_on=[str(d) for d in deps],
                 handoff=str(item.get("handoff") or "").strip(),
+                # 决策模型愿意给短标题就用它的；没给则 _resolve 用 short_title 兜底，
+                # 不把「标题好不好」押在模型身上。
+                title=str(item.get("title") or "").strip(),
             ))
         if not tasks:
             return None
@@ -455,7 +468,9 @@ class Dispatcher:
 
         for i, t in enumerate(tasks):
             t.index = i + 1
-            t.title = t.goal[:26]
+            # 短标题走 short_title（边界/括号感知），不按字数硬切——见
+            # planner.short_title 的说明。决策模型给了 title 就尊重它的。
+            t.title = t.title or short_title(t.goal)
             dim = KIND_DIM.get(t.kind, "reasoning")
             # 决策模型能不能接这一单：默认只允许它做简单对话
             allow_disp = (bool(getattr(self.cfg, "dispatcher_execute_simple", True))

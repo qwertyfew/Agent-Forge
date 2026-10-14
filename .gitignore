@@ -40,3 +40,8 @@ models.local.json
 # 例外：长期记忆 memory.md 只有几百字节且跨机器通用，随仓库同步。
 .agentforge/*
 !.agentforge/memory.md
+
+# 评测运行产物：沙盒（.run，每条任务的真实工作文件）与跑批结果（results）都不入库；
+# 入库的是任务定义 tasks.yaml 与判定器 evals.py
+evals/.run/
+evals/results/

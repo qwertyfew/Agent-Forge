@@ -22,6 +22,8 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .planner import short_title
+
 MAX_TASKS = 120                # 台账最多保留多少条任务（含正在跑的）
 MAX_HISTORY_CHARS = 150_000    # 单条任务保存的对话历史总体积上限
 TOOL_KEEP_CHARS = 4_000        # 单条工具输出在台账里的截断长度
@@ -187,7 +189,7 @@ class TaskStore:
         task = Task(
             id=tid,
             prompt=message or "",
-            title=(" ".join((message or "").split())[:90]) or "未命名任务",
+            title=short_title(message, 90) or "未命名任务",
         )
         task.permission = "default" if permission == "default" else "full"
         if model:

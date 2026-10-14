@@ -19,13 +19,19 @@
 from __future__ import annotations
 
 import queue
+import re
 import threading
 from typing import Any, Iterator
 
 from .dispatcher import Dispatcher, SharedState, TaskSpec
 from .loop import Agent
-from .planner import KIND_DIM, KIND_LABEL, Subtask, kind_of, make_plan, needs_plan, plan_summary
+from .planner import (
+
+    KIND_DIM, KIND_LABEL, Subtask, kind_of, looks_like_change, make_plan,
+    needs_plan, plan_summary,
+)
 from .readcache import ReadCache
+from . import runcontrol
 from . import sources as sources_gate
 from . import verify as verify_gate
 
@@ -289,6 +295,46 @@ def _verify_gate(agent, message: str, holder: dict,
             summary = (summary + "\n\n---\n"
                        + verify_gate.artifact_issue_block(issues)).strip()
 
+    # 第五道核查：**自己承认还没做 / 做不了**，同样不许当成交付。
+    # 上面几道治的都是「声称做了但没做」；这是它的反面，一直没人管——模型如实招了
+    # 「下一步我将…」「我无法修改…」，系统却照样把这条回复当 done 收下。
+    # 事故现场（用户原话「其两个指令都没有执行」）：一条含两件事的消息被拆成 2 个子任务，
+    # 各只调了一次只读工具就收尾，一个写「下一步：我将检索 docs/ 目录」，另一个写
+    # 「我无法直接修改自身的思维链显示机制，因为其可见性由平台底层的 UI 渲染逻辑控制」，
+    # 然后「已记录您的偏好要求」。两条都被判成功，任务一步没动。
+    #
+    # 三道门同时成立才出手：任务书本身就是「动手改东西」的活（looks_like_change）、
+    # 本轮**零文件改动**（ran_writes 为假）、总结里模型自己招了。纯问答任务里一句
+    # 「我无法联网核实」是如实回答，不是怠工——所以不能只看最后一条。
+    if getattr(cfg, "unfinished_gate", True):
+        claim = verify_gate.unfinished_claim(summary)
+        if claim and not verify_gate.ran_writes(convo) and looks_like_change(message):
+            if not corrected:
+                corrected = True
+                prompt = verify_gate.UNFINISHED_CORRECTIVE_PROMPT.format(
+                    quote=verify_gate.unfinished_quote(summary, claim),
+                    summary=summary or "（无）",
+                )
+                for ev in agent.run(convo, prompt, auto_route=False,
+                                    stop_check=stop_check, auto_approve=auto_approve,
+                                    read_cache=read_cache):
+                    k = ev.get("type")
+                    if k in ("user", "route"):
+                        continue
+                    if k == "assistant":
+                        convo = ev["history"]
+                        summary = (ev.get("content") or "").strip() or summary
+                    yield ev
+                claim = verify_gate.unfinished_claim(summary)
+                # 修正轮真的动了手，就不再追加声明；否则如实标注没交付
+                if verify_gate.ran_writes(convo):
+                    claim = ""
+            if claim:
+                yield {"type": "verify", "cmd": "", "ok": False, "exit": "",
+                       "duration": "", "unfinished": claim}
+                summary = (summary + "\n\n---\n"
+                           + verify_gate.UNFINISHED_NOTE).strip()
+
     # 第三道核查：外部事实的一手来源。用过联网搜索、却没抓过任何一手来源，
     # 而总结里又出现了数字 / 版本 / 日期这类外部事实时——由程序在答复末尾追加
     # 「转述 · 未经核实」声明。这治的是 REA 检索那个病：搜索摘要里的「star 1w+」
@@ -521,7 +567,14 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
                     convo = ev["history"]
                     summary = (ev.get("content") or "").strip()
                 if k == "error":
+                    # 子任务自己的失败只属于这个子任务。往上换一个事件名（subtask_error），
+                    # 别让外层把它当成「整条回复失败」——外层的 error 是终态：界面会立刻
+                    # 收尾（把复制工具条挂在回答中途）、台账会把整条任务记成 error，
+                    # 而这个子任务失败在设计上明确「不该拖垮同批其它任务」。
                     failed = True
+                    yield {"type": "subtask_error", "task_id": t.id,
+                           "message": ev.get("message") or ""}
+                    continue
                 if k == "stopped":
                     yield {"type": "history", "messages": ev.get("history") or convo}
                     yield {"type": "stopped", "steps": t.index, "total": total,
@@ -574,17 +627,25 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
         """同一批就绪任务并行跑：各自 agent 实例，事件经队列汇聚后按到达顺序产出。"""
         q: queue.Queue = queue.Queue()
         done_marker = object()
+        # 泳道跑在独立线程里，threading.local 不会继承调用方线程的 current_task；
+        # 不补设的话 remember / task_notes 会把记忆记到「adhoc」——「清空时按任务
+        # 精确删除」对并行子任务失效。串行路径跑在调用方线程里天然带着归属，
+        # 这里在进入线程前取一次、进线程后补设，两条路口径一致。
+        owner_task = runcontrol.current_task()
 
         def worker(t: TaskSpec) -> None:
+            runcontrol.set_current_task(owner_task)
             try:
                 ag = spawn_agent()
                 for ev in one_task(t, ag, base_convo):
                     q.put(ev)
             except Exception as e:  # noqa: BLE001  单个任务崩了不该拖垮同批其它任务
-                q.put({"type": "error", "task_id": t.id,
+                # 同样是「子任务级失败」：事件名不能叫 error，否则外层会收尾整条回复
+                q.put({"type": "subtask_error", "task_id": t.id,
                        "message": f"{t.title}：{type(e).__name__}: {e}"})
                 sink.setdefault(t.id, {"files": [], "failed": True})
             finally:
+                runcontrol.clear_current_task()
                 q.put(done_marker)
 
         for t in wave:
@@ -705,6 +766,55 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
     yield {"type": "complete", "steps": total, "multi": total >= 2}
 
 
+# 多路径尝试：失败后让当前模型拟几条互不相同的实现路径，再逐条试。
+# 换「路」的核心是换手段（工具/命令/文件组织/步骤拆分），不是换模型——
+# 本地模型免费且空闲，路径数量不受成本约束；但每条路径都要真跑过才算数。
+APPROACH_SYSTEM = (
+    "你是执行规划器。一个任务步骤刚刚尝试失败了。请提出 {k} 条互不相同的实现路径，"
+    "每条一行、以序号开头，只写「怎么做」的核心手段，不要执行、不要解释理由。"
+    "路径之间必须在手段上有实质区别（例如：换工具 / 换命令 / 换文件组织方式 / "
+    "把任务拆成更小的子步骤），不允许给出只换了说法的同一条路。"
+)
+FALLBACK_APPROACHES = [
+    "先用 list_dir 和 find_files 查清工作区现状，再选最朴素的手段（读文件→改→运行验证）完成",
+    "把这一步拆成更小的子步骤逐个完成，每完成一小步就验证一次，不要一口气做完再验",
+    "放弃刚才失败的工具或命令，改用其他已下发的工具组合完成任务",
+]
+
+
+def _propose_approaches(agent, step_desc: str, k: int = 3) -> list[str]:
+    """让当前模型拟 k 条互不相同的实现路径（只拟不执行）。失败返回空表。
+
+    用编排模型直接对话（不走 agent.run 的完整工具循环）：拟路径是纯思考动作，
+    不该消耗工具轮次，也不该把这段对话漏进任务历史。
+    """
+    try:
+        res = agent.hub.chat(
+            agent.model_spec,
+            [{"role": "system", "content": APPROACH_SYSTEM.format(k=k)},
+             {"role": "user", "content": f"任务步骤：{step_desc}\n刚才的尝试失败了。"
+                                         f"请给出 {k} 条不同的实现路径。"}],
+            tools=None,
+            options={"temperature": 0.7, "num_predict": 512},
+            think=False,
+        )
+    except Exception:  # noqa: BLE001  拟不出来就退回内置路径，绝不能炸主流程
+        return []
+    # 只认「编号 / 列表」行：模型回了句客套话或解释文字时，宁可判为拟不出
+    # （退回内置路径），也不能把一句人话当成实现路径拿去跑。
+    numbered = re.compile(r"^\s*(?:\d+[.、)）]|[①②③④⑤⑥⑦⑧⑨⑩]|[-*•])\s*")
+    lines: list[str] = []
+    for raw in (res.content or "").splitlines():
+        if not numbered.match(raw):
+            continue
+        ln = numbered.sub("", raw).strip().strip("：:　 ")
+        if len(ln) >= 6:
+            lines.append(ln[:200])
+        if len(lines) >= k:
+            break
+    return lines
+
+
 def run_task(
     agent,
     store,
@@ -716,6 +826,7 @@ def run_task(
     stop_check=None,
     auto_approve: bool | None = None,
     file_log: list | None = None,
+    multi_path: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """执行一次用户请求。store 提供当前启用的模型池。
 
@@ -729,6 +840,13 @@ def run_task(
 
     auto_approve 本次任务的权限模式（True = 完全访问），file_log 用来收集
     本任务写过的文件，两者都透传给每一步的 Agent.run。
+
+    multi_path 开启时，某一步失败（agent 报 error）会先让当前模型拟几条互不
+    相同的实现路径，再逐条重试同一步（每条路径真跑一遍，直到某条成功或试完）。
+    换的是「路」不是「模型」：模型不变，变的是手段。本地模型空闲且无 token
+    计费，多条路径近乎零成本；关闭时行为与旧版完全一致。仅作用于本函数的
+    计划路径——多 agent 调度路径里子任务级失败另有 subtask_error 汇报机制，
+    不在此重试。
     """
     stopped = stop_check or (lambda: False)
     # 产物核查的起点快照：任务书声明交付文件的 mtime 此刻定格，收尾时用它
@@ -843,6 +961,41 @@ def run_task(
     brief_relay = bool(getattr(agent.cfg, "relay_brief", True)) and multi
     done: list[dict] = []
     total = len(plan)
+
+    def _step_events(step_idx: int, prompt_: str, relay_: list | None):
+        """跑一步 agent：透传事件流，返回 (summary, failed, halted, hist)。
+
+        单独提出来是因为「多路径尝试」要在一步失败后换模型重跑同一步——
+        事件处理逻辑必须能原样跑第二次，不能复制粘贴一份。
+        """
+        summary_ = ""
+        failed_ = False
+        halted_ = False
+        hist_ = hist
+        for ev in agent.run(hist_, prompt_, auto_route=False, stop_check=stopped,
+                            auto_approve=auto_approve, file_log=file_log,
+                            relay=relay_, read_cache=read_cache):
+            t = ev.get("type")
+            if t == "user":
+                continue                      # 用户气泡由前端本地渲染
+            if t == "assistant":
+                hist_ = ev["history"]         # 接力上下文（全量，供回看）
+                summary_ = (ev.get("content") or "").strip()
+            if t == "route":
+                continue                      # 编排模式下路由由我们决定
+            if t == "error":
+                failed_ = True
+            if t == "stopped":
+                # 单步内部被停：把步数补齐后如实上报，不要伪装成正常收尾。
+                # 带上 agent 内部已经累积的上下文，用户回看时能看到问的是什么。
+                halted_ = True
+                yield {"type": "history", "messages": ev.get("history") or hist_}
+                yield {"type": "stopped", "steps": step_idx + 1, "total": total,
+                       "reason": ev.get("reason") or "用户停止"}
+                return summary_, failed_, halted_, hist_
+            yield ev
+        return summary_, failed_, halted_, hist_
+
     for i, st in enumerate(plan):
         if stopped():
             # 先回吐已完成部分的上下文，再报停止，界面与台账都不会丢已干的活；
@@ -898,31 +1051,32 @@ def run_task(
             yield {"type": "subtask", "index": i + 1, "total": total, "text": st.detail}
 
         files_before = len(file_log) if file_log is not None else 0
-        summary = ""
-        failed = False
-        halted = False
-        for ev in agent.run(hist, prompt, auto_route=False, stop_check=stopped,
-                            auto_approve=auto_approve, file_log=file_log,
-                            relay=relay, read_cache=read_cache):
-            t = ev.get("type")
-            if t == "user":
-                continue                      # 用户气泡由前端本地渲染
-            if t == "assistant":
-                hist = ev["history"]          # 接力上下文（全量，供回看）
-                summary = (ev.get("content") or "").strip()
-            if t == "route":
-                continue                      # 编排模式下路由由我们决定
-            if t == "error":
-                failed = True
-            if t == "stopped":
-                # 单步内部被停：把步数补齐后如实上报，不要伪装成正常收尾。
-                # 带上 agent 内部已经累积的上下文，用户回看时能看到问的是什么。
-                halted = True
-                yield {"type": "history", "messages": ev.get("history") or hist}
-                yield {"type": "stopped", "steps": i + 1, "total": total,
-                       "reason": ev.get("reason") or "用户停止"}
-                return
-            yield ev
+        summary, failed, halted, hist = yield from _step_events(i, prompt, relay)
+        if halted:
+            return
+
+        # 多路径尝试（开关开启时）：这一步走不通，先让模型拟几条互不相同的
+        # 实现路径，再逐条真跑，直到某条成功或试完。拟路径失败（模型没产出
+        # 可用条目）就退回内置的三条通用路径。模型不变，变的是手段。
+        if failed and multi_path:
+            yield {"type": "multipath", "index": i + 1, "total": total, "phase": "plan"}
+            approaches = _propose_approaches(agent, f"{st.title}：{st.detail}")
+            if not approaches:
+                approaches = FALLBACK_APPROACHES
+            for ap_i, ap in enumerate(approaches, 1):
+                yield {"type": "multipath", "index": i + 1, "total": total,
+                       "phase": "try", "approach_index": ap_i,
+                       "approach_total": len(approaches), "approach": ap}
+                retry_prompt = (
+                    prompt + f"\n\n[换路重试 · 方案 {ap_i}/{len(approaches)}] "
+                    "上一条路径没能完成这一步。这次按下面这条实现路径来做"
+                    "（其余要求不变；若该路径执行中行不通，如实说明卡在哪）：\n" + ap)
+                summary, failed, halted, hist = yield from _step_events(
+                    i, retry_prompt, relay)
+                if halted:
+                    return
+                if not failed:
+                    break
 
         # 记下这一步的摘要与产出，供下一步的简报使用
         new_files: list[str] = []

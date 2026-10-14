@@ -1,8 +1,8 @@
 ---
 name: first-party-source
 description: 结论必须来自一手来源的纪律——外部事实（数字、版本、日期、时效性）只能来自官方站点 / 官方 API，搜索摘要只用来找入口；本机事实（工作区里有什么、某文件/实现是否存在）只能来自真的读过工作区。含常用官方 API 地图与「抓不到怎么办」。遇到"查一下这个项目/库/产品的情况""它的 star / 版本 / 最近更新是多少""列出/看看项目里有哪些文件""核对一个数据"时加载本 skill。
-version: 1.1
-when_to_use: 任务涉及检索、核实事实时——外部：项目/库/产品的数据、版本号、发布时间、最近更新、价格、榜单、统计数字；本机：列目录、看有哪些文件、核对某文件或某实现是否存在、说明当前工作区状态
+version: 1.2
+when_to_use: 任务涉及检索、核实事实时——外部：项目/库/产品的数据、版本号、发布时间、最近更新、价格、榜单、统计数字，以及「找一下某个项目 / 某某项目是哪个」；本机：列目录、看有哪些文件、核对某文件或某实现是否存在、说明当前工作区状态
 when_not_to_use: 完全不涉及事实核实的创作与调整——纯写作润色、纯样式微调、纯推理
 keywords:
   - 检索
@@ -13,6 +13,9 @@ keywords:
   - 官方来源
   - 搜索引擎
   - 搜索摘要
+  - 找项目
+  - 找仓库
+  - 开源项目
   - star
   - fork
   - 版本号
@@ -78,6 +81,7 @@ keywords:
 
 | 想查什么 | 打哪里 | 取哪些字段（`keys`） |
 |---|---|---|
+| **按名字找仓库**（还不知道 `owner/repo` 时） | 用 `github_search`（它打的就是 `https://api.github.com/search/repositories?q=<词>&sort=stars`） | 返回候选全名 / star / fork / 语言 / 许可证 / 最近更新 / 简介 / 地址 |
 | GitHub 仓库 | `https://api.github.com/repos/<owner>/<repo>` | `full_name,stargazers_count,forks_count,open_issues_count,pushed_at,updated_at,language,license.spdx_id,topics` |
 | 最新 Release | `https://api.github.com/repos/<owner>/<repo>/releases/latest` | `tag_name,published_at,name` |
 | 贡献者数 | `https://api.github.com/repos/<owner>/<repo>/contributors?per_page=1` | （看 `Link` 头的 last 页号，或直接读数组长度） |
@@ -87,6 +91,11 @@ keywords:
 
 **时效性认 `pushed_at` / `updated_at`，不认搜索摘要里的日期。** 日期格式是 ISO（`2026-10-13T05:58:58Z`），
 引用时换算成「年月日」即可。
+
+**「某某项目是哪个」不是靠搜索摘要定的。** 搜索只能找到「先被索引到的那一个」——实测拿它去搜
+REA，头条是个 80 star 的中文镜像站，19 万 star 的正主压根不在结果里，摘要也没说还有别的候选。
+`github_search` 会把同名 / 近名的候选连 star 数一起摆出来，**该挑哪个由你看候选判断**；
+挑定后再用 `repos/<owner>/<repo>` 取该仓库的权威字段。
 
 ## 四、两个容易踩的点
 

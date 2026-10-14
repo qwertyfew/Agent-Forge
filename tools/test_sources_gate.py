@@ -50,6 +50,7 @@ def test_detection() -> None:
     with_fetch = only_search + [_call("fetch_json"), _tool("fetch_json")]
     with_fetch_url = only_search + [_call("fetch_url"), _tool("fetch_url")]
     with_snapshot = only_search + [_call("browser_snapshot"), _tool("browser_snapshot")]
+    with_gh_search = only_search + [_call("github_search"), _tool("github_search")]
     local_only = [_call("read_file"), _tool("read_file")]
 
     check("ran_search：只用搜索 → True", sg.ran_search(only_search))
@@ -59,6 +60,8 @@ def test_detection() -> None:
     check("ran_first_party_fetch：有 fetch_url → True", sg.ran_first_party_fetch(with_fetch_url))
     check("ran_first_party_fetch：有 browser_snapshot → True",
           sg.ran_first_party_fetch(with_snapshot))
+    check("ran_first_party_fetch：有 github_search → True（它打的也是官方接口，不是转述）",
+          sg.ran_first_party_fetch(with_gh_search))
     check("ran_first_party_fetch：空历史 → False", not sg.ran_first_party_fetch(None))
     check("tool_calls 里用顶层 name 字段也能认（兼容两种形状）",
           sg.ran_search([{"role": "assistant", "tool_calls": [{"name": "web_search"}]}]))

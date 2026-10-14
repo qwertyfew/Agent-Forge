@@ -45,6 +45,36 @@ DEFAULT_CORE: tuple[str, ...] = (
     "read_skill_resource",
 )
 
+# 能力族：**命中族里任何一个成员，整族一起下发**。
+#
+# 为什么需要（实测教训）：关键词命中的判据只看「问句里有哪些词」。于是
+# 「检索一下 GitHub 上叫 ERA 的项目，看看是干什么的。」这样又短又口语的提问
+# 只命中了 `web_search`——`fetch_url` / `fetch_json` 落选、没给 schema。
+# 模型手里只剩最弱的那个检索工具，于是「只用搜索摘要、不抓一手来源」；
+# 而它**不会意识到自己缺了工具**（Tier 1 索引里有个名字，但没有参数表，
+# 小模型不会去猜用法）。同一个需求写长一点（138 字）就命中 `fetch_json` 了。
+#
+# 结论：**能力不该由问句的措辞与长短决定**。检索这件事天生需要
+# 「搜索找入口 + 抓一手来源」成套出现，缺一个就退化成转述。所以这里按族补齐，
+# 与问句长短无关——命中了族里任意一个成员，就认定模型要干这件事，把整套给全。
+#
+# 收族的标准（为什么只有检索族在列）：族成员之间存在**「只剩最弱那个就会静默劣化」
+# 的关系**，且模型自己看不出来。git / ssh 不满足——它们的成员会被任务原词直接命中
+# （「提交」「推送」「上传」），漏掉的也能靠 find_tools 现取，不需要整族预埋。
+# 实测给 git 也收族时，「GitHub」一个泛词就蹭进 git_commit，白带 8 个 schema。
+# 将来若发现新的「成套才有效」的能力，往这里加一行即可。
+FAMILIES: tuple[tuple[str, ...], ...] = (
+    # 外部检索：web_search 找入口；github_search 按名字搜仓库（官方接口，按 star 排序）；
+    # fetch_* 抓一手来源（官方 API / 官方页面）；browser_* 兜住需要 JS 渲染、抓不到的页面。
+    #
+    # github_search 为什么必须在族里：实测「查 git 上叫 REA 的项目」时，web_search
+    # 打回来的全是中文镜像站与转载文章，正主（19 万 star）一条都没有，模型于是锚定了
+    # 它看到的第一个 GitHub 链接（一个 80 star 的镜像站）。**「有哪些同名候选」这件事
+    # 搜索摘要给不出来**，得靠官方接口——它和 fetch_* 一样，缺了就静默劣化成转述。
+    ("web_search", "github_search", "fetch_url", "fetch_json",
+     "browser_snapshot", "browser_screenshot"),
+)
+
 
 def _param_tokens(schema: dict) -> set[str]:
     """把参数表里的名字与描述也当成关键词来源。
@@ -223,6 +253,25 @@ class ToolSelector:
                 out.append(t.schema())
         return out
 
+    def _complete_families(self, picked: list[str]) -> list[str]:
+        """把同族里已经落选的成员补回来（见 FAMILIES）。
+
+        只在族里**已经有人**入选时才补——即模型这轮确实要干这件事。补进来的成员
+        不受 `limit` 约束：族是「能力保证」（要么给全，要么不给），不是排序偏好，
+        被 limit 截掉一半反而回到「只给最弱那个工具」的老问题。
+        """
+        chosen = set(picked)
+        out = list(picked)
+        for fam in FAMILIES:
+            members = [n for n in fam if self.reg.get(n)]
+            if not chosen.intersection(members):
+                continue
+            for n in members:
+                if n not in chosen:
+                    out.append(n)
+                    chosen.add(n)
+        return out
+
     def select(self, texts: Iterable[str], sticky: Iterable[str] = ()) -> list[dict]:
         """挑出本轮要下发的工具 schema。
 
@@ -251,6 +300,8 @@ class ToolSelector:
             scored.sort(key=lambda x: (-x[0], x[1]))
             room = max(0, self.limit - len(picked))
             picked += [n for _, n in scored[:room]]
+
+        picked = self._complete_families(picked)
 
         out = []
         for n in picked:
@@ -331,4 +382,4 @@ def build_select_tools(holder: dict, lazy: bool = True):
     ]
 
 
-__all__ = ["ToolSelector", "build_select_tools", "DEFAULT_CORE"]
+__all__ = ["ToolSelector", "build_select_tools", "DEFAULT_CORE", "FAMILIES"]

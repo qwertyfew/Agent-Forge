@@ -10,7 +10,7 @@
 判定（三个条件同时成立才出手）：
 
     1. 任务里调用过联网搜索（web_search）
-    2. 任务里**从未**抓过一手来源（fetch_url / fetch_json / browser_snapshot）
+    2. 任务里**从未**抓过一手来源（fetch_url / fetch_json / browser_snapshot / github_search）
     3. 最终总结里出现了外部事实的量化或时效性措辞（数字、版本、日期、star/fork…）
 
 **3 的补充（背景：同一批三跑的 A 组）**：它通篇是定性转述——「10 月初走红」
@@ -54,7 +54,9 @@ SEARCH_TOOLS = ("web_search",)
 
 # 一手来源类工具：抓回来的就是原始内容 / 官方接口的字段，可以直接引用。
 # browser_screenshot 不算——它拿的是图片，无法作为文字事实的来源。
-FETCH_TOOLS = ("fetch_url", "fetch_json", "browser_snapshot")
+# github_search 算：它打的同样是 api.github.com（官方搜索接口），star / fork
+# 这些字段就是权威值本身——不能因为「它不是 fetch_* 开头」就把它当转述。
+FETCH_TOOLS = ("fetch_url", "fetch_json", "browser_snapshot", "github_search")
 
 # ---------------------------------------------------------------------------
 # 「外部可核实事实」的判据
@@ -252,14 +254,15 @@ def external_unverified_block(hits: list[str]) -> str:
     """附在最终答复末尾的系统侧声明。程序写的，模型只有解读权。"""
     lines = [
         "【系统侧核查】本回复含来自联网检索的外部事实，但整个任务没有抓取过任何"
-        "一手来源（`fetch_url` / `fetch_json` / `browser_snapshot`），下列内容属"
-        "「转述 · 未经核实」，请勿直接采信。**时效性说法同样是转述**——「最近」"
+        "一手来源（`fetch_url` / `fetch_json` / `browser_snapshot` / `github_search`），"
+        "下列内容属「转述 · 未经核实」，请勿直接采信。**时效性说法同样是转述**——「最近」"
         "「月初」这类词和具体数字一样，需要一手来源支撑：",
     ]
     lines += [f"- {h}" for h in hits]
     lines.append(
         "此核查由程序完成，不依赖模型自报；要采信这些数字，应先抓取一手来源"
-        "（官方站点 / 官方 API，如 GitHub 仓库用 `https://api.github.com/repos/<owner>/<repo>`）核实。"
+        "（官方站点 / 官方 API，如 GitHub 仓库用 `https://api.github.com/repos/<owner>/<repo>`、"
+        "找仓库用 `github_search`）核实。"
     )
     return "\n".join(lines)
 
@@ -308,9 +311,13 @@ _ASK_RX = re.compile(
 )
 # 任务书在让「造东西」时不算：那种任务里冒出来的文件名是它自己起的，
 # 不是对现有目录的陈述（产物是否存在另有一道核查，见 verify.py）。
+# 「实现」单独拉出来说：检视提问的最高频句式恰恰是「X 是怎么实现的」「X 的实现」
+# （planner 的检视信号词里就收着「当前的实现」）——前面紧邻「的 / 怎么 / 如何 /
+# 怎样」时它是在问现状，不是在让造东西；「实现一个导出」「重新实现 parse」
+# 这类真创建动作不受影响。
 _CREATE_RX = re.compile(
     r"(?:写|撰写|起草|创建|新建|生成|设计|规划|建议|推荐|重构|修改|改成|改为"
-    r"|添加|新增|实现|补上|加上|加个|做个)",
+    r"|添加|新增|(?<!的)(?<!怎么)(?<!如何)(?<!怎样)实现|补上|加上|加个|做个)",
 )
 
 # 回复里「在陈述工作区现状」的标记。光有文件名不够——「已创建 tools/x.py」里也有
@@ -344,13 +351,19 @@ def local_fact_tokens(summary: str, exclude_text: str = "", cap: int = MAX_HITS)
     ex = str(exclude_text or "").lower()
     out: list[str] = []
     seen: set[str] = set()
-    for rx in (_WINPATH_RX, _FILE_RX, _DIR_RX):
-        for m in rx.finditer(txt):
+    # Windows 反斜杠的相对路径（agentforge\loop.py）：_FILE_RX/_DIR_RX 只认 /
+    # 分隔、_WINPATH_RX 只认盘符开头——反斜杠相对路径三条路全走不通，总结里
+    # 按这种风格写路径时「列了不存在的东西」闸门整条放行。先把 \ 归一成 / 再跑
+    # 后两条（盘符绝对路径在原文里已由 _WINPATH_RX 抓过，归一不会让它丢）。
+    fwd = txt.replace("\\", "/")
+    ex_fwd = ex.replace("\\", "/")
+    for rx, hay in ((_WINPATH_RX, txt), (_FILE_RX, fwd), (_DIR_RX, fwd)):
+        for m in rx.finditer(hay):
             t = (m.group(1) if m.groups() else m.group(0)).strip()
             if not t:
                 continue
             k = t.lower()
-            if k in seen or k in ex:
+            if k in seen or k in ex_fwd:
                 continue
             seen.add(k)
             out.append(t)

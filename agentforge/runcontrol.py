@@ -41,6 +41,11 @@ def register(task_id: str) -> threading.Event:
     tid = str(task_id or "")
     with _lock:
         ev = _flags.get(tid)
+        if ev is not None and ev.is_set():
+            # 复用只该发生在标志还没立起来的时候：上一轮把标志立了、release
+            # 又因异常路径漏调的话，这里复用拿到的是已 set 的 Event——
+            # 重试的同名任务第一轮就误判「要停止」直接退出。立过的作废，换新的。
+            ev = None
         if ev is None:
             ev = threading.Event()
             _flags[tid] = ev

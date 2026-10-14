@@ -194,6 +194,32 @@ const itemIcon = (it) => it.querySelector('.tool-ico');
     !/调用中|执行中/.test(toolText), toolText.slice(0, 120));
 }
 
+/* ---------------- 用例 5：单次调用的组，条目头不得与组头重复 ---------------- */
+/* 锁的是这个坑：组里只有一次调用时，展开后组头行与条目头行内容一模一样
+   （同名、同参数、同状态），两行重复。约定：单次调用的组打上 single 标记，
+   CSS 藏掉条目头，组头状态文案沿用条目的（失败 / 已拒绝等细节不丢）。 */
+{
+  const r = render(hist([['github_search',
+    '[实测 · API] GitHub 官方搜索接口 · 查询「whisper」· 命中 67639 个，取前 5']]),
+    { status: 'done', duration: 3 });
+  check('单次调用的组打上 single 标记',
+    r.groups[0].classList.contains('single'));
+  check('single 组的条目头仍在 DOM 里（隐藏靠 CSS，删除结构是另一回事）',
+    r.items.length === 1 && r.items[0].querySelector('.tool-item-head'));
+  check('藏条目头的 CSS 规则存在（删掉这条规则本测试就该红）',
+    /\.toolrun\.single \.tool-item-head\{display:none\}/.test(html));
+  check('单次失败调用的组头沿用条目文案「失败」，不笼统写「有异常」',
+    (() => {
+      const r2 = render(hist([['fetch_json', '[错误] 接口超时']]), { status: 'done', duration: 1 });
+      return r2.head && r2.head.textContent === '失败' && r2.head.classList.contains('deny');
+    })());
+  check('多次调用的组不打 single 标记（条目头照常显示）',
+    (() => {
+      const r3 = render(hist([['web_search', 'a'], ['read_file', 'b']]), { status: 'done', duration: 1 });
+      return r3.groups.length === 1 && !r3.groups[0].classList.contains('single');
+    })());
+}
+
 console.log('');
 // jsdom 起的页面里有轮询定时器（loadTasks 等），不主动收尾的话 node 的事件循环
 // 会一直被吊着、进程不退出（表现是被外层超时杀掉，而不是自己结束）。

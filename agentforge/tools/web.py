@@ -2,6 +2,7 @@
 
 对照成熟 Agent 产品（Codex）的能力集：
 - web_search        联网搜索（查资料第一步；**只用来找入口**，返回的是转述）
+- github_search     按名字搜 GitHub 仓库（实测一手来源：官方搜索接口，按 star 排序的候选）
 - fetch_url         抓取网页正文（实测一手来源：官方页面 / 文档）
 - fetch_json        抓取 JSON 接口并投影字段（实测一手来源：GitHub / 包仓库等 API）
 - browser_snapshot  无头浏览器读取 JS 渲染页面的可访问文本
@@ -17,12 +18,24 @@
        而不是要求小模型自己拼 URL、自己读一大坨 JSON。
 收尾还有系统侧核查兜底（agentforge/sources.py）：只用过搜索、没抓过一手来源、
 却在总结里写了数字 → 答复末尾由程序追加「转述·未经核实」声明。
+
+【为什么要有 github_search】REA 检索的第二轮实测：问「git 上叫 REA 的项目」，
+模型连搜四枪，最后一枪抓的是 `api.github.com/repos/bbylw/rea-cn`——一个 80 star
+的中文镜像站（它没错在「没抓一手来源」，抓了），而正主 `morluto/rea` 有 19 万 star。
+错在**找错了对象**：搜索结果里压根没有正主，模型只能锚定它看到的第一个 GitHub 链接。
+
+根因是工具链缺一档能力：`git_*` 全是本地仓库操作，`fetch_json` 只认已知的
+`owner/repo`——**没有能把「REA」这个字符串变成候选清单的工具**。而 GitHub 官方
+搜索接口一次调用就给得出「按 star 排序」的候选（正主排第 2，第 1 是 `react/react`，
+"REA" 只是它的子串）。所以：选哪个由模型判断，但**「有哪些候选、各自多少 star」
+必须由程序摆到台面上**。web_search 也会顺手兜这一枪（见 repo_keyword）。
 """
 
 from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import subprocess
 import webbrowser
@@ -110,6 +123,129 @@ def fetch_failure_hint(url: str, err: Exception) -> str:
 
 
 # ---------------------------------------------------------------------------
+# GitHub 仓库检索：按名字找项目（背景：REA 检索四跑，见模块文档串）
+# ---------------------------------------------------------------------------
+_GH_SEARCH_API = "https://api.github.com/search/repositories"
+
+# 排序口径 → 接口参数。GitHub 认 stars / forks / updated / help-wanted-issues；
+# 不传 sort 就是 best-match（相关度）。对外只暴露常用三种 + 默认相关度。
+_GH_SORTS: dict[str, tuple[str, str]] = {
+    "stars": ("stars", "star 数"),
+    "forks": ("forks", "fork 数"),
+    "updated": ("updated", "最近更新"),
+    "best-match": ("", "相关度"),
+}
+_GH_DEFAULT_SORT = "stars"
+
+
+def _gh_headers() -> dict:
+    """接口请求头：带上 token 能把限流从 60 次/小时抬到 5000 次/小时。"""
+    head = dict(_UA)
+    head["Accept"] = "application/vnd.github+json"
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        head["Authorization"] = f"Bearer {token}"
+    return head
+
+
+def _gh_error(err: Exception) -> str:
+    """把接口异常翻译成模型/用户能照着办的下一步。"""
+    status = getattr(getattr(err, "response", None), "status_code", 0) or 0
+    if status in (403, 429):
+        return (f"接口拒绝（{status}）：多半是未鉴权的调用次数用完了（每小时 60 次）。"
+                "等一会儿再试，或设置环境变量 GITHUB_TOKEN 提高额度。")
+    if status == 404:
+        return "接口返回 404（地址不对）。"
+    if status == 422:
+        return "查询写法不被接口接受（422），换个关键词再试。"
+    if status:
+        return f"接口返回 {status}。"
+    return f"{type(err).__name__}: {err}"
+
+
+def _gh_item(raw: dict) -> dict:
+    """从接口的仓库对象里只取要用的字段（原始对象有 80+ 字段、几十 KB）。"""
+    return {
+        "full_name": str(raw.get("full_name") or ""),
+        "url": str(raw.get("html_url") or ""),
+        "stars": int(raw.get("stargazers_count") or 0),
+        "forks": int(raw.get("forks_count") or 0),
+        "language": str(raw.get("language") or ""),
+        "license": str((raw.get("license") or {}).get("spdx_id") or ""),
+        "pushed_at": str(raw.get("pushed_at") or "")[:10],
+        "description": str(raw.get("description") or ""),
+    }
+
+
+def github_repo_search(query: str, sort: str = _GH_DEFAULT_SORT,
+                       limit: int = 5, timeout: int = 25) -> dict:
+    """按名字搜 GitHub 仓库，返回精简后的候选清单。
+
+    返回 dict：
+      items —— [{full_name, url, stars, forks, language, license, pushed_at, description}]
+      total —— 接口报告的命中总数
+      error —— 失败原因（空串表示成功）；失败时 items 一律为空
+
+    任何异常都吞掉转成 error 字符串——工具不能因为一次网络抖动就抛栈。
+    """
+    q = str(query or "").strip()
+    if not q:
+        return {"items": [], "total": 0, "error": "查询词为空，没东西可搜"}
+    key = str(sort or _GH_DEFAULT_SORT).strip().lower()
+    api_sort, _ = _GH_SORTS.get(key, _GH_SORTS[_GH_DEFAULT_SORT])
+    params: dict = {"q": q, "per_page": max(1, min(int(limit or 5), 20))}
+    if api_sort:
+        params["sort"] = api_sort
+        params["order"] = "desc"
+    try:
+        resp = requests.get(_GH_SEARCH_API, params=params, timeout=timeout,
+                            headers=_gh_headers())
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:  # noqa: BLE001
+        return {"items": [], "total": 0, "error": _gh_error(e)}
+    if not isinstance(data, dict):
+        return {"items": [], "total": 0, "error": "接口返回的不是 JSON 对象"}
+    items = [_gh_item(it) for it in (data.get("items") or []) if isinstance(it, dict)]
+    return {"items": items, "total": int(data.get("total_count") or 0), "error": ""}
+
+
+def render_repo_rows(found: dict, query: str, sort: str = _GH_DEFAULT_SORT,
+                     note: str = "") -> str:
+    """把 github_repo_search 的结果渲染成工具输出。
+
+    github_search 工具与 web_search 的自动兜底共用这一份渲染——两处口径必须一致，
+    否则「同一件事在两条路上说法不同」。
+    """
+    items = (found or {}).get("items") or []
+    if not items:
+        why = (found or {}).get("error") or "没有命中任何仓库"
+        return f"[实测 · API] GitHub 仓库搜索「{query}」没拿到结果：{why}"
+    key = str(sort or _GH_DEFAULT_SORT).strip().lower()
+    _, cn = _GH_SORTS.get(key, _GH_SORTS[_GH_DEFAULT_SORT])
+    head = (f"[实测 · API] GitHub 官方搜索接口 · 查询「{query}」· 排序：{cn}"
+            f" · 命中 {int((found or {}).get('total') or 0)} 个，取前 {len(items)}")
+    if note:
+        head += f"｜{note}"
+    lines = [head + "："]
+    for i, it in enumerate(items, 1):
+        bits = [it["full_name"] or "(无名)", f"star={it['stars']}", f"fork={it['forks']}"]
+        if it["language"]:
+            bits.append(f"lang={it['language']}")
+        # NOASSERTION 是 GitHub 对「有 LICENSE 文件但识别不出协议」的占位值，别当协议报出去
+        if it["license"] and it["license"] != "NOASSERTION":
+            bits.append(f"license={it['license']}")
+        if it["pushed_at"]:
+            bits.append(f"最近更新={it['pushed_at']}")
+        lines.append(f"  {i}. " + "  ".join(bits))
+        if it["description"]:
+            lines.append(f"     {it['description'][:140]}")
+        if it["url"]:
+            lines.append(f"     {it['url']}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # 搜索词纪律：泛查询由程序自动收紧（背景：同一批三跑的第一枪）
 # ---------------------------------------------------------------------------
 # 三跑的第一枪都是「REA 项目」这类裸词，返回的全是 GitHub 首页与教程站——白烧
@@ -188,6 +324,43 @@ def tighten_query(query: str) -> tuple[str, str]:
         key = max(zh, key=len)
         return f'"{key}"', f"以「{key}」做精确匹配"
     return f'"{s}"', "加引号做精确匹配"
+
+
+# 查询里出现这些，说明是在找 GitHub 上的东西（不然「找最大的质数」也会被拖去搜仓库）
+_GH_INTENT_RX = re.compile(r"github|\bgit\b|仓库|开源项目|\brepo(?:sitory)?\b", re.I)
+
+# 「找项目」这件事本身的词，不指向任何具体仓库——拿它去搜只会拉回一堆不相干的
+_GENERIC_PROJECT_WORDS = {
+    "project", "projects", "repository", "repositories", "repo", "repos",
+    "library", "libraries", "framework", "frameworks", "tool", "tools",
+}
+
+
+def repo_keyword(query: str) -> str:
+    """查询像在找「某个 GitHub 仓库」时返回该搜的词，否则返回空串。
+
+    两道判据都要过，缺一不可：
+
+      ① **信号**：查询里得有 git / github / 仓库 / repo 这类字样。没有就说明这
+         不是一次仓库检索（「找最大的质数」不能被拖去打 GitHub 接口）；
+      ② **词**：还要能挑出一个像项目名的词——owner/repo 形态 > 全大写缩写 >
+         带数字 > 长词。挑词规则与 tighten_query 共用，两处口径不许打架。
+
+    只有「项目 / 仓库」这类泛词时返回空串——那不是名字，搜不出东西。
+    """
+    text = str(query or "").strip()
+    if not text or not _GH_INTENT_RX.search(text):
+        return ""
+    slug = _SLUG_RX.search(text)
+    if slug:
+        return slug.group(1)
+    picks = _WORD_RX.findall(text)
+    words = [w for w in picks if w[:1].isascii() and w[:1].isalpha()
+             and w.lower() not in _QUERY_STOP]
+    if not words:
+        return ""
+    key = max(words, key=_key_word)
+    return "" if key.lower() in _GENERIC_PROJECT_WORDS else key
 
 
 
@@ -343,18 +516,42 @@ def build_web_tools(guard, cfg):
             out.append(f"{i}. {title[:80]}\n   {url}\n   {snippet[:160]}")
         return "\n".join(out)
 
+    def github_search(query: str, sort: str = _GH_DEFAULT_SORT, limit: int = 5) -> str:
+        """按名字搜 GitHub 仓库，返回官方接口给出的候选清单（默认按 star 排序）。"""
+        found = github_repo_search(query, sort=sort, limit=limit)
+        return render_repo_rows(found, query, sort)[:max_out]
+
     def web_search(query: str, max_results: int = 8) -> str:
         """联网搜索：优先 Bing（国内直连），失败回退 DuckDuckGo。
 
         返回的是**搜索摘要**，只用来找入口。输出头显式标明「转述·未核实」——
         实测教训：摘要里的数字被直接当结论引用过（star 说 1w+，实际 17 万）。
 
-        泛查询会由程序自动补一次收紧后的检索（`site:` + 精确词），结果排在最前——
-        让「第一枪太泛」不再白烧一轮。是否收紧是程序判的，不指望模型自觉。
+        两条程序侧兜底，都不指望模型自觉：
+
+        ① **仓库意图**——查询像在找 GitHub 上的某个项目时，顺手打一次官方搜索
+           接口，把「按 star 排序的候选」排在最前面。实测：搜 REA 回来的全是
+           中文镜像站与转载文章，19 万 star 的正主一条都没有，模型于是锚定了它
+           看到的第一个 GitHub 链接（一个 80 star 的镜像）。候选清单一摆出来，
+           「谁是正主」就不再取决于搜索结果的排序运气。
+        ② **泛查询**——结果没打到具体条目时，自动补一枪收紧后的检索
+           （`site:` + 精确词）。
         """
         rows, errors = _search_once(query, max_results)
         sections: list[str] = []
         tighter = ""
+        gh_key = ""
+        kw = repo_keyword(query)
+        if kw:
+            found = github_repo_search(kw, sort=_GH_DEFAULT_SORT, limit=5)
+            # 接口抖了/限流了就当没补过——web_search 的本职是搜索，
+            # 不该因为兜底失败往结果里塞一段错误（模型真要这个数据时
+            # 会自己调 github_search，那里会把错误原样告诉它）。
+            if found["items"]:
+                gh_key = kw
+                sections.append(render_repo_rows(
+                    found, kw, _GH_DEFAULT_SORT,
+                    note="系统侧自动补 ·「哪个更有名」以这份为准，别凭搜索摘要判断"))
         # 判据是「这枪有没有打到具体条目」，不是「查询词长得像不像泛查询」——
         # 结果全是门户首页（或干脆没结果）就说没打到，程序补一枪精确的。
         # 打中了就不补（查询泛但一把命中，没什么可收紧的）。
@@ -368,7 +565,8 @@ def build_web_tools(guard, cfg):
                              else "结果全是门户首页，没打到具体条目")
                     sections.append(_render_rows(tq, trows, f"系统侧自动收紧（{cause}）· 依据：{why}"))
         if rows:
-            sections.append(_render_rows(query, rows, "原始查询" + ("（供参考）" if tighter else "")))
+            ref = "（供参考）" if (tighter or gh_key) else ""
+            sections.append(_render_rows(query, rows, "原始查询" + ref))
         if not sections:
             msg = (f"[错误] 搜索失败。{'；'.join(errors)}" if errors
                    else f"[搜索] “{query}” 没有返回结果。")
@@ -376,6 +574,11 @@ def build_web_tools(guard, cfg):
                            "如 `site:github.com \"owner/repo\"`；或直接 fetch_url 你猜测的官网地址。")
         tail = ("下一步：挑 ≥1 条最可能是官方的结果，用 fetch_url / fetch_json 抓原文核实后再下结论。"
                 "这里的数字、版本、日期都不可直接写进回复。")
+        if gh_key:
+            tail = (f"注：你要找的是 GitHub 上的项目，系统已直接查官方搜索接口"
+                    f"（查询「{gh_key}」，按 star 排序），候选清单排在最前面——"
+                    f"**哪个是正主以这份为准，别拿搜索摘要里的转述判断**；"
+                    f"选定后用它给的地址交给 fetch_json，拿 star / fork / 语言等权威字段。\n" + tail)
         if tighter:
             tail = (f"注：原查询过泛，系统已自动补搜 `{tighter}`（结果排在上面）。"
                     f"以后直接用这种写法能省一轮。\n" + tail)
@@ -471,6 +674,25 @@ def build_web_tools(guard, cfg):
                 "required": ["query"],
             },
             web_search,
+            SAFE,
+        ),
+        make_tool(
+            "github_search",
+            "按名字搜 GitHub 仓库（官方接口实测）：一次调用返回候选清单——仓库全名、"
+            "star / fork 数、主语言、许可证、最近更新、简介与地址。想知道某个项目是哪个、"
+            "它有多少 star，就用它；由你按 star 与简介判断哪个是正主，别拿搜索摘要猜。"
+            "已知仓库全名时，直接用 fetch_json 打 api.github.com/repos/<owner>/<repo>。",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "仓库关键词，如 REA、whisper、openai/whisper"},
+                    "sort": {"type": "string", "enum": ["stars", "forks", "updated", "best-match"],
+                             "description": "排序口径，默认 stars（最出名的排前面）"},
+                    "limit": {"type": "integer", "description": "返回几个候选，默认 5，最多 20"},
+                },
+                "required": ["query"],
+            },
+            github_search,
             SAFE,
         ),
         make_tool(

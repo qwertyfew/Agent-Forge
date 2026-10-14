@@ -246,10 +246,13 @@ class Compressor:
         )
         # 必须带上模型配置的 num_ctx：Ollama 默认窗口只有 2048，
         # 早期的摘要 prompt 往往有几万字，不指定会静默返回空内容。
-        spec = self.cfg.model(model_key)
-        options = dict(spec.options())
-        options["temperature"] = 0.2
+        # spec 获取也要放进 try：模型可能在运行期被删掉/改名（Config.model 对
+        # 未注册 key 抛 KeyError），window() 对同一异常特意兜了底，这里漏了
+        # 会让 compact 抛未捕获异常、炸掉收尾主循环。
         try:
+            spec = self.cfg.model(model_key)
+            options = dict(spec.options())
+            options["temperature"] = 0.2
             if self.hub is not None:
                 res = self.hub.chat(
                     spec,

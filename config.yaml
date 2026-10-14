@@ -54,6 +54,13 @@ routing:
   # allow_paid_upgrade=true 才允许自动改用付费模型（默认绝不，避免偷偷花钱）。
   capability: true
   quality_threshold: 78
+  # 按失败后果定档（swe-router 思路）：档位 → 模型综合分下限。
+  # 选型 = 满足下限的最便宜模型（cost 维度），没人达标才用最强者兜底。
+  # low 命中「草稿/试试/了解一下」等信号；high 命中「生产/上线/数据库/合同」等。
+  stakes_tiers:
+    low: 0
+    medium: 78
+    high: 86
   allow_upgrade: false
   allow_paid_upgrade: false
   # 命中这些信号时优先视为代码/逻辑任务（最终选哪个 key 由 router 按可用模型决定）
@@ -100,6 +107,8 @@ permissions:
     - del /f
     - rm -rf
     - rmdir /s
+    - rd /s
+    - remove-item -recurse
     - shutdown
     - taskkill /f /im system
     - diskpart

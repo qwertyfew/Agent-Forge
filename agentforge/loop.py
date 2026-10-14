@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .config import Config
+from . import gaps
+from . import preflight
 from .artifact import FILE_TOOLS, classify_tool_write
 from .context import Compressor, measure
 from .llm import OllamaClient, parse_text_tool_calls
@@ -45,8 +47,10 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
 5. **一次只做一步**：可以连续调用多个互不依赖的只读工具，但有依赖时必须等上一步结果。
 6. **交付前自检**：重要产出交付前对照原始要求核对一遍——要求是否都满足、有无编造的细节、
    有无沿用作废的旧结论。发现就改，再交付。
-7. **记住该记的**：如果这轮对话里出现了「以后还用得上的结论」（用户偏好、项目约定、踩过的坑），
-   用 remember 把它写进长期记忆；下次任务会自动读到。只写结论，不要写过程。
+7. **记住该记的**：如果这轮对话里出现了**用户的长期偏好**（稳定的倾向 / 风格 / 习惯，
+   如「回复先给结论」「产出文档一律简体中文」），用 remember 把它写进长期记忆；下次任务会自动读到。
+   环境事实（路径 / 端口 / 版本）工具能现查、项目约定（工作方式 / 流程规则）由架构保证，
+   两类都**不要**写进记忆。只写偏好，不要写过程。
    某类任务反复用到的方法论，做成 skill 沉淀，而不是每次靠提示词提醒。
 
 ## 输出要求
@@ -118,9 +122,8 @@ FAIL_REPEAT_NOTE = (
 )
 
 # 长期记忆注入时的标题。写成指令而不是资料，模型才会真的照做
-MEMORY_HEADER = """## 长期记忆（来自以往任务，继续遵守）
-以下是以前的任务记下来的结论与偏好，请在本轮工作中遵守。记忆按层分组：
-「用户偏好」是硬要求、「项目约定」是工作方式、「事实与环境」是可核对的环境信息。
+MEMORY_HEADER = """## 长期记忆（用户偏好，来自以往任务，请照此执行）
+以下是用户以往表达过的偏好与习惯，请在本轮工作中遵守。
 """
 
 # 任务笔记的注入头。笔记是跨压缩持久的：每轮从磁盘现读现注入，
@@ -129,26 +132,6 @@ TASK_NOTES_HEADER = """## 任务笔记（你自己记下的发现，不受上下
 以下是本任务里你用 task_notes 记下的关键信息。注意：较早的工具返回可能已被
 压缩成一行摘要，但笔记是完整的——**先查笔记再决定要不要重新调用工具**。
 """
-
-# 判断「这轮是不是在抠具体技术细节」。是的话，长期记忆优先给 L1 原子事实
-#（路径、端口、版本、依赖这类可精确执行的信息）；否则按常规对话处理，
-# 优先给 L3 偏好与 L2 约定。判据取任务文本里的路径/文件名/技术动词。
-_FACT_TASK = re.compile(
-    r"[A-Za-z]:\\|/[\w.-]+/"
-    r"|\S+\.(?:py|js|ts|tsx|jsx|json|ya?ml|toml|ini|cfg|sh|bat|md|txt|csv)\b"
-    r"|报错|错误|异常|堆栈|traceback|崩溃|失败|修复|调优|重构|编译|构建|测试"
-    r"|端口|配置|依赖|版本|接口|函数|类|模块|脚本|命令|性能|优化",
-    re.I,
-)
-
-
-def memory_scope(user_text: str) -> str:
-    """按任务类型决定长期记忆的检索深度：'facts'（抠细节）或 'wide'（常规）。
-
-    这就是 TencentDB 那套「平时用 L2/L3 进入语境、要具体事实时回到 L1」在本项目
-    的落地——单用户本地场景不需要向量检索，按任务类型换一下分层预算就够。
-    """
-    return "facts" if _FACT_TASK.search(str(user_text or "")) else "wide"
 
 # 工具索引：只给名字，不给说明。完整 schema 里 4000 tokens 大部分当轮用不上，
 # 但模型得知道"有这么个能力"，否则会说"我做不到"。要用时用 find_tools 现取。
@@ -190,9 +173,6 @@ class Agent:
         self.system_prompt = ""
         self.last_compact: str = ""
         self._skill_hint: str = ""
-        # 本轮长期记忆的检索深度（'wide' / 'facts'），每轮由 memory_scope(user_text)
-        # 重算；决定按哪几层、各给多少预算注入记忆。见 memory.py / memory_scope()
-        self._mem_scope: str = "wide"
         # 本轮实际下发的工具名集合：系统提示里的「工具索引」要把它们排除掉
         self._active_tool_names: set[str] = set()
         # 长期记忆：任务开始前读进来注入系统提示，任务结束后由 remember 工具追加
@@ -245,9 +225,8 @@ class Agent:
             idx = sel.index_text(exclude=self._active_tool_names)
             if idx:
                 base += "\n" + TOOL_INDEX_HEADER.format(names=idx)
-        # 长期记忆放在最后：它是「上一批任务留下的结论」，越靠后模型越容易当约束看。
-        # 按本轮任务类型选检索深度：技术细节任务给 L1 事实，常规任务给 L3/L2。
-        block = self.memory.prompt_block(scope=self._mem_scope)
+        # 长期记忆放在最后：它是「上一批任务留下的偏好」，越靠后模型越容易当约束看。
+        block = self.memory.prompt_block()
         if block:
             base += "\n" + MEMORY_HEADER + block + "\n"
         return base
@@ -256,6 +235,11 @@ class Agent:
         msgs = [{"role": "system", "content": self._system()}]
         if self._skill_hint:
             msgs.append({"role": "system", "content": self._skill_hint})
+        # 工具预检通告：任务需要的能力环境里没有时，架构在这里明说「做不到，
+        # 要如实告知用户」。只有真缺才注入（见 preflight.py 的设计说明）。
+        note = getattr(self, "_preflight_note", "")
+        if note:
+            msgs.append({"role": "system", "content": note})
         # 任务笔记：每轮重新读盘注入。它是模型在压缩风暴里唯一的「随身草稿纸」——
         # 旧工具结果被压成一行后，笔记里记下的定义位置/结论仍然完整在场。
         notes = self._task_notes_block()
@@ -340,7 +324,7 @@ class Agent:
         self,
         history: list[dict],
         user_text: str,
-        auto_route: bool = True,
+        auto_route: bool = False,  # 已停用（见 run 体内说明），仅为兼容保留
         stop_check=None,
         auto_approve: bool | None = None,
         file_log: list | None = None,
@@ -371,20 +355,24 @@ class Agent:
         非只读工具执行后缓存全量作废，防止「读了→改了→再读」拿到旧内容。
         """
         stopped = stop_check or (lambda: False)
+        # 工具预检（每次 run 算一次）：任务意图需要的能力环境里没有时，
+        # 生成「无法完成通告」注入 system 层，并记缺口台账。宁可明说缺，不许装作有。
+        try:
+            self._preflight_note = preflight.note_for(
+                user_text, self.registry.names(), self.cfg)
+        except Exception:  # noqa: BLE001  预检坏了不能挡任务
+            self._preflight_note = ""
         # 完全访问 = 本次调用显式传入 auto_approve=True，或 Guard 的全局自动批准
         # 已打开（CLI 的 --yes / /yes 走这条路）。两条通道必须给同一个答案，
         # 否则会出现「命令不用确认了、路径还是被拦」的分裂状态。
         full = auto_approve is True or bool(getattr(self.guard, "auto_approve_all", False))
         self.permission_label = "完全访问权限" if full else "默认权限"
         self.full_access = full
-        # 本轮记忆检索深度：具体技术任务优先 L1 事实，常规对话优先 L3/L2
-        self._mem_scope = memory_scope(user_text)
 
-        if auto_route and not self.model_pinned:
-            picked = self.router.classify(user_text)
-            if picked != self.model_key:
-                self.model_key = picked
-                yield {"type": "route", "model_key": picked, "detail": self.router.explain(user_text)}
+        # auto_route 已停用：旧的信号词粗分（classify）选的是不存在的语义 key，
+        # 实际永远落到 fallback，属于死逻辑；真正的路由在编排层
+        # （Router.capability 的后果定档 + 调度模型指派）。参数保留只为兼容旧调用。
+        del auto_route  # noqa: B018 — 显式标记未使用
 
         history = list(history)
         this_turn = {"role": "user", "content": user_text}
@@ -642,6 +630,11 @@ class Agent:
                     self.registry.pinned.update(hits[:3])
                     return (f"[工具名不符] 没有名为 {name} 的工具，你要用的可能是下面这个，"
                             f"请用正确的名字重新调用：\n" + sel.describe_many(hits[:3]))
+            # 模型认为该有这个工具却没有：架构层确定的能力缺口，记台账
+            # （「工具名不符」不算——那说明工具在，只是叫法错了）。
+            gaps.record("tool_missing", name,
+                        f"模型调用了不存在的工具，可用：{', '.join(self.registry.names())[:120]}",
+                        self.cfg)
             return f"[错误] 未知工具 {name}。可用工具：{', '.join(self.registry.names())}"
 
         if (

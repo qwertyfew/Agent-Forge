@@ -22,10 +22,15 @@
                          吃了上一轮的老本（REA 三测：报告是上轮旧文件）
                 ghost    文件存在但全程零写操作——它不可能是本轮写出的
               任一命中先给一轮修正机会，复查仍不过就在答复后追加系统侧声明
+    5. 自述   上面 3/4 治的都是「声称做了但没做」，它们的反面同样致命却一直没人管：
+              模型**如实承认**「下一步我将…」「我无法修改…」，系统照样把这条回复当
+              done 收下。见文件末尾的收尾自述核查。
 """
 
 from __future__ import annotations
 
+import locale
+import os
 import re
 import subprocess
 import time
@@ -121,7 +126,15 @@ def _trim_command(candidate: str) -> str:
             keep.append(t)
             continue
         if re.search(r"[\u4e00-\u9fff]", t):
-            break                      # 从第一个中文词开始都是人话，不是命令
+            # 中文不一定就是人话尾巴：脚本/路径名本身可以是中文（tools/校验.py）。
+            # 带路径分隔符或以脚本扩展名结尾的照常保留；真正的纯中文词
+            # （「全过」「必须通过」）才从这里开始断尾。之前一律 break，
+            # 中文文件名的验证命令整条被弃，闸门静默退化成「声称核查」。
+            if re.search(r"[./\\]", t) or re.search(
+                    r"\.(?:py|pyw|sh|js|mjs|bat|cmd|ps1)$", t, re.I):
+                keep.append(t)
+                continue
+            break
         keep.append(t)
     return " ".join(keep).strip()
 
@@ -182,17 +195,44 @@ def extract_verify_cmd(text: str, root: str | Path) -> str:
     return ""
 
 
+def _decode_output(raw: bytes) -> str:
+    """子进程输出解码：先按 UTF-8，失败退回本机区域编码（中文 Windows 是 GBK）。
+
+    之前写死 encoding='utf-8' + errors='replace'：Windows 下脚本 print 中文走
+    管道时默认是 GBK 字节，硬按 UTF-8 解出来整段乱码——修正轮拿到的「失败
+    原因」不可读，验证闸门等于半瞎。
+    区域编码要用 locale.getencoding()（3.11+）：UTF-8 模式下
+    getpreferredencoding() 会谎报 utf-8，兜底就形同虚设；3.10 退回旧接口。"""
+    try:
+        fallback = locale.getencoding()               # noqa: ATTRS  3.11+
+    except AttributeError:
+        fallback = locale.getpreferredencoding(False)
+    for enc in ("utf-8", fallback):
+        if not enc:
+            continue
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def run_verify_cmd(cmd: str, root: str | Path,
                    timeout: int = VERIFY_TIMEOUT) -> dict:
     """程序自己运行验证命令——不经过模型的工具调用，结果不受模型影响。"""
     t0 = time.time()
     try:
+        # 给子进程强制 UTF-8 模式：Windows 下 Python 脚本 print 中文走管道
+        # 默认是 GBK 字节，而解码端无法可靠区分 GBK 与 UTF-8（GBK 字节常常
+        # 恰好是合法 UTF-8，解错了也不报错）。从源头统一成 UTF-8 才是确定性的；
+        # _decode_output 的区域编码回退留给不认这个变量的子进程（bat 等）。
+        env = {**os.environ, "PYTHONUTF8": "1"}
         proc = subprocess.run(
             cmd, cwd=str(root), shell=True,
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=timeout,
+            capture_output=True, timeout=timeout, env=env,
         )
-        out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+        out = _decode_output(
+            (proc.stdout or b"") + b"\n" + (proc.stderr or b"")).strip()
         return {
             "ok": proc.returncode == 0,
             "code": proc.returncode,
@@ -528,3 +568,102 @@ ARTIFACT_CORRECTIVE_PROMPT = """【系统侧核查结果（权威，不可推翻
 如果本就无需产出（例如核查误判或路径笔误），就在最终总结里如实说明原因。
 禁止再次声称已写入而不实际写文件——系统会复查文件是否真的在本轮被写过。
 只输出修正动作的开始或修正后的最终总结，不要寒暄。"""
+
+
+# ---------------------------------------------------------------------------
+# 收尾自述核查（第五道）：**自己承认还没做 / 做不了**，也不许当成交付
+# ---------------------------------------------------------------------------
+# 上面三道治的是「声称做了但没做」；这是它的反面，同样致命却一直没人管：
+# 模型**如实招了**「还没做」「做不了」，系统照样把这条回复当 done 收下。
+#
+# 事故现场（端到端实测，用户原话「其两个指令都没有执行」）：一条含两件事的消息被拆成
+# 2 个子任务，各只调了一次只读工具就收尾——
+#   子任务1：「…尚未发现…。**下一步：我将检索 docs/ 目录及 README.md 中的引用细节**」
+#   子任务2：「**我无法直接修改自身的思维链显示机制，因为其可见性由平台底层的 UI 渲染
+#             逻辑控制，而非 agent 可以通过修改代码或指令来干预的**」，随后「已记录您的
+#             偏好要求」
+# 两条都被判成功。用户拿到的是一句"下一步"和一句"我做不到"，而任务一步没动。
+#
+# 判据刻意分成两支、只认**模型自己招了**这句话：
+#   defer        把「下一步 / 接下来 / 尚未完成」当交付
+#   out_of_scope 把本项目的代码当成了外部平台（「无法修改…机制 / 由平台…控制」）
+# 「做没做」不由这里判——那是 convo 里有没有真产生改动（ran_writes）。两支都只在
+# 「任务本身就是要动手改东西」且「本轮零文件改动」时才有意义，组合逻辑见
+# orchestrator._verify_gate：纯问答里一句「我无法联网核实」是如实回答，不是怠工。
+_DEFER_RX = re.compile(
+    r"(?:下一步|接下来|稍后|随后|后续)[：:，,\s]*(?:我|会|将|再|来|继续)"
+    r"|(?:我|会|将)\s*(?:继续|再)\s*(?:检索|检查|查看|排查|分析|修改|处理|完善|补充|尝试)"
+    r"|(?:尚未|还未|没能|未能)\s*(?:完成|开始|定位|实现|修改|落地|处理|交付|写|改)"
+    r"|(?:暂未|待我|待稍后|待后续)\s*(?:完成|处理|实现|修改|落地)"
+    r"|还将\s*(?:继续|需要)"
+)
+_OUT_OF_SCOPE_RX = re.compile(
+    # 「无法直接修改…机制/代码/界面…」——注意中间可能夹着被引用的类名、括号注释
+    r"(?:无法|不能|没法|难以)\s*(?:直接)?\s*(?:修改|改动|干预|触及|控制|调整|改变)"
+    r"[^\n]{0,30}?(?:机制|逻辑|代码|界面|页面|前端|组件|渲染|显示|样式|行为|实现)"
+    # 「由平台底层的 UI 渲染逻辑控制」——把宿主当成了平台
+    r"|(?:由|属于)\s*(?:平台|宿主|宿主机|系统)\s*[^\n]{0,20}?(?:控制|决定|渲染|管理|负责)"
+    r"|(?:不属于|不是)\s*(?:本)?项目\s*[^\n]{0,8}?(?:代码|逻辑|范围|职责)"
+    r"|超出\s*(?:我|本任务|agent|本项目)\s*[^\n]{0,8}?范围"
+)
+
+
+def unfinished_claim(summary: str) -> str:
+    """总结里是否**自己承认这件还没做、或做不了**。
+
+    返回 ""（没有）/ "defer"（把"下一步"当交付）/ "out_of_scope"（把本项目的代码
+    当成外部平台，自认改不了）。只认模型自己招的那句话——不看它到底做没做。
+    """
+    s = str(summary or "")
+    if _OUT_OF_SCOPE_RX.search(s):
+        return "out_of_scope"
+    if _DEFER_RX.search(s):
+        return "defer"
+    return ""
+
+
+def unfinished_quote(summary: str, kind: str = "") -> str:
+    """把命中的**那一整句**摘出来，给修正提示当「原话」用（压成一行、限长）。
+
+    只截匹配到的那几个字（如「下一步：我」）没有意义——修正提示里要能看见模型
+    自己说的完整那句，它才知道被点的是哪一句。
+    """
+    s = str(summary or "")
+    stops = "。！？\n"
+    order = ((_OUT_OF_SCOPE_RX, _DEFER_RX) if kind == "out_of_scope"
+             else (_DEFER_RX, _OUT_OF_SCOPE_RX))
+    for rx in order:
+        m = rx.search(s)
+        if not m:
+            continue
+        a, b = m.start(), m.end()
+        while a > 0 and s[a - 1] not in stops:      # 扩到句首
+            a -= 1
+        while b < len(s) and s[b] not in stops:     # 扩到句末
+            b += 1
+        line = " ".join(s[a:b].split())
+        return line if len(line) <= 160 else line[:160] + "…"
+    return ""
+
+
+UNFINISHED_CORRECTIVE_PROMPT = """【系统侧核查结果（权威，不可推翻）】
+系统发现：你在上一条总结里**自己承认这件事还没做 / 做不了**，而本任务全程没有产生任何文件改动。
+命中原话：{quote}
+
+【你此前的总结】
+{summary}
+
+【要求】
+1. 如果是「下一步我要…」这类把计划当成交付的写法：**现在就把它做掉**——用工具真去读文件、
+   改代码、跑命令。在真正做完之前，不要再写「下一步」。
+2. 如果是一句「我无法修改…」这类自弃判断：你手里**就是**本项目的源码。用户口中的
+   「你的界面 / 你的思维链 / 你的记忆 / 你的工具」，指的都是**这个工作区里的代码**，
+   不是外部平台。先去 list_dir / search_code 找到渲染它的那个文件，能改就改。
+3. 确实做不了（缺权限、缺依赖、缺信息）就在总结里如实说明**卡在哪**，不要用一句
+   「下一步」把没做的事盖过去。
+只输出动作的开始或修正后的最终总结，不要寒暄。"""
+
+UNFINISHED_NOTE = (
+    "【系统侧核查】本回复承认仍有未完成的工作（或自述做不到），而本任务全程没有产生任何"
+    "文件改动。系统已给过一轮修正机会。此处如实标注：**这一步没有交付**。"
+)

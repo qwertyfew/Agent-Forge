@@ -400,6 +400,139 @@ def main() -> None:
           StubAgent.corrective_calls == 0 and evs == []
           and holder["summary"] == "明细已写入 docs/touched.md")
 
+    # ---------- 收尾自述核查：自己承认「还没做 / 做不了」不许当成交付 ----------
+    # 事故原话（用户：「其两个指令都没有执行」）：一条含两件事的消息被拆成 2 个子任务，
+    # 各只调了一次只读工具就收尾——一个写「尚未发现…下一步：我将检索 docs/ 目录及
+    # README.md 中的引用细节」，另一个写「我无法直接修改自身的思维链显示机制，因为其
+    # 可见性由平台底层的 UI 渲染逻辑控制」，随后「已记录您的偏好要求」。
+    s_defer = ("未核实。目前搜索结果显示 evolution.md 主要出现在 README.md 中作为架构演进的参考资料"
+               "说明，尚未发现代码库中存在“在对话中自动返回该文件内容”的逻辑触发点。\n\n"
+               "下一步：我将检索 `docs/` 目录下的相关逻辑及 `README.md` 中的引用细节。")
+    s_platform = ("目前我无法直接修改自身的思维链（Chain of Thought）显示机制，因为思维链是模型内部"
+                  "生成的推理过程，其可见性由平台底层的 UI 渲染逻辑控制，而非 agent 可以通过修改"
+                  "代码或指令来干预的。")
+    check("未完成·把「下一步」当交付 → defer",
+          vg.unfinished_claim(s_defer) == "defer", vg.unfinished_claim(s_defer))
+    check("未完成·把本项目代码当外部平台 → out_of_scope",
+          vg.unfinished_claim(s_platform) == "out_of_scope", vg.unfinished_claim(s_platform))
+    check("摘录给的是完整那一句（不是「下一步：我」这种半截）",
+          "检索" in vg.unfinished_quote(s_defer, "defer")
+          and len(vg.unfinished_quote(s_defer, "defer")) > 12,
+          vg.unfinished_quote(s_defer, "defer"))
+    check("正常收尾不误伤（已改完并跑过测试）",
+          vg.unfinished_claim("已完成修改：删掉 web/index.html 的泳道头部，"
+                              "跑了 node tools/test_reply_flow.mjs，全部通过。") == "")
+    check("如实说「无法联网核实」不算自弃（那是事实，不是怠工）",
+          vg.unfinished_claim("我无法访问外网，因此未能核实该版本号。") == "")
+    check("空总结安全", vg.unfinished_claim("") == "" and vg.unfinished_claim(None) == "")
+
+    # 闸门路径 Z：改动任务 + 零文件改动 + 自述未完成 → 先给一轮修正机会
+    class DeferAgent(StubAgent):
+        """模拟「嘴上答应、手上不动」：修正轮仍然只写一句「下一步」。"""
+
+        last_prompt = ""
+
+        def run(self, convo, prompt, **kw):
+            DeferAgent.corrective_calls += 1
+            DeferAgent.last_prompt = prompt
+            text = "好的。下一步：我将继续检索 web/index.html 里的渲染逻辑。"
+            return iter([{"type": "assistant", "content": text,
+                          "history": [*convo, {"role": "user", "content": prompt},
+                                      {"role": "assistant", "content": text}]}])
+
+    brief_z = "定位并修复「对话里返回非本次生成的文档」这个逻辑 bug，并修改代码。"
+    ag = DeferAgent()
+    DeferAgent.corrective_calls = 0
+    convo_read_only = [{"role": "assistant", "content": "", "tool_calls": [
+        {"function": {"name": "search_code", "arguments": {}}}]}]
+    holder = {"summary": s_defer, "convo": convo_read_only}
+    evs = list(_verify_gate(ag, brief_z, holder))
+    check("Z1 自述未完成且零改动：触发一轮修正", DeferAgent.corrective_calls == 1)
+    check("Z2 修正提示里引用了模型自己那句原话（它才知道被点的是哪句）",
+          "下一步：我将检索" in DeferAgent.last_prompt, DeferAgent.last_prompt[:160])
+    z_evs = [e for e in evs if e["type"] == "verify" and e.get("unfinished")]
+    check("Z3 修正后仍然没动手：事件标 unfinished",
+          z_evs == [{"type": "verify", "cmd": "", "ok": False, "exit": "",
+                     "duration": "", "unfinished": "defer"}], repr(z_evs))
+    check("Z4 修正后仍然没动手：总结如实标注「这一步没有交付」",
+          "这一步没有交付" in holder["summary"], holder["summary"])
+
+    class FixingDeferAgent(StubAgent):
+        """模拟「听劝」的 agent：修正轮里真的动手改了文件。"""
+
+        def run(self, convo, prompt, **kw):
+            FixingDeferAgent.corrective_calls += 1
+            text = "已修改 web/index.html"
+            return iter([{"type": "assistant", "content": text,
+                          "history": [*convo, {"role": "user", "content": prompt},
+                                      {"role": "assistant", "content": text,
+                                       "tool_calls": [{"function": {
+                                           "name": "edit_file", "arguments": {}}}]}]}])
+
+    # 路径 Z5：把本项目代码当成外部平台（自弃）→ 同样给一轮修正机会
+    ag = FixingDeferAgent()
+    FixingDeferAgent.corrective_calls = 0
+    holder = {"summary": s_platform, "convo": convo_read_only}
+    evs = list(_verify_gate(ag, "修改 web/index.html 里的思维链显示机制，把它隐藏并总结成一句话",
+                            holder))
+    check("Z5 自弃：同样触发一轮修正", FixingDeferAgent.corrective_calls == 1)
+    check("Z6 修正轮真动手了：不再追加任何未交付声明",
+          "这一步没有交付" not in holder["summary"]
+          and not any(e["type"] == "verify" and e.get("unfinished") for e in evs),
+          holder["summary"])
+
+    # 路径 Z7：不是改动任务（纯写总结）→ 即便自述「下一步」也不介入（说一句"以后再补"
+    # 在问答里是如实的，不是怠工）
+    ag = StubAgent()
+    StubAgent.corrective_calls = 0
+    holder = {"summary": "先给出初步结论。下一步：我将继续检索相关资料。", "convo": []}
+    evs = list(_verify_gate(ag, "帮我写个总结", holder))
+    check("Z7 非改动任务：零介入",
+          StubAgent.corrective_calls == 0 and evs == []
+          and holder["summary"] == "先给出初步结论。下一步：我将继续检索相关资料。",
+          holder["summary"])
+
+    # 路径 Z8：本轮真写过文件 → 自述「下一步」也不介入（做了别的活，
+    # 顺口说一句后续安排不算没交付）
+    ag = StubAgent()
+    StubAgent.corrective_calls = 0
+    holder = {"summary": s_defer, "convo": convo_w}
+    evs = list(_verify_gate(ag, brief_z, holder))
+    check("Z8 本轮零改动才出手：有过写操作 → 零介入",
+          StubAgent.corrective_calls == 0 and evs == [] and holder["summary"] == s_defer,
+          holder["summary"])
+
+    # ---------- 中文路径与中文输出（GM 回归） ----------
+    # 事故形态一：验证命令里的脚本名本身是中文（tools/校验.py），_trim_command
+    # 见到中文就断尾，整条命令被弃，闸门静默退化成「声称核查」。
+    cn_dir = tmp / "tools"
+    cn_dir.mkdir(exist_ok=True)
+    (cn_dir / "校验.py").write_text("print('校验通过')\n", encoding="utf-8")
+    cmd_cn = vg.extract_verify_cmd("验收：python tools/校验.py", tmp)
+    check("CN1 中文脚本名的验证命令照常提取",
+          cmd_cn == "python tools/校验.py", repr(cmd_cn))
+    # 真人话尾巴照旧断掉：中文词不带路径特征时仍然从那里截断
+    cmd_tail = vg.extract_verify_cmd("验收：python ok_script.py 必须全部通过", tmp)
+    check("CN2 纯中文人话尾巴仍然断掉", cmd_tail == "python ok_script.py", repr(cmd_tail))
+
+    # 事故形态二：Windows 下脚本 print 中文走管道默认是 GBK 字节，写死 utf-8
+    # 解码得到整段乱码。修复后子进程被强制 PYTHONUTF8=1，print 出来就是
+    # UTF-8，结果必须可读。
+    (tmp / "gbk_out.py").write_text(
+        "print('校验通过：3 项断言')\n", encoding="utf-8")
+    res_gbk = vg.run_verify_cmd("python gbk_out.py", tmp)
+    check("CN3 中文 print 输出不再解成乱码",
+          res_gbk["ok"] and "校验通过：3 项断言" in res_gbk["output"],
+          repr(res_gbk["output"])[:80])
+    res_utf = vg.run_verify_cmd("python ok_script.py", tmp)
+    check("CN4 UTF-8 输出不受影响", res_utf["ok"] and "all good" in res_utf["output"],
+          repr(res_utf["output"])[:80])
+    # 解码兜底链：真拿到 GBK 字节（bat 脚本等不认 PYTHONUTF8 的子进程）时，
+    # 无法按 UTF-8 解的字节退回区域编码，可读性优于乱码。
+    check("CN5 解码兜底：非法 UTF-8 的 GBK 字节按区域编码解开",
+          vg._decode_output("通过".encode("gbk")) == "通过",
+          repr(vg._decode_output("通过".encode("gbk"))))
+
     print("\n全部断言通过。")
 
 

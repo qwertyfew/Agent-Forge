@@ -60,6 +60,20 @@ def test_asks_workspace_state() -> None:
     check("任务书：与工作区无关 → False", not sg.asks_workspace_state("今天天气怎么样"))
     check("任务书：空 → False", not sg.asks_workspace_state(""))
     check("任务书：None 安全", not sg.asks_workspace_state(None))
+    # GM 回归：「实现」是检视提问的高频词（「X 是怎么实现的」「X 的实现」），
+    # 原来一律按创建动作处理，这类最日常的检视问题整类漏过闸门。
+    check("检视：问某处是怎么实现的 → True",
+          sg.asks_workspace_state("看一下 agentforge/loop.py 里工具超时是怎么实现的。"))
+    check("检视：问某处的实现 → True",
+          sg.asks_workspace_state("看看这个项目的实现方式。"))
+    check("检视：如何实现的 → True",
+          sg.asks_workspace_state("读一下 context.py，看看压缩是如何实现的。"))
+    check("创建：实现一个脚本 → False",
+          not sg.asks_workspace_state(
+              "实现一个导出脚本，顺便列出工作区里有哪些文件"))
+    check("创建：重新实现函数 → False",
+          not sg.asks_workspace_state(
+              "重新实现 parse_args 这个函数，列出它现在有哪些配置"))
 
 
 def test_ran_local_inspection() -> None:
@@ -101,6 +115,18 @@ def test_local_fact_tokens() -> None:
           sg.local_fact_tokens("见 https://example.com/docs/x.html") == [],
           repr(sg.local_fact_tokens("见 https://example.com/docs/x.html")))
     check("空总结安全", sg.local_fact_tokens("") == [])
+    # GM 回归：Windows 反斜杠的相对路径（agentforge\loop.py）——原来三条
+    # 识别路（斜杠相对 / 盘符绝对 / 斜杠目录）都走不通，整条漏判。
+    toks_bs = sg.local_fact_tokens(r"改动落在 agentforge\loop.py 和 web\index.html。")
+    check("反斜杠相对路径也认（agentforge\\loop.py）",
+          any("loop.py" in t for t in toks_bs), repr(toks_bs))
+    check("反斜杠相对路径也认（web\\index.html）",
+          any("index.html" in t for t in toks_bs), repr(toks_bs))
+    check("反斜杠路径被任务书点过名也不算（exclude_text 归一）",
+          not sg.local_fact_tokens(r"已改好 agentforge\loop.py。",
+                                   exclude_text=r"改 agentforge\loop.py"),
+          repr(sg.local_fact_tokens(r"已改好 agentforge\loop.py。",
+                                    exclude_text=r"改 agentforge\loop.py")))
 
 
 def test_needs_local_note() -> None:

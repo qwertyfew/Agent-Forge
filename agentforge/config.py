@@ -109,6 +109,11 @@ class Config:
     routing_quality_threshold: int = 78     # 所需维度低于此分视为「偏弱」，触发升级评估
     routing_allow_upgrade: bool = False      # 命中更强本地模型时是否自动改用（默认只提示）
     routing_allow_paid_upgrade: bool = False # 是否允许自动改用付费模型（默认绝不，避免偷偷花钱）
+    # ---- 按失败后果定档（swe-router 思路）----
+    # 档位（planner.stakes_of）→ 该档模型综合分的下限。选型原则是
+    # 「满足下限的最便宜模型」而不是「永远挑最强」：低风险任务不值得动用大模型。
+    routing_stakes_tiers: dict = field(default_factory=lambda: {
+        "low": 0, "medium": 78, "high": 86})
 
     workspace_root: Path = field(default_factory=Path.cwd)
     allow_outside: bool = False
@@ -143,6 +148,11 @@ class Config:
     # 读取类工具都没调，答复里却列着具体文件名时——先给一轮修正机会去真看一眼，
     # 仍然没看就由程序在答复末尾追加「未经核实」声明。治「凭空编一份目录清单」。
     local_facts_gate: bool = True
+    # 收尾自述核查（同一模块的第三路，见 verify.unfinished_claim）：模型在总结里
+    # **自己承认**「下一步我将…」「我无法修改…」而本任务全程零文件改动时——先给一轮
+    # 修正机会（现在就做，别把计划当交付），复查仍如此就在答复末尾如实标注「这一步
+    # 没有交付」。治「两个指令都不执行，却回复得像已完成」。
+    unfinished_gate: bool = True
 
     # ---- 多 agent 调度（Dispatcher）----
     # 由一个本地决策模型把请求拆成【语义独立】的任务、指派执行 agent、维护共享进度，
@@ -229,6 +239,11 @@ class Config:
         cfg.routing_quality_threshold = int(r.get("quality_threshold", cfg.routing_quality_threshold))
         cfg.routing_allow_upgrade = bool(r.get("allow_upgrade", cfg.routing_allow_upgrade))
         cfg.routing_allow_paid_upgrade = bool(r.get("allow_paid_upgrade", cfg.routing_allow_paid_upgrade))
+        st = r.get("stakes_tiers") or {}
+        if isinstance(st, dict) and st:
+            cfg.routing_stakes_tiers = {str(k): int(v) for k, v in st.items()
+                                        if str(k) in ("low", "medium", "high")} \
+                or cfg.routing_stakes_tiers
 
         w = raw.get("workspace", {}) or {}
         cfg.workspace_root = Path(_expand(w.get("root", str(ROOT))))
@@ -258,6 +273,8 @@ class Config:
         cfg.sources_gate = bool(a.get("sources_gate", True))
         # 本机事实核查：要列工作区现状却没读过工作区时，先修正一轮、仍然没看就附声明
         cfg.local_facts_gate = bool(a.get("local_facts_gate", True))
+        # 收尾自述核查：模型自认「下一步我将…/我无法修改…」且零文件改动时，先修正一轮
+        cfg.unfinished_gate = bool(a.get("unfinished_gate", True))
         relay = str(a.get("relay", "brief" if cfg.relay_brief else "full")).strip().lower()
         cfg.relay_brief = relay != "full"
 

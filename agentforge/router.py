@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from .config import Config
-from .planner import KIND_DIM, KIND_LABEL, kind_of
+from .planner import KIND_DIM, KIND_LABEL, STAKES_LABEL, kind_of, stakes_of
 
 # 能力路由：每类任务实际要看的维度集合。中文写作/分析类任务里，中文能力是硬约束，
 # 所以取相关维度的「最小值」作为综合可用分——任一维度拉胯就整体拉胯（这正是
@@ -21,15 +21,17 @@ _CAP_DIMS = {
 class Router:
     """按任务性质把请求路由到不同专长的模型。
 
-    两层路由：
+    实际生效的路由是 capability()（webui 的 auto 模式走它），两层结合：
 
-    1. 粗分（classify）：用信号词判断任务属于「代码/逻辑」还是「语言/通用」，
-       再交给对应专长的模型 key，避免用同一个模型硬扛所有任务。
-    2. 能力路由（capability）：按任务真正需要的能力维度（编码/推理/写作/
-       中文…）从可用模型池里挑该维度最强的那个；当默认/已启用模型偏弱、
-       且存在更强的可用模型时，给出升级建议（或在配置允许时自动升级）。
-       这层直接回应「瓶颈在模型能力」——让重归纳/长文档/中文写作类任务
-       自动落到更擅长它的模型上，而不是永远卡在默认的小模型。
+    1. 后果定档（stakes）：按「做错了会怎样」给任务分档（低风险/常规/高后果），
+       每档对应一条模型能力下限——这是 swe-router 的核心思想：路由不该猜
+       「任务像什么」，该问「失败了多少」。
+    2. 能力选型：按任务所需能力维度（编码/推理/写作/中文…）算每个模型的
+       综合分，在「满足该档下限」的模型里挑最便宜的（cost 维度），没人达标
+       才用最强者兜底并明说差距。
+
+    classify() 是信号词粗分的旧路径，已不在执行链上，仅剩 CLI /route
+    诊断命令在用；不要在新代码里依赖它。
     """
 
     def __init__(self, cfg: Config):
@@ -136,57 +138,72 @@ class Router:
             vals = [int(sc.get(d, 0) or 0) for d in dims]
             return min(vals) if vals else 0
 
-        # 默认会用的（已启用池内最佳）
-        chosen = max(enabled, key=lambda e: (_combo(e), e.total))
+        # ---- 按失败后果定档（swe-router 思路）----
+        # 先问「这个任务做错了会怎样」，给模型能力设下限，再在达标者里挑
+        # 最便宜的——而不是无条件挑最强。低风险任务不值得动用大模型，
+        # 高后果任务则宁可多花算力也要守住质量线。
+        stakes, stakes_why = stakes_of(text)
+        tiers = self.cfg.routing_stakes_tiers or {}
+        floor = int(tiers.get(stakes, tiers.get("medium", 78)))
+
+        def _cheap_first(e):
+            # cost 分数越高 = 越便宜（scores.py 的约定：本地模型 94~96，付费 35~68）。
+            # 同价位取综合分更高的：便宜且更准的那个人人都选。
+            sc = e.scores or {}
+            return (int(sc.get("cost", 0) or 0), _combo(e), e.total)
+
         # 允许自动选用的池：未开付费升级时只在本地区间内自动选，绝不擅自用付费模型
         if self.allow_paid_upgrade:
             pool = all_avail or enabled
         else:
             pool = [e for e in (all_avail or enabled) if getattr(e, "kind", "") != "paid"]
-        best = max(pool, key=lambda e: (_combo(e), e.total))
-        # 全局最强（含付费）——只在「超出授权范围」时用于提示
-        strongest = max(all_avail or enabled, key=lambda e: (_combo(e), e.total))
+        pool = sorted(pool, key=_cheap_first, reverse=True)
 
-        chosen_score0 = _combo(chosen)
-        chosen_name0 = chosen.display
-        chosen_score = chosen_score0
-        best_score = _combo(best)
-        strongest_score = _combo(strongest)
-        gap = best_score - chosen_score0
+        enabled_keys = {e.key for e in enabled}
+        enabled_best = max(enabled, key=lambda e: (_combo(e), e.total))
+        qualified = [e for e in pool if _combo(e) >= floor]
+        if qualified:
+            pick = qualified[0]              # 最便宜的够用者
+            shortfall = 0
+        else:
+            # 池子里没人达标：用最强者兜底，并把差距如实报出去
+            pick = max(pool, key=lambda e: (_combo(e), e.total))
+            shortfall = floor - _combo(pick)
 
-        notice = ""
-        upgrade = False
+        # 授权检查：pick 不在已启用池里时，改用它需要 allow_upgrade 授权
+        use = pick
         auto = False
-        reason = (f"按能力路由：{label}类任务 → {dim} 维度，"
-                  f"默认 {chosen_name0}（{chosen_score0} 分）")
-
-        if self.allow_upgrade and best.key != chosen.key and best_score > chosen_score0:
-            # 池内就有更强的、且被授权自动选用 → 直接自动切换
-            upgrade = True
-            auto = True
-            chosen = best
-            chosen_score = best_score
-            reason = (f"按能力路由自动选用：{label}类任务 → {dim} 维度，"
-                      f"{chosen.display}（{chosen_score} 分）")
-            notice = (f"已按任务类型自动选用 {chosen.display}（{label}能力 {chosen_score} 分，"
-                      f"优于默认 {chosen_name0} 的 {chosen_score0} 分）")
-        elif best.key != chosen.key and best_score > chosen_score0:
-            # 能力路由开着但自动升级未授权 → 仅提示去开启对应的一键配置
-            if getattr(best, "kind", "") == "paid":
-                notice = (f"该任务需要较强的{label}能力（{dim} 维度）。当前默认 {chosen_name0} "
-                          f"仅 {chosen_score0} 分；全局最优是付费模型 {best.display}（{best_score} 分）。"
-                          f"在「可用模型」里点「自动配置最佳模型」即可让此类任务自动启用它。")
+        if pick.key not in enabled_keys:
+            if self.allow_upgrade:
+                auto = True
             else:
-                notice = (f"该任务需要较强的{label}能力（{dim} 维度）。当前默认 {chosen_name0} "
-                          f"仅 {chosen_score0} 分；存在更强的本地模型 {best.display}（{best_score} 分）。"
-                          f"在「可用模型」里点「自动配置本地模型」即可让此类任务自动选用它。")
+                use = enabled_best           # 实际仍用已启用池里最强的
+
+        chosen_score = _combo(use)
+        strongest = max(all_avail or enabled, key=lambda e: (_combo(e), e.total))
+        strongest_score = _combo(strongest)
+
+        reason = (f"按后果路由：{label}类 · {STAKES_LABEL.get(stakes, stakes)}档"
+                  f"（下限 {floor}）→ {use.display}（{chosen_score} 分）。{stakes_why}")
+        notice = ""
+        upgrade = auto
+        if shortfall > 0:
+            notice = (f"⚠ {STAKES_LABEL.get(stakes, stakes)}任务（下限 {floor} 分）"
+                      f"没有达标模型，当前最高 {strongest_score} 分，已用最强者兜底。")
+        elif auto and use.key != enabled_best.key:
+            notice = (f"已按后果档位自动选用 {use.display}（{chosen_score} 分 ≥ 下限 {floor}，"
+                      f"且比 {enabled_best.display} 更省）。")
+        elif use.key != pick.key:
+            notice = (f"存在满足下限的更省候选 {pick.display}（{_combo(pick)} 分）："
+                      f"在「可用模型」里勾选它，或开启 routing.allow_upgrade 即可自动选用。")
 
         return {
             "kind": kind, "dimension": dim, "dimension_label": label,
-            "chosen_key": chosen.key, "chosen_name": chosen.display,
+            "stakes": stakes, "floor": floor, "shortfall": shortfall,
+            "chosen_key": use.key, "chosen_name": use.display,
             "chosen_score": chosen_score,
             "best_key": strongest.key, "best_name": strongest.display,
-            "best_score": strongest_score, "gap": gap,
+            "best_score": strongest_score, "gap": strongest_score - chosen_score,
             "upgrade": upgrade, "auto": auto,
             "notice": notice,
             "reason": reason,

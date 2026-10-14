@@ -15,13 +15,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from agentforge import artifact, autonote, autoskill, ollamaguard, reveal, runcontrol
+from agentforge import artifact, autonote, autoskill, gaps, ollamaguard, reveal, runcontrol
 from agentforge.cli import CLI
 from agentforge.config import Config
-from agentforge.memory import LAYER_LABEL, MemoryStore
+from agentforge.memory import MemoryStore
 from agentforge.llm import ollama_probe, set_local_serial
 from agentforge.modelstore import ModelStore
 from agentforge.orchestrator import run_task
+from agentforge.planner import short_title
 from agentforge.prefs import PERMISSION_LABEL, PrefsStore
 from agentforge.taskstore import TaskStore
 
@@ -30,6 +31,16 @@ INDEX = HERE / "web" / "index.html"
 
 # 从 Ollama 发现本地模型的动作不快也不慢，缓存几秒避免每次刷新都打一次
 _DISCOVER_TTL = 5.0
+
+# ⚠️ 临时关闭：任务收尾的「自动提取记忆」（规则抽取 + 模型提炼）整段停用。
+#
+# 为什么放在代码里而不是配置里：`agent.memory_autonote` 只在 webui 收尾那一处生效，
+# 一旦换配置（config.yaml / config.lanrun.yaml）、换入口就悄悄恢复默认 True，
+# 「关了又没关」正是它反复出现的原因。这里做成代码级短路——配置写 true 也不生效。
+#
+# 恢复办法：把下面的 True 改回 False（或删掉这个常量与两处 `and not _AUTONOTE_OFF`），
+# 配置开关即恢复原有行为。`remember` 工具与侧栏「记忆管理」手工增删**不受影响**。
+_AUTONOTE_OFF = True
 
 
 def est_tokens(text: str) -> float:
@@ -199,6 +210,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(self._memory_snapshot())
         elif path == "/api/skills":
             self._json(self._skills_snapshot())
+        elif path == "/api/gaps":
+            self._json(gaps.snapshot(self.cfg))
         elif path == "/api/tools":
             self._json(self._tools_snapshot())
         elif path == "/api/health":
@@ -345,6 +358,23 @@ class _Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
         return str(dest)
+
+    def _handle_gaps(self):
+        """能力缺口台账：清空（全部或按 kind/key）。
+
+        记录侧由架构自动完成（loop 的未知工具、preflight 的能力缺失、
+        bench_tasks 的评测失败归因），这里只负责管理动作。
+        """
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            req = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            self._json({"error": "invalid json"}, 400)
+            return
+        removed = gaps.clear(self.cfg,
+                             kind=str(req.get("kind") or ""),
+                             key=str(req.get("key") or ""))
+        self._json({"removed": removed, **gaps.snapshot(self.cfg)})
 
     def _handle_skills(self):
         """技能管理：删除单个技能 / 清空全部技能。
@@ -1158,6 +1188,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/skills":
             self._handle_skills()
             return
+        if path == "/api/gaps":
+            self._handle_gaps()
+            return
         if path == "/api/ollama/ensure":
             self._handle_ollama_ensure()
             return
@@ -1185,6 +1218,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         history = req.get("history") or []
         auto_plan = bool(req.get("auto_plan", True))
+        multi_path = bool(req.get("multi_path", False))
         model_key = (req.get("model_key") or "auto").strip()
 
         # 权限：优先用请求里显式的 permission；老前端只传 allow_write 时兼容处理；
@@ -1233,6 +1267,7 @@ class _Handler(BaseHTTPRequestHandler):
         models: list[str] = []
         final_history: list[dict] = []
         tool_calls = 0
+        touched: list[str] = []                # 本任务调用过的工具名（判「有没有可能写过盘」）
         steps = 0
         summary = ""
         err_msg = ""
@@ -1263,7 +1298,9 @@ class _Handler(BaseHTTPRequestHandler):
                 if cap_route.get("upgrade"):
                     # 只当作「优先模型」上报，不直接钉死 model_key——
                     # 否则会挡住多 agent 调度（调度模型要按任务重新指派模型）。
-                    preferred_key = cap_route["best_key"]
+                    # 用 chosen_key（本档实际选中的）而不是 best_key（全局最强）：
+                    # 后果路由的价值就在「够用且更省」，不在于永远上最强。
+                    preferred_key = cap_route.get("chosen_key") or cap_route["best_key"]
             except Exception:  # noqa: BLE001
                 cap_route = None
 
@@ -1273,7 +1310,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "task",
                 {
                     "id": task_id,
-                    "title": message[:90],
+                    "title": short_title(message, 90),
                     "status": "running",
                     "created_at": started_at,
                     "permission": permission,
@@ -1298,7 +1335,8 @@ class _Handler(BaseHTTPRequestHandler):
                                auto_plan=auto_plan, model_key=model_key,
                                preferred_key=preferred_key,
                                stop_check=stop_ev.is_set,
-                               auto_approve=auto_approve, file_log=file_log):
+                               auto_approve=auto_approve, file_log=file_log,
+                               multi_path=multi_path):
                 kind = ev["type"]
                 if kind == "delta":
                     emit("delta", {"text": ev["text"]})
@@ -1312,6 +1350,9 @@ class _Handler(BaseHTTPRequestHandler):
                                        "progress": progress_text()})
                 elif kind == "tool_start":
                     tool_calls += 1
+                    # 记下这次任务调过哪些工具：收尾判断「本任务有没有可能写过盘」
+                    # 要用它（见 artifact.may_have_written）。绝不靠「模型说它写了」。
+                    touched.append(ev["name"])
                     self.tasks.touch(task_id, tool=True, progress=progress_text())
                     emit("tool_start", {"name": ev["name"], "args": ev["args"]})
                 elif kind == "tool_result":
@@ -1319,6 +1360,21 @@ class _Handler(BaseHTTPRequestHandler):
                     if ev.get("failed"):
                         payload["failed"] = True
                     emit("tool_result", payload)
+                elif kind == "multipath":
+                    # 多路径尝试：先播「正在拟路径」，再逐条播每条路径的尝试。
+                    # 用 thinking 通道播报，界面渲染成思考行，不打断正常回答流。
+                    if ev.get("phase") == "plan":
+                        emit("thinking", {
+                            "text": f"第 {ev.get('index', '?')} 步未完成，"
+                                    "正在拟定不同的实现路径，逐条尝试…",
+                        })
+                    else:
+                        emit("thinking", {
+                            "text": f"第 {ev.get('index', '?')} 步 · 方案 "
+                                    f"{ev.get('approach_index', '?')}"
+                                    f"/{ev.get('approach_total', '?')}："
+                                    f"{ev.get('approach', '')}",
+                        })
                 elif kind == "skill":
                     emit("skill", {"name": ev["name"], "detail": ev["detail"]})
                 elif kind == "stats":
@@ -1361,6 +1417,17 @@ class _Handler(BaseHTTPRequestHandler):
                     # 中途停止时编排器主动回吐已完成的部分，让界面/台账不丢上下文
                     final_history = ev["messages"]
                     emit("history", {"messages": ev["messages"]})
+                elif kind == "subtask_error":
+                    # 子任务级失败：**只播报，不改变整条任务的结局**（不写 err_msg）。
+                    # 它的语义是「这一路由子任务自己失败了，整条任务照常往下走」：
+                    # 并行跑的那批任务本来就按「单个崩了不拖垮其它」设计。
+                    # 早先它沿用 error 事件名，外层于是把整条任务记成 error、
+                    # 界面在回答中途就收尾（复制工具条挂在回答正中间）——见
+                    # agentforge/orchestrator.py 里同一处改动的说明。
+                    emit("subtask_error", {
+                        "task_id": ev.get("task_id", ""),
+                        "message": ev.get("message", ""),
+                    })
                 elif kind == "error":
                     err_msg = ev["message"]
                     emit("error", {"message": ev["message"]})
@@ -1421,9 +1488,24 @@ class _Handler(BaseHTTPRequestHandler):
                 pass
         finally:
             # 产出文件 = 工具明确写的 + 工作区索引两次相减（兜住命令副作用）
+            #
+            # 相减那一半是**推测**，必须先过 may_have_written：本任务一次工具都没调
+            # （纯问答）或只调了只读工具时，直接不扫。否则任务时间窗里任何别的进程
+            # 顺手改的文件都会被算成本任务产出——实测踩过：一个纯问答任务被记上了
+            # `docs/evolution.md`，只因跑它的时候恰好有编辑器在写这个文件，界面上
+            # 就变成「它返回了一份自己没生成的文档」。
             try:
-                after = artifact.snapshot(self.cfg.workspace_root)
-                scanned = artifact.diff_snapshot(tree_before, after)
+                reg = getattr(self.cli.agent, "registry", None)
+
+                def _risk(name: str):
+                    tool_def = reg.get(name) if reg is not None else None
+                    return getattr(tool_def, "risk", None) if tool_def is not None else None
+
+                if artifact.may_have_written(touched, _risk):
+                    after = artifact.snapshot(self.cfg.workspace_root)
+                    scanned = artifact.diff_snapshot(tree_before, after)
+                else:
+                    scanned = []
                 merged = artifact.merge([*file_log, *scanned])
             except Exception:  # noqa: BLE001
                 merged = file_log
@@ -1444,7 +1526,7 @@ class _Handler(BaseHTTPRequestHandler):
             # 任务里模型自己调 remember 写记忆的通道不在这里，不受本开关影响。
             try:
                 added = autonote.capture(self.mem, final_history or [], task_id) \
-                    if self.cfg.memory_autonote else []
+                    if (self.cfg.memory_autonote and not _AUTONOTE_OFF) else []
                 # 任务里模型自己调用 remember 写进去的也算这次沉淀的（工具侧已判重）
                 by_tool = any(
                     isinstance(m, dict) and m.get("role") == "tool"
@@ -1462,7 +1544,7 @@ class _Handler(BaseHTTPRequestHandler):
                 pass
             try:
                 spec = autonote.pick_extractor(self.store, self.cfg) \
-                    if self.cfg.memory_autonote else None
+                    if (self.cfg.memory_autonote and not _AUTONOTE_OFF) else None
                 if spec is not None and final_history:
                     hist = list(final_history)
                     # 记忆：后台提炼长期结论
@@ -1516,9 +1598,6 @@ class _Handler(BaseHTTPRequestHandler):
         return {
             "entries": items,
             "count": len(items),
-            # 分层统计：界面显示「偏好 N / 约定 N / 事实 N」，也便于核对分层是否生效
-            "layers": self.mem.layer_counts(),
-            "layer_labels": dict(LAYER_LABEL),
             "path": str(self.mem.path),
         }
 

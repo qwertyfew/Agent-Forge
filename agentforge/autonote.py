@@ -12,17 +12,15 @@
 
 两条结果都要过一遍去重：和现有记忆重复的句子不再写入。
 
-每条记忆还会带上一个**层标签**（L1 事实 / L2 约定 / L3 偏好，见 memory.py）：
-模型抽取时让它显式标出层，规则抽取则由 classify_layer 就地判定。层标签决定
-后续任务注入系统提示时的检索深度——具体技术任务优先给 L1，常规对话优先给 L3/L2。
+沉淀的内容**只收用户偏好**（见 memory.py 的说明）：环境事实工具能现查、项目约定
+由架构保证，两类都不该抄进记忆。所以规则抽取只认「记住 / 以后 / 一律 / 偏好」这类
+「用户在对你说以后该怎么办」的信号，模型抽取的提示词也明确只要偏好。
 """
 
 from __future__ import annotations
 
 import re
 from typing import Any, Iterable
-
-from .memory import classify_layer, normalize_layer
 
 # 强信号：一旦出现，基本可以断定是「用户在对你说以后该怎么办」，直接收。
 SIGNALS = (
@@ -110,10 +108,6 @@ _TASKISH = re.compile(
     r"|use_skill|task_notes|GitHub API|禁止修改|不要使用任何|不要写文件|不要硬凑"
 )
 
-# 模型输出里的层前缀：[L1] / （L2） / 【L3】 / L1: / L1- ，大小写都认。
-# 前缀只是给分层用的标记，落盘前要摘掉，不能让「[L2] 」混进记忆正文。
-_LAYER_PREFIX = re.compile(r"^[\[\(（【]?\s*(L[123])\s*[\]\)）】]?\s*[:：\-–—.、]?\s*", re.I)
-
 
 def _noisy(text: str) -> bool:
     """这句话是不是任务编排的过程指令（而不是值得长期保留的结论）。"""
@@ -124,22 +118,20 @@ def _taskish(text: str) -> bool:
     """这条是不是「只对本次任务成立」的结论（不该进长期记忆）。"""
     return bool(_TASKISH.search(str(text or "")))
 
-MODEL_PROMPT = """下面是一段智能体任务的对话记录。请只提炼**以后还用得上的结论**，例如：
-用户偏好、项目约定、环境事实、踩过的坑。
+MODEL_PROMPT = """下面是一段智能体任务的对话记录。请只提炼**用户的长期偏好**——
+稳定的个人倾向、风格与习惯，例如「回答先给结论」「代码注释一律用中文」
+「产出文档一律简体中文」「优先用本地模型」。
 
-每条都要标出它属于哪一层（写在该行最前面）：
-- [L1] 原子事实：可精确召回的环境/路径/版本/端口/依赖等，例如「本地 Ollama 端口 11434」
-- [L2] 项目约定：项目规则、工作方式、流程约定，例如「改动前先跑一遍测试」
-- [L3] 用户偏好：稳定的个人偏好与习惯，例如「注释一律用中文」
+以下三类**不要**记录：
+- 环境 / 路径 / 版本 / 端口 / 依赖这类**事实**——需要时工具能现查，记下来只会过期误导
+- 项目规则、工作方式、流程约定（「改动前先跑一遍测试」）——它们由程序与断言保证，
+  写进记忆也不生效
+- 本次任务里的约束与指令（「不要写文件」「禁止修改 X」「先查笔记再搜」）——只对那一次有效
 
 规则：
-- 每行一条，以「- [层] 」开头（如「- [L1] ...」），正文不超过 40 字，不要写过程、不要写这次的临时结果
-- 不要记录任务步骤指令（如「只完成本步」「不要重复已完成的操作」），那些不是长期结论
-- **绝对不要记录本次任务里的约束和指令**——「不要写文件」「禁止修改 X」「先查笔记再搜」
-  「不适配的不要硬凑」这类话只对这一次任务有效，是任务书的一部分，不是长期结论
-- 只提炼对**以后任何类似任务**都成立的持久信息：用户明确说的偏好、项目的固定约定、
-  环境事实、会重复踩的坑；拿不准是不是一次性的，就别记
-- 最多 2 条；如果没有值得长期保留的信息，只输出 NONE
+- 每行一条，正文不超过 40 字，不要写过程、不要写这次的临时结果
+- 只提炼对**以后任何类似任务**都成立的持久偏好；拿不准是不是一次性的，就别记
+- 最多 2 条；如果没有值得长期保留的偏好，只输出 NONE
 - 用中文，直接输出，不要任何解释
 """
 
@@ -227,22 +219,19 @@ def _transcript(messages: list[dict], per_msg: int = 700, limit: int = 8) -> str
     return "\n".join(lines)
 
 
-def parse_model_notes_typed(raw: str) -> list[tuple[str, str]]:
-    """解析模型输出，返回 [(layer, text)]；layer 为空串表示模型没标层。
+# 模型偶尔仍会按旧习惯给行首加层标记（[L1] / （L2） / L3:）。记忆已不再分层，
+# 落盘前一律摘掉，别让「[L2] 」混进记忆正文。
+_LEADING_TAG = re.compile(r"^[\[\(（【]?\s*L[123]\s*[\]\)）】]?\s*[:：\-–—.、]?\s*", re.I)
 
-    支持「- [L1] xxx」「1. L2: xxx」或纯行，过滤明显是废话的行。
-    层前缀先摘掉再判长度——「[L1] 端口 11434」真正的内容只有「端口 11434」。
-    """
-    out: list[tuple[str, str]] = []
+
+def parse_model_notes(raw: str) -> list[str]:
+    """解析模型输出，返回若干条偏好文本；过滤明显是废话、任务书、一次性结论的行。"""
+    out: list[str] = []
     seen: list[str] = []
     for line in str(raw or "").splitlines():
         s = line.strip().lstrip("-*·").strip()
         s = re.sub(r"^\d+[.、)]\s*", "", s)
-        layer = ""
-        m = _LAYER_PREFIX.match(s)
-        if m:
-            layer = m.group(1).upper()
-            s = s[m.end():].strip()
+        s = _LEADING_TAG.sub("", s).strip()
         if not s or s.upper() == "NONE":
             continue
         if len(s) < NOTE_MIN:
@@ -252,19 +241,14 @@ def parse_model_notes_typed(raw: str) -> list[tuple[str, str]]:
         if s in seen:
             continue
         seen.append(s)
-        out.append((layer, s[:NOTE_MAX]))
+        out.append(s[:NOTE_MAX])
         if len(out) >= MAX_MODEL:
             break
     return out
 
 
-def parse_model_notes(raw: str) -> list[str]:
-    """只要文本、不要层（旧调用方的兼容入口）。"""
-    return [t for _, t in parse_model_notes_typed(raw)]
-
-
-def model_notes(hub, spec, messages: list[dict]) -> list[tuple[str, str]]:
-    """用指定模型抽一次记忆；任何异常都吞掉，返回 [(layer, text)]（可能为空）。"""
+def model_notes(hub, spec, messages: list[dict]) -> list[str]:
+    """用指定模型抽一次记忆；任何异常都吞掉，返回偏好文本列表（可能为空）。"""
     text = _transcript(messages)
     if not text:
         return []
@@ -277,7 +261,7 @@ def model_notes(hub, spec, messages: list[dict]) -> list[tuple[str, str]]:
         for kind, payload in hub.chat_stream(spec, msgs, None, {"temperature": 0.2}):
             if kind == "result":
                 result = payload
-        return parse_model_notes_typed(getattr(result, "content", "") or "")
+        return parse_model_notes(getattr(result, "content", "") or "")
     except Exception:  # noqa: BLE001
         return []
 
@@ -318,35 +302,30 @@ def dupe_of(store, text: str) -> str:
 def capture(store, messages: list[dict], task_id: str = "") -> list[dict]:
     """把规则抽取的结果写进记忆，返回新写入的条目（已去重）。
 
-    层标签由本地规则判（classify_layer）——用户明说要记住的话，语义一眼能看出
-    是偏好还是环境事实，不需要模型参与。
+    只收「用户明说要记住的偏好」这类句子（见 rule_notes 的信号与任务书过滤）。
     """
     added: list[dict] = []
     for note in rule_notes(messages):
         if dupe_of(store, note):
             continue
-        entry = store.append(note, task_id, layer=classify_layer(note))
+        entry = store.append(note, task_id)
         if entry:
             added.append(entry)
     return added
 
 
 def capture_model(store, hub, spec, messages: list[dict], task_id: str = "") -> list[dict]:
-    """后台线程里跑的模型抽取：同样去重后再落盘。
-
-    优先用模型自己标出的层（[L1]/[L2]/[L3]）；没标或标了非法值，再用本地
-    classify_layer 兜底，保证每条记忆都有层。
-    """
+    """后台线程里跑的模型抽取：同样去重后再落盘。"""
     if spec is None:
         return []
     notes = model_notes(hub, spec, messages)
     if not notes:
         return []
     added: list[dict] = []
-    for layer, note in notes:
+    for note in notes:
         if dupe_of(store, note):
             continue
-        entry = store.append(note, task_id, layer=normalize_layer(layer, note))
+        entry = store.append(note, task_id)
         if entry:
             added.append(entry)
     return added
@@ -354,5 +333,5 @@ def capture_model(store, hub, spec, messages: list[dict], task_id: str = "") -> 
 
 __all__ = [
     "capture", "capture_model", "dupe_of", "model_notes", "parse_model_notes",
-    "parse_model_notes_typed", "pick_extractor", "rule_notes", "classify_layer",
+    "pick_extractor", "rule_notes",
 ]

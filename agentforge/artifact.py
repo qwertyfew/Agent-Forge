@@ -6,7 +6,10 @@
   1. 工具明确写的文件  —— write_file / edit_file / delete_file，能精确知道是
                           新建、修改还是删除
   2. 命令副作用产生的文件 —— run_command 跑脚本、pip、构建命令时落到磁盘上的，
-                          靠「任务开始前后各拍一张工作区索引，两次相减」反推
+                          靠「任务开始前后各拍一张工作区索引，两次相减」反推。
+                          第 2 类是**推测**：索引相减只能看出「这段时间里它变了」，
+                          看不出是谁改的。所以扫之前先过 may_have_written——
+                          本任务一次工具都没调、或只调了只读工具时，直接不扫。
   3. 记忆文件          —— 单独由 memory.MemoryStore 管理，不在这里
 
 本模块只做「发现与描述」，不负责删除。删除在 webui 里按用户勾选执行，
@@ -33,6 +36,36 @@ MAX_INDEX = 4000         # 索引最多记多少文件，防异常仓库拖慢�
 
 # 只有这几种工具会直接改文件；其余工具靠目录扫描兜底
 FILE_TOOLS = {"write_file": "write", "edit_file": "edit", "delete_file": "delete"}
+
+# 「只读」的风险等级字面量。刻意不 import agentforge.tools.base.SAFE：本模块要
+# 保持零依赖（任何测试都能单独加载它），代价就是这一个字面量——tools/test_artifacts.py
+# 里有一条断言盯着它与 tools.base.SAFE 同值，改了那边会红。
+READONLY_RISK = "safe"
+
+
+def may_have_written(tool_names, risk_of) -> bool:
+    """本次任务有没有可能往磁盘上写过东西。
+
+    「产出文件」里靠扫描相减出来的那一半，分不清「这个文件是本任务写的」和
+    「本任务跑着的时候别人改了它」——只按 mtime 相减，等于把任务时间窗内任何
+    进程的改动都算在任务头上。实测踩过：一个纯问答任务（一次工具都没调）被记上了
+    `docs/evolution.md`，因为跑它的时候恰好有别的编辑器在写这个文件，界面上就成了
+    「这个任务返回了一份它没生成的文档」。
+
+    所以先问一句本任务到底动没动手：
+      - 一次工具都没调（纯问答）            → 不可能有产出，压根不用扫
+      - 只调了只读工具（list_dir/read_file…）→ 同上
+      - 调过写类 / 命令类工具                → 扫（脚本副作用只能这样兜）
+
+    risk_of(name) 返回该工具的风险等级；未知工具返回 None，一律当「可能写」——
+    宁可多扫一遍把推测交给用户核对，也不要漏掉脚本真正写出来的东西。
+    """
+    for name in tool_names or ():
+        if not name:
+            continue
+        if risk_of(name) != READONLY_RISK:
+            return True
+    return False
 
 
 def norm(path: str | Path) -> str:
@@ -71,7 +104,9 @@ def classify_tool_write(tool_name: str, args: dict, output: str) -> dict | None:
     if action is None:
         # 工具报错了（参数不对、文件不存在…），不要记成产出
         return None
-    return {"path": str(raw), "action": action, "via": "tool", "tool": tool_name}
+    # certain=True：这条是工具亲口说「我写了这个文件」，是确证而不是推测
+    return {"path": str(raw), "action": action, "via": "tool", "tool": tool_name,
+            "certain": True}
 
 
 def snapshot(root: str | Path, cap: int = MAX_INDEX) -> dict[str, tuple[str, float, int]]:
@@ -121,16 +156,20 @@ def diff_snapshot(
     before: dict[str, tuple[str, float, int]],
     after: dict[str, tuple[str, float, int]],
 ) -> list[dict]:
-    """对比两次索引，找出任务期间新增/改动的文件。"""
+    """对比两次索引，找出任务期间新增/改动的文件。
+
+    结果一律带 `certain: False`：这是**推测**——只知道「这段时间里它变了」，
+    不知道是谁改的。调用方必须先过 `may_have_written` 再决定要不要扫。
+    """
     out: list[dict] = []
     for key, (path, mtime, size) in after.items():
         old = before.get(key)
         if old is None:
             out.append({"path": path, "action": "created", "via": "scan",
-                        "tool": "", "size": size})
+                        "tool": "", "size": size, "certain": False})
         elif abs(old[1] - mtime) > 1e-6:
             out.append({"path": path, "action": "modified", "via": "scan",
-                        "tool": "", "size": size})
+                        "tool": "", "size": size, "certain": False})
     return out
 
 
@@ -180,7 +219,11 @@ def is_intermediate(rec: dict) -> bool:
 
 
 def describe(records: list[dict], root: str | Path) -> list[dict]:
-    """转成给界面用的形态：相对路径 + 动作 + 是否存在。"""
+    """转成给界面用的形态：相对路径 + 动作 + 是否存在。
+
+    `certain` 一并透出：工具亲口写的（True）与扫描相减推出来的（False）在界面上
+    要有区别——后者只能说「这段时间它变了」，不能说「这个任务产出了它」。
+    """
     out = []
     for r in records or []:
         p = Path(r.get("path") or "")
@@ -192,6 +235,8 @@ def describe(records: list[dict], root: str | Path) -> list[dict]:
                 "action": r.get("action") or "modified",
                 "via": r.get("via") or "scan",
                 "tool": r.get("tool") or "",
+                # 老台账里没有这个字段：按 via 反推（工具记录是确证，其余是推测）
+                "certain": bool(r.get("certain", (r.get("via") or "scan") == "tool")),
                 "exists": p.exists(),
                 "outside": rel is None,
             }
@@ -206,7 +251,9 @@ __all__ = [
     "merge",
     "describe",
     "is_intermediate",
+    "may_have_written",
     "rel_to_root",
     "norm",
+    "READONLY_RISK",
     "SKIP_DIRS",
 ]

@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from agentforge.planner import (                        # noqa: E402
-    KIND_DIM, KIND_LABEL, KIND_SIGNALS, kind_of,
+    KIND_DIM, KIND_LABEL, KIND_SIGNALS, kind_of, looks_like_change,
+    resolve_kind, short_title,
 )
 from agentforge.router import _CAP_DIMS                 # noqa: E402
 
@@ -76,6 +77,65 @@ def test_coding_beats_writing() -> None:
         check(f"编码优先于写作：{text[:20]}", kind_of(text) == "coding", kind_of(text))
 
 
+def test_change_beats_writing() -> None:
+    """改代码的活不许落到「写作」——第二个实测事故（用户原话「其两个指令都没有执行」）。
+
+    用户发给 agent 的消息里有两条指令，第 2 条是「每当你的思维链在完全打印出来以后，
+    直接将思维链隐藏，并根据用户的文字偏好…将思维链的结果总结成简短的一句话」。
+    这是要改 `web/index.html` 的渲染，只因为句子里有一个"总结"，整条被判成**写作**
+    （计划卡上写着「所需能力：文本生成、逻辑抽象与格式调整」），于是按写作维度挑模型；
+    模型于是去"写一段说明"、"记下您的偏好"，一个文件都没碰。
+
+    判据刻意只看**搭配**：改动物件（代码/界面/思维链/…) 与 改动动作（修改/隐藏/去掉/…）
+    同处一个小句，就是「要动手改东西」，不猜意图。
+    """
+    accident = [
+        # 子任务书原样（调度模型复述后的那一条）
+        "根据用户的文字偏好（从记忆或上下文获取），修改思维链输出机制：1. 在完全打印出"
+        "思维链后，将其隐藏；2. 将完整的思维链结果总结成简短的一句话（例如：'决定调用"
+        "工具 fetch_json' 或 '将任务拆解为若干步骤...'）并展示。",
+        # 用户原话
+        "每当你的思维链在完全打印出来以后，直接将思维链隐藏，并根据用户的文字偏好"
+        "（会在记忆里面），将思维链的结果总结成简短的一句话",
+        # 同一条消息里的第 1 条指令
+        "定位并修复导致在对话中返回非本次生成的文档（如 evolution.md）的逻辑 bug，"
+        "并修改代码以解决该问题。",
+        "把 web/index.html 里的泳道头部删掉",
+        "帮我修复一下登录的 bug",
+    ]
+    for t in accident:
+        k = kind_of(t)
+        check(f"改代码的活不判写作：{t[:22]} → {k}", k == "coding", k)
+
+    # 反向：真·写作任务不能被这条规则吃掉（否则换个方向坏）
+    for t, allowed in (("写一份产品介绍文档，总结一下卖点。", ("writing",)),
+                       ("把这段英文翻译成中文。", ("writing",)),
+                       ("帮我写个周报，总结本周进展", ("writing",)),
+                       ("帮我查一下 git 上那个 REA 项目是什么，介绍一下。",
+                        ("writing", "analysis", "general"))):
+        k = kind_of(t)
+        check(f"真写作任务不误收：{t[:18]} → {k}", k in allowed, k)
+
+    # 调度模型给的 kind 也要过规则复核（dispatcher._llm_plan 走的是这条）
+    check("调度模型误标 writing → 纠回 coding",
+          resolve_kind(accident[0], "writing") == "coding",
+          resolve_kind(accident[0], "writing"))
+    check("真写作任务：模型说 writing 就随它",
+          resolve_kind("写一份产品介绍文档", "writing") == "writing")
+    check("模型给了不认识的标签 → 回退按规则定性",
+          resolve_kind(accident[0], "nonsense") == "coding")
+    check("模型没给标签 → 与 kind_of 同源",
+          resolve_kind(accident[0], "") == kind_of(accident[0]))
+    check("用户自己的 kind 不被规则推翻（只说 analysis 就保持 analysis）",
+          resolve_kind("分析一下这段代码", "analysis") == "analysis")
+
+    # 判据本身：看搭配，不看有没有出现某个动词
+    check("搭配判据：有动作无对象 → 否", not looks_like_change("把这段英文翻译成中文"))
+    check("搭配判据：有对象无动作 → 否", not looks_like_change("看看 index.html"))
+    check("搭配判据：动作+对象同句 → 是", looks_like_change("把 index.html 里的按钮隐藏"))
+    check("搭配判据：隔着句号不算同句", not looks_like_change("按钮。修改"))
+
+
 def test_unknown_text() -> None:
     check("没命中任何信号 → general", kind_of("今天天气怎么样") == "general")
     check("空文本 → general", kind_of("") == "general")
@@ -116,14 +176,68 @@ def test_dispatcher_prompt_lists_every_kind() -> None:
         check(f"「{k}」算重活（不交给只会调度的小模型）", k in NOT_SIMPLE_KINDS)
 
 
+def test_short_title() -> None:
+    """短标题不许按字数硬切。
+
+    事故现场（端到端实测）：用户要求里有「…非本次生成的文档（如 evolution.md）」，
+    计划卡第一条显示成 `定位并修复导致在对话中返回非本次生成的文档（如 ev`——
+    切在括号里面、断在半截单词上，收尾括号也没了。计划卡是用户看任务的第一眼。
+    """
+    goal = "定位并修复导致在对话中返回非本次生成的文档（如 evolution.md），并说明返回的逻辑"
+    t = short_title(goal, 26)
+    check("事故现场：不再切出「（如 ev」这种断头括号", "（如 ev" not in t, t)
+    check("事故现场：退回未闭合左括号之前，是一个完整的短句",
+          t == "定位并修复导致在对话中返回非本次生成的文档…", t)
+    check("被截断时补省略号（一眼看出这不是任务本名）", t.endswith("…"), t)
+
+    # 括号里正好能在界内闭合时，整对括号一起保留
+    t2 = short_title("根据用户的文字偏好（从记忆或上下文获取），修改思维链显示逻辑", 26)
+    check("括号对完整保留，不留下半截", t2 == "根据用户的文字偏好（从记忆或上下文获取）…", t2)
+
+    # 有子句边界就在边界收尾，读起来是一句完整的话
+    t3 = short_title("第一步，先执行 list_dir 看看目录结构；然后读文件", 26)
+    check("在子句边界收尾，且不留「，…」这种别扭组合",
+          t3.endswith("…") and not t3.endswith("，…") and "目录结构" in t3, t3)
+
+    # 西文单词 / 路径不许被切成两半
+    t4 = short_title("检查 agentforge/artifact.py 与 dispatcher.py 的产出归因", 20)
+    check("不切在西文单词中间", not t4.rstrip("…").endswith("agentforge/artifact.p"), t4)
+    check("切词时退回整词，仍以省略号收尾", t4.endswith("…"), t4)
+
+    # 硬约束：长度不超过 limit（侧栏标签有 90 字硬上限，见 test_taskstore）
+    for limit in (8, 12, 26, 90):
+        for s in (goal, "a" * 300, "短", "中" * 200):
+            check(f"len <= {limit}：{s[:10]}…", len(short_title(s, limit)) <= limit,
+                  f"limit={limit} len={len(short_title(s, limit))}")
+
+    check("本来就不长时原样返回，不画蛇添足加省略号",
+          short_title("读一下 README", 26) == "读一下 README", short_title("读一下 README", 26))
+    check("换行与多余空白压成单个空格",
+          short_title("第一行\n\n  第二行", 26) == "第一行 第二行", short_title("第一行\n\n  第二行", 26))
+    check("空输入不炸", short_title("", 26) == "" and short_title(None, 26) == "",
+          repr(short_title(None, 26)))
+
+    # 计划卡与派工标题必须同源：dispatcher 不许再自己硬切一遍
+    import inspect as _inspect
+    from agentforge import dispatcher as _d
+    src = _inspect.getsource(_d)
+    check("dispatcher 里不再有 goal[:26] 这种硬切", "goal[:26]" not in src, "还有硬切")
+    check("dispatcher 用的是 planner.short_title", "short_title" in src)
+    # 同上：光有 resolve_kind 这个函数不算数，采纳调度模型的 kind 时必须真的过它
+    check("dispatcher 采纳调度模型的 kind 时过了规则复核",
+          "resolve_kind(" in src, "没接上 resolve_kind")
+
+
 def main() -> None:
     test_regressions()
     test_inspect()
     test_not_inspect()
     test_coding_beats_writing()
+    test_change_beats_writing()
     test_unknown_text()
     test_kind_contract()
     test_dispatcher_prompt_lists_every_kind()
+    test_short_title()
     print("\n全部通过。")
 
 
