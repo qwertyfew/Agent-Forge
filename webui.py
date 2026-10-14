@@ -44,11 +44,65 @@ def _is_local_deployment(base: Path | None = None) -> bool:
     return (root / "start.bat").is_file() and (root / "stop.bat").is_file()
 
 
-def _restart_command() -> str:
-    """重启命令行：先等 2s 让 HTTP 响应发出去（stop 会连本服务一起停），
-    再停旧的、等端口释放、拉起新的。整个流程在分离的 cmd 里自己走完。"""
-    return ("timeout /t 2 /nobreak >nul & call stop.bat "
-            "& timeout /t 3 /nobreak >nul & call start.bat")
+def _venv_interpreters() -> tuple[str, str]:
+    """与 service.python_exe() 同一口径：优先 .venv，缺了退回当前解释器。
+
+    返回 (python.exe, pythonw.exe)。重启链里直接点名这两个解释器，
+    不再借道 start.bat 的 venv 探测——少一层间接，就少一类意外。
+    """
+    venv = HERE / ".venv"
+    py = venv / "Scripts" / "python.exe"
+    pyw = venv / "Scripts" / "pythonw.exe"
+    if py.exists():
+        return str(py), str(pyw if pyw.exists() else py)
+    return sys.executable, sys.executable
+
+
+def _restart_command(py: str | None = None, pyw: str | None = None) -> str:
+    """重启命令行：先等 HTTP 响应发出去，再停旧的、等端口释放、拉起新的。
+
+    为什么不再 call stop.bat / start.bat（上一版事故的三个根因）：
+    1. 分离 cmd 用了 DETACHED_PROCESS，它会给每个控制台子进程开【可见】
+       窗口——stop.bat 里的 `python service.py --stop` 每次都弹窗喊
+       「服务没在运行」，用户关掉窗口杀掉的是子进程，保姆又拉起服务，
+       「关了又弹」（service.py 顶部有同样的血泪注释）；
+    2. `timeout /t /nobreak` 在无控制台输入时立即失败，响应先行的等待
+       形同虚设 → 换 ping -n 做纯网络栈延时，不依赖任何控制台；
+    3. stop.bat 末尾的 pause 靠 %cmdcmdline% 判断是否被双击启动，被
+       cmd 链 call 进来时会误判而卡住 → 绕开 bat，直接调 service.py。
+    """
+    if not (py and pyw):
+        dpy, dpyw = _venv_interpreters()
+        py, pyw = py or dpy, pyw or dpyw
+    return (
+        'ping -n 3 127.0.0.1 >nul'          # ≈2s：先让这条 HTTP 响应发出去（stop 连本服务一起停）
+        f' & "{py}" service.py --stop'
+        ' & ping -n 4 127.0.0.1 >nul'       # ≈3s：等端口释放
+        f' & start "" "{pyw}" service.py'   # start "" 的空标题参数防止路径被当成窗口名
+    )
+
+
+# 服务端重启单飞锁：重启是「会停掉本服务」的操作，HTTP 响应发出后前后端
+# 都没有兜底。同一瞬间连点两次（或多开一个标签页再点）会让两轮 stop/start
+# 链叠在一起互相残杀——上一轮弹窗风暴的放大器之一。60s 内的重复请求直接拒绝。
+_RESTART_LOCK_TTL = 60.0
+
+
+def _restart_locked(run_dir: Path | None = None) -> str | None:
+    """写入重启锁；返回拒绝原因，None 表示放行。锁文件时间戳即发令时刻。"""
+    run = Path(run_dir) if run_dir else (HERE / ".run")
+    lock = run / "restart.lock"
+    try:
+        if lock.exists():
+            age = time.time() - lock.stat().st_mtime
+            if age < _RESTART_LOCK_TTL:
+                return f"上一次重启刚发起（{age:.0f} 秒前），请等它跑完（约 1 分钟）再试"
+            lock.unlink(missing_ok=True)
+        run.mkdir(parents=True, exist_ok=True)
+        lock.write_text(str(time.time()), encoding="ascii")
+    except OSError:
+        pass  # 锁失效（磁盘只读等）不应堵死重启，顶多退化成可叠加
+    return None
 
 # 从 Ollama 发现本地模型的动作不快也不慢，缓存几秒避免每次刷新都打一次
 _DISCOVER_TTL = 5.0
@@ -1818,29 +1872,43 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(ollamaguard.ensure(self.cfg, force=bool(req.get("force"))))
 
     def _handle_service_restart(self):
-        """重启本地常驻服务（stop.bat → start.bat）。仅本地部署可用。
+        """重启本地常驻服务（service.py --stop → pythonw service.py）。仅本地可用。
 
-        stop.bat 会把本 Web 服务一起停掉，所以真正动手的是**分离的** cmd
-        进程：先等 2s 让这条 HTTP 响应发出去，再执行停与启。页面随后靠
-        /api/health 轮询感知「失联（红褐色）→ 恢复（绿色）」。
+        重启链会把本 Web 服务一起停掉，所以真正动手的是**分离的** cmd
+        进程：先 ping 等约 2s 让这条 HTTP 响应发出去，再执行停与启。
+        页面随后靠 /api/health 轮询感知「失联（红褐色）→ 恢复（绿色）」。
+
+        细节（每一条都是上一次事故换来的）：
+        - CREATE_NO_WINDOW 而非 DETACHED_PROCESS：后者会给 cmd 的控制台
+          子进程开可见窗口，用户看到的就是「不停弹窗说服务没在运行」；
+        - 60s 单飞锁：连点/多标签页同时点的重复请求直接 429，不让两轮
+          stop/start 叠加互相残杀；
+        - 不经 stop.bat / start.bat：pause 误判卡链、timeout 无控制台
+          即失效、DETACHED 弹窗，三个坑都出自 bat 转发层。
         """
         if not _is_local_deployment():
-            self._json({"error": "云端部署：本地重启脚本（start.bat / stop.bat）不可用"}, 400)
+            self._json({"error": "云端部署：本地服务重启不可用"}, 400)
             return
         if os.name != "nt":
-            self._json({"error": "start.bat / stop.bat 仅适用于 Windows 本机部署"}, 400)
+            self._json({"error": "本地服务重启仅适用于 Windows 部署"}, 400)
+            return
+        locked = _restart_locked()
+        if locked:
+            self._json({"error": locked}, 429)
             return
         try:
             subprocess.Popen(
                 _restart_command(), cwd=str(HERE), shell=True,
-                creationflags=0x00000008 | 0x00000200,   # DETACHED_PROCESS | NEW_PROCESS_GROUP
+                # CREATE_NO_WINDOW：隐藏控制台，子进程继承后也不再弹窗
+                # （service.py 同款教训）；NEW_PROCESS_GROUP 不被连坐。
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
         except Exception as e:  # noqa: BLE001
             self._json({"error": f"重启指令发起失败：{type(e).__name__}: {e}"}, 500)
             return
         self._json({"ok": True,
-                    "note": "重启指令已发出：stop.bat → start.bat，页面稍候自动恢复"})
+                    "note": "重启指令已发出：停旧服务 → 拉起新服务，页面稍候自动恢复"})
 
     # ---------- 打开工作区文件夹（资源管理器） ----------
     def _handle_open_folder(self):
@@ -1868,6 +1936,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "文件不存在（可能已被清理）"}, 404)
             return
         try:
+            # 选中模式：不打开文件本身，而是在资源管理器里定位它——
+            # 评测报告的文件名点击走这里：直接抵达报告所在的文件夹并选中报告
+            if req.get("select") and target.is_file():
+                reveal.select_in_explorer(target)
+                self._json({"ok": True, "note": "已在资源管理器中定位文件"})
+                return
             # 打开之后还要把窗口抬到前台：Windows 的前台锁会让后台进程开的窗口
             # 停在后面，用户得再点一次任务栏才看得到（见 agentforge/reveal.py）。
             front = reveal.open_path(target)

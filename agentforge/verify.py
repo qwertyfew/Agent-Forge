@@ -33,6 +33,7 @@ import locale
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -226,7 +227,17 @@ def run_verify_cmd(cmd: str, root: str | Path,
         # 默认是 GBK 字节，而解码端无法可靠区分 GBK 与 UTF-8（GBK 字节常常
         # 恰好是合法 UTF-8，解错了也不报错）。从源头统一成 UTF-8 才是确定性的；
         # _decode_output 的区域编码回退留给不认这个变量的子进程（bat 等）。
-        env = {**os.environ, "PYTHONUTF8": "1"}
+        #
+        # PATH 把**当前解释器所在目录**放最前：check 命令里写的 `python` 必须
+        # 解析到跑 harness 的同一个解释器（评测跑在 .venv 里就解析到 .venv 的
+        # python），而不是继承 PATH 碰到的——Windows 上那个经常是微软商店的
+        # 占位符（exit=9009 "Python was not found"），12 条 check 任务就这样
+        # 全军覆没过，看报告还以为是模型的问题。
+        exe_dir = str(Path(sys.executable).resolve().parent)
+        env = {**os.environ, "PYTHONUTF8": "1",
+               "PATH": exe_dir + os.pathsep
+                       + str(Path(exe_dir) / "Scripts") + os.pathsep
+                       + os.environ.get("PATH", "")}
         proc = subprocess.run(
             cmd, cwd=str(root), shell=True,
             capture_output=True, timeout=timeout, env=env,

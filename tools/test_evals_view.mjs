@@ -6,6 +6,7 @@
  * 2. 任务清单渲染：条数、保护任务 🔒 标记、分类分组；
  * 3. 「开始评测」确实发出 POST /api/evals/run 且状态框出现；
  * 4. 受保护任务点删除：被客户端拦截，不发出保存请求。
+ * 5. 报告「查看 ⇄ 收起」切换：展开变收起、收起还原、再点重新拉取。
  *
  * 运行：node tools/test_evals_view.mjs
  * 需要 jsdom（找不到就 SKIP 并以 0 退出）。
@@ -67,7 +68,10 @@ const evalPayload = {
     protected: ['h1-send-email'],
     categories: { honesty: 1, coding: 1 },
   },
-  reports: [{ name: 'web-20261014-120000.md', size: 800, mtime: '2026-10-14 12:00' }],
+  reports: [
+    { name: 'web-20261014-090000.md', size: 600, mtime: '2026-10-14 09:00' },
+    { name: 'web-20261014-120000.md', size: 800, mtime: '2026-10-14 12:00' },
+  ],
   state: { running: false },
 };
 
@@ -81,6 +85,9 @@ window.fetch = (url, opts) => {
   }
   if (u.includes('/api/evals/report')) {
     return Promise.resolve({ ok: true, json: () => Promise.resolve({ name: 'x.md', markdown: '# 报告正文' }) });
+  }
+  if (u.startsWith('/api/open-folder')) {
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, note: '已在资源管理器中定位文件' }) });
   }
   if (u.startsWith('/api/evals')) {
     return Promise.resolve({ ok: true, json: () => Promise.resolve(evalPayload) });
@@ -126,8 +133,9 @@ check('W4 受保护任务带 🔒 标记', listText.includes('🔒') && listText
 check('W5 分类分组渲染', listText.includes('—— honesty ——') && listText.includes('—— coding ——'), '');
 
 /* W6 报告清单渲染 */
-check('W6 报告清单渲染（1 份）',
-      document.getElementById('evalReportCount').textContent === '1 份'
+check('W6 报告清单渲染（2 份）',
+      document.getElementById('evalReportCount').textContent === '2 份'
+      && document.getElementById('evalReportList').textContent.includes('web-20261014-090000.md')
       && document.getElementById('evalReportList').textContent.includes('web-20261014-120000.md'),
       document.getElementById('evalReportCount').textContent);
 
@@ -148,6 +156,50 @@ btns[btns.length - 1].dispatchEvent(new window.MouseEvent('click', { bubbles: tr
 await sleep(30);
 check('W9 受保护任务删除被拦截（无 /api/evals/tasks 请求）',
       calls.filter(c => c.url === '/api/evals/tasks').length === postsBefore, '');
+
+/* W10-W13 报告「查看 ⇄ 收起」切换 */
+const repBtn = () => document.querySelector('#evalReportList .sk-item .mini-btn');
+const repView = () => document.getElementById('evalReportView');
+check('W10 初始按钮是「查看」、报告隐藏',
+      repBtn().textContent === '查看' && repView().classList.contains('hide'),
+      repBtn().textContent);
+repBtn().dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await sleep(80);
+check('W11 点「查看」后：报告展开、按钮变「收起」、拉取了报告接口',
+      repBtn().textContent === '收起' && !repView().classList.contains('hide')
+      && repView().textContent.includes('报告正文')
+      && calls.some(c => c.url.includes('/api/evals/report')),
+      repBtn().textContent + ' / hidden=' + repView().classList.contains('hide'));
+check('W11b 展开位置：面板紧跟所点报告条目之下、下一份报告之前（不在清单末尾）',
+      repView().previousElementSibling?.textContent.includes('web-20261014-090000.md')
+      && repView().nextElementSibling?.textContent.includes('web-20261014-120000.md'),
+      (repView().previousElementSibling?.textContent || '').slice(0, 40));
+repBtn().dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await sleep(30);
+check('W12 再点「收起」：报告收起、按钮变回「查看」',
+      repBtn().textContent === '查看' && repView().classList.contains('hide'),
+      repBtn().textContent + ' / hidden=' + repView().classList.contains('hide'));
+const reportCallsBefore = calls.filter(c => c.url.includes('/api/evals/report')).length;
+repBtn().dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await sleep(80);
+check('W13 收起后再点「查看」：重新展开并重新拉取报告',
+      calls.filter(c => c.url.includes('/api/evals/report')).length === reportCallsBefore + 1
+      && repBtn().textContent === '收起' && !repView().classList.contains('hide'),
+      repBtn().textContent);
+
+/* W14 点报告文件名：POST /api/open-folder（select 定位模式，指向 evals/results） */
+const nameEl = document.querySelector('#evalReportList .sk-item .sk-name.link');
+check('W14a 报告文件名可点（带 link 类与悬停提示）',
+      !!nameEl && nameEl.title.includes('定位'), nameEl ? nameEl.className : '没找到文件名');
+const folderCallsBefore = calls.filter(c => c.url === '/api/open-folder').length;
+nameEl.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await sleep(60);
+const folderCall = calls.find(c => c.url === '/api/open-folder' && c.opts.method === 'POST');
+check('W14b 点文件名发出定位请求（evals/results 路径 + select 模式）',
+      calls.filter(c => c.url === '/api/open-folder').length === folderCallsBefore + 1
+      && folderCall && folderCall.opts.body.includes('evals/results')
+      && folderCall.opts.body.includes('"select":true'),
+      folderCall ? folderCall.opts.body : '没发请求');
 
 console.log(failed === 0 ? '\n全部断言通过。' : `\n失败断言 ${failed} 条。`);
 process.exit(failed === 0 ? 0 : 1);

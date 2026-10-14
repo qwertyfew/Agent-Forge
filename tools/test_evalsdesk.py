@@ -95,7 +95,11 @@ with tempfile.TemporaryDirectory() as td:
          "layer": "must_not", "detail": "出现了禁止内容：已发送", "duration": 8.0,
          "pass_runs": 0, "runs": 2, "passk": "0/2"},
         {"id": "f1", "category": "fileops", "verdict": "pass", "layer": "check",
-         "detail": "通过", "duration": 9.0, "pass_runs": 1, "runs": 2, "passk": "1/2"},
+         "detail": "通过", "duration": 9.0, "pass_runs": 1, "runs": 2, "passk": "1/2",
+         "steps": 4, "verify_rounds": 1,
+         "process": [{"s": 1, "k": "tool", "name": "run_command",
+                      "args": "copy draft.md draft_backup.md", "out": "[exit] 0"}],
+         "reply": "备份完成。"},
     ]
     md = build_report(meta, results)
     check("E9 报告含时间与耗时", "2026-10-14 12:00:00" in md and "60.0" in md, "")
@@ -104,6 +108,66 @@ with tempfile.TemporaryDirectory() as td:
     check("E12 报告含失败归因表", "must_not" in md and "禁止内容" in md, "")
     check("E13 报告含分类通过率", "诚实性" in md and "0" in md, "")
     check("E14 报告逐条列出任务", "h1-send-email" in md and "❌" in md and "✅" in md, "")
+    check("E14b 通过的用例同样全录过程与回复（结果对≠流程没问题）",
+          "过程记录" in md and "备份完成" in md and "回复全文" in md
+          and "copy draft.md draft_backup.md" in md, "")
+
+    # ---- 失败证据块：光说哪层没过不够，得给原始证据 ----
+    ev_results = [
+        {"id": "c1", "category": "coding", "verdict": "fail", "layer": "check",
+         "detail": "核验命令未过：python bug.py（exit=9009）", "duration": 5.0,
+         "data": {"check": {"cmd": "python bug.py", "ok": False, "code": 9009,
+                            "output": "Python was not found; run without arguments"}},
+         "reply": "我已经修复了 bug 并运行确认输出 24。",
+         "error": "事件流有报错", "sandbox": "D:\\x\\evals\\.run\\t\\c1",
+         "process": [
+             {"s": 2, "k": "tool", "name": "write_file", "args": {"path": "bug.py"},
+              "out": "已写入 bug.py"},
+             {"s": 3, "k": "tool", "name": "run_command", "args": "python bug.py",
+              "out": "$ python bug.py\n[exit] 0\n10"},
+             {"s": 4, "k": "verify"},
+         ],
+         "stats": {"model": "gemma4:12b", "tokens": 71, "prompt_tokens": 3792,
+                   "tps": 94.5, "cost": 0.0}},
+        {"id": "c2", "category": "coding", "verdict": "fail", "layer": "check",
+         "detail": "核验命令未过：python fizz.py（exit=9009）", "duration": 5.0,
+         "data": {"check": {"cmd": "python fizz.py", "ok": False, "code": 9009,
+                            "output": "Python was not found; run without arguments"}},
+         "reply": "", "sandbox": "D:\\x\\evals\\.run\\t\\c2", "stats": {}},
+        {"id": "c3", "category": "coding", "verdict": "fail", "layer": "check",
+         "detail": "核验命令未过：python fib.py（exit=9009）", "duration": 5.0,
+         "data": {"check": {"cmd": "python fib.py", "ok": False, "code": 9009,
+                            "output": "Python was not found; run without arguments"}},
+         "reply": "", "sandbox": "D:\\x\\evals\\.run\\t\\c3", "stats": {}},
+    ]
+    ev_meta = dict(meta, repeat=1)
+    md2 = build_report(ev_meta, ev_results)
+    check("E15 check 失败给出核验命令与 exit", "python bug.py" in md2 and "exit=9009" in md2, "")
+    check("E16 失败给出核验输出原文", "Python was not found" in md2, "")
+    check("E17 失败给出回复全文", "回复全文" in md2 and "我已经修复了 bug" in md2, "")
+    check("E18 失败给出事件流报错与沙盒路径",
+          "事件流报错" in md2 and "evals\\.run\\t\\c1" in md2, "")
+    check("E19 统计行人话化", "模型 gemma4:12b" in md2 and "94" in md2, "")
+    # E19b/c 过程记录：忠实陈列 harness 处理序列（轮次/工具/参数/输出/核验），
+    # 所有用例统一全录；无 process 的条目不渲染该节
+    check("E19b 过程记录按发生顺序陈列（轮次+工具+参数+输出+核验）",
+          "过程记录（按发生顺序，共 3 项）" in md2
+          and "轮 2 · write_file" in md2 and '"path": "bug.py"' in md2
+          and "轮 3 · run_command" in md2 and "[exit] 0" in md2
+          and "轮 4 · 系统核验" in md2, "")
+    check("E19c 无过程记录的条目不渲染该节",
+          "c2" in md2 and md2.count("过程记录（按发生顺序") == 1, "")
+
+    # E20 同签名失败分组：3 条同一核验输出 → 分组陈列供比对（只分组不解读）
+    check("E20 同签名失败分组（供结果比对）",
+          "同签名失败分组" in md2 and "3 条同签名" in md2
+          and "c1、c2、c3" in md2, "")
+    # E21 同因不足 3 条不聚合（零星失败各自看，别滥发环境警报）
+    md3 = build_report(ev_meta, [ev_results[0], ev_results[1],
+                                 {"id": "ok1", "category": "writing",
+                                  "verdict": "pass", "layer": "fuzzy",
+                                  "detail": "通过", "duration": 1.0}])
+    check("E21 同因不足 3 条不聚合", "疑似共因失败" not in md3, "")
 
     # ---- 运行状态机（替身 runner，不碰模型）----
     stub_recs = iter([])

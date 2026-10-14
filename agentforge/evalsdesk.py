@@ -294,6 +294,111 @@ class EvalsDesk:
 
 
 # ---------- 报告渲染 ----------
+def _failure_signature(r: dict) -> str:
+    """同因失败签名：check 层看核验输出（命令各不相同、输出往往相同），
+    其余层看 detail 前缀。用于把「12 条各自失败」聚成「1 个环境问题」。"""
+    data = r.get("data") or {}
+    if r.get("layer") == "check" and data.get("check"):
+        return "check :: " + str(data["check"].get("output") or "")[:100]
+    return f"{r.get('layer', '?')} :: {str(r.get('detail', ''))[:100]}"
+
+
+def failure_clusters(results: list[dict], min_size: int = 3) -> list[dict]:
+    """把失败按签名聚合，返回条数 >= min_size 的簇（降序）。
+
+    一批 check 失败共用同一句报错（如 exit=9009 Python 不在）时，那是
+    环境问题不是模型问题——报告必须把它从 N 条独立失败里拎出来。
+    """
+    groups: dict[str, list[str]] = {}
+    for r in results:
+        if r.get("verdict") == "pass":
+            continue
+        groups.setdefault(_failure_signature(r), []).append(str(r.get("id", "?")))
+    out = [{"signature": sig, "ids": ids, "count": len(ids)}
+           for sig, ids in groups.items() if len(ids) >= min_size]
+    out.sort(key=lambda c: -c["count"])
+    return out
+
+
+def _judge_lines(r: dict) -> list[str]:
+    """判定层的原始数据（事实陈列，不做解读）：核验命令/输出、缺失片段等。"""
+    lines: list[str] = []
+    data = r.get("data") or {}
+    layer = r.get("layer")
+    if layer == "check" and data.get("check"):
+        c = data["check"]
+        lines.append(f"- 核验命令：`{c.get('cmd', '')}`（exit={c.get('code')}）")
+        out = str(c.get("output") or "").strip()
+        if out:
+            lines.append(f"- 核验输出：{out}")
+    elif layer in ("exact", "norm") and data.get(layer):
+        missing = data[layer].get("missing") or []
+        if missing:
+            lines.append(f"- 缺少片段：{missing}")
+    elif layer == "numeric" and data.get("numeric"):
+        d = data["numeric"]
+        lines.append(f"- 提取到 {d.get('found', [])[:10]}　缺失 {d.get('missing', [])}")
+    elif layer == "fuzzy" and data.get("fuzzy"):
+        d = data["fuzzy"]
+        base = f"- 关键词组命中 {d.get('hit')}/{d.get('total')}（ratio {d.get('ratio')}）"
+        if d.get("miss"):
+            base += f"，未命中组：{d.get('miss')}"
+        lines.append(base)
+    elif layer == "must_not" and data.get("must_not"):
+        lines.append(f"- 出现禁止内容：{data['must_not'].get('hit')}")
+    return lines
+
+
+def _process_lines(r: dict) -> list[str]:
+    """过程记录：harness 处理这条任务的完整事实序列（所有用例都录，
+    通过与否无关）。只按发生顺序陈列，不解读。"""
+    lines: list[str] = []
+    proc = r.get("process") or []
+    if not proc:
+        return lines
+    lines.append(f"- 过程记录（按发生顺序，共 {len(proc)} 项）：")
+    for p in proc[:200]:
+        s = p.get("s", "?")
+        k = p.get("k")
+        if k == "tool":
+            args = p.get("args")
+            args_s = json.dumps(args, ensure_ascii=False) if isinstance(args, (dict, list)) else str(args or "")
+            L = f"  - 轮 {s} · {p.get('name', '?')} `{args_s}`"
+            out = str(p.get("out") or "").strip()
+            if out:
+                L += "\n    → " + out.replace("\n", "\n      ")
+            lines.append(L)
+        elif k == "skill":
+            lines.append(f"  - 轮 {s} · skill 注入：{p.get('name', '')}（{p.get('detail', '')}）")
+        elif k == "verify":
+            lines.append(f"  - 轮 {s} · 系统核验")
+        elif k == "error":
+            lines.append(f"  - 轮 {s} · 事件流报错：{p.get('msg', '')}")
+        elif k == "stopped":
+            lines.append(f"  - 轮 {s} · 被停止")
+    if len(proc) > 200:
+        lines.append(f"  - …其余 {len(proc) - 200} 项见同名 .json 的 process 字段")
+    return lines
+
+
+def _stats_line(st: dict) -> str:
+    """统计行的人话版：不再是裸 JSON。"""
+    if not st:
+        return ""
+    parts = []
+    if st.get("model"):
+        parts.append(f"模型 {st['model']}")
+    if st.get("tokens") is not None:
+        parts.append(f"输出 {st['tokens']} tok")
+    if st.get("prompt_tokens") is not None:
+        parts.append(f"输入 {st['prompt_tokens']} tok")
+    if st.get("tps") is not None:
+        parts.append(f"{st['tps']:.0f} tok/s")
+    if st.get("cost"):
+        parts.append(f"花费 {st['cost']}")
+    return "　".join(parts) or json.dumps(st, ensure_ascii=False)[:200]
+
+
 def build_report(meta: dict, results: list[dict]) -> str:
     """评测报告（Markdown）：版本、时间、逐条表现、归因分布、分类通过率。"""
     total = len(results)
@@ -330,7 +435,7 @@ def build_report(meta: dict, results: list[dict]) -> str:
         head += f"（pass^{reps} 严格口径：{pk}/{total}）"
     L.append(head)
     L.append("")
-    L.append("## 失败归因分布")
+    L.append("## 失败分层统计（首个未过的判定层）")
     L.append("")
     if by_layer:
         L.append("| 失败层 | 条数 | 说明 |")
@@ -347,6 +452,17 @@ def build_report(meta: dict, results: list[dict]) -> str:
     else:
         L.append("无——全部通过。")
     L.append("")
+
+    # 同签名失败分组：把相同签名的失败排在一起，供横向比对结果；
+    # 只分组不解读——是什么原因，读报告的人自己比对判断
+    clusters = failure_clusters(results)
+    if clusters:
+        L.append("## 同签名失败分组（≥3 条同签名，供结果比对）")
+        L.append("")
+        for c in clusters:
+            L.append(f"- **{c['count']} 条同签名**，签名 `{c['signature']}`")
+            L.append(f"  涉及：{'、'.join(c['ids'][:12])}{'…' if len(c['ids']) > 12 else ''}")
+        L.append("")
     L.append("## 分类通过率")
     L.append("")
     L.append("| 分类 | 通过 | 总数 |")
@@ -362,13 +478,29 @@ def build_report(meta: dict, results: list[dict]) -> str:
         extra = f"　pass^{reps}={r.get('passk', '—')}" if reps > 1 else ""
         L.append(f"### {mark} {r.get('id', '?')}（{_CATEGORY_TITLES.get(r.get('category', ''), r.get('category', ''))}）")
         L.append("")
-        L.append(f"- 判定：{r['verdict']}（层：{r.get('layer', '?')}）　耗时：{r.get('duration', '—')}s{extra}")
+        line = (f"- 判定：{r['verdict']}（层：{r.get('layer', '?')}）"
+                f"　耗时：{r.get('duration', '—')}s"
+                f"　轮次：{r.get('steps', '—')}"
+                f"　验证：{r.get('verify_rounds', 0)} 次{extra}")
+        L.append(line)
         L.append(f"- 说明：{r.get('detail', '')}")
-        if r.get("stats"):
-            st = r["stats"]
-            L.append(f"- 统计：token {st.get('prompt_tokens', '?')}+{st.get('completion_tokens', '?')}"
-                     f"　工具调用 {st.get('tool_calls', '?')} 次"
-                     if "tool_calls" in st else f"- 统计：{json.dumps(st, ensure_ascii=False)[:200]}")
+        if r["verdict"] != "pass":
+            # 判定层的原始数据（事实陈列）；过程与回复对所有用例统一全录
+            L.extend(_judge_lines(r))
+        if r.get("error"):
+            L.append(f"- 事件流报错：{r['error']}")
+        # 过程记录 + 回复全文 + 沙盒落点：所有用例都录——结果对了也不代表
+        # 流程没问题，分析留给读报告的人比对，报告只负责把事实摆全
+        L.extend(_process_lines(r))
+        reply = str(r.get("reply") or "").strip()
+        if reply:
+            L.append("- 回复全文：")
+            for ln in reply.splitlines() or [""]:
+                L.append("  > " + ln)
+        L.append(f"- 沙盒留档（产物可亲自去查）：`{r.get('sandbox', '')}`")
+        st_line = _stats_line(r.get("stats") or {})
+        if st_line:
+            L.append(f"- 统计：{st_line}")
         L.append("")
     L.append("---")
     L.append(f"*报告由评测台自动生成于 {meta.get('finished_at', '—')}；"
@@ -407,4 +539,5 @@ cases:
 
 
 __all__ = ["EvalsDesk", "PROTECTED_IDS", "REQUIRED_CATEGORIES",
-           "build_report", "git_version", "TASKS_PATH", "RESULTS_DIR"]
+           "build_report", "failure_clusters", "git_version",
+           "TASKS_PATH", "RESULTS_DIR"]

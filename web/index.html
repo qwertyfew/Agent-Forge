@@ -87,7 +87,7 @@
 
   /* ============ 侧边栏 ============ */
   aside{
-    width:264px;flex:none;display:flex;flex-direction:column;
+    width:264px;flex:none;display:flex;flex-direction:column;position:relative;
     background:var(--side);color:var(--side-ink);
     border-right:1px solid var(--line);transition:transform .22s ease;z-index:40;
   }
@@ -112,6 +112,12 @@
   .new-chat.dim:hover{color:var(--ink)}
   .new-chat.dim:hover .plus{color:var(--ink)}
   .side-body{flex:1;overflow-y:auto;padding:4px 12px 12px;scrollbar-width:thin}
+  /* 侧栏右缘的拖拽把手：悬停/拖动时亮起一条分隔线，按住左右拖调整宽度 */
+  #sideResize{position:absolute;top:0;right:-3px;width:7px;height:100%;cursor:col-resize;z-index:45}
+  #sideResize::before{content:'';position:absolute;top:0;bottom:0;left:3px;width:1px;
+    background:transparent;transition:background .15s ease}
+  #sideResize:hover::before,body.col-resizing #sideResize::before{background:var(--accent)}
+  body.col-resizing{cursor:col-resize;user-select:none}
   /* 新建任务下方的栏目区（记忆管理等） */
   .side-nav{display:flex;flex-direction:column;gap:2px;margin-top:4px}
   .nav-item{display:flex;align-items:center;gap:9px;width:100%;padding:8px 10px;border-radius:10px;
@@ -186,7 +192,7 @@
     font-size:11px;line-height:1.6;color:var(--ink3)}
   .ctx-pop .cp-warn{color:#d9930a}
 
-  .side-foot{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
+  .side-foot{border-top:1px solid var(--line);padding:10px 12px 12px;display:flex;flex-direction:column;gap:8px}
   .ctx-line{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink3)}
   .ctx-bar{flex:1;height:4px;border-radius:99px;background:var(--bar);overflow:hidden}
   /* 顶栏里的圆环计量：占比越多颜色越红（绿 → 橙 → 红） */
@@ -200,11 +206,15 @@
   .ctx-ring .fg.hot{stroke:var(--err)}
   .ctx-bar i{display:block;height:100%;width:0;border-radius:99px;background:var(--ink2);transition:width .3s ease}
   .ctx-bar i.hot{background:var(--err)}
-  .foot-btn{display:flex;align-items:center;gap:8px;padding:6px 8px;margin:0 -8px;border-radius:9px;
+  .foot-btn{display:flex;align-items:center;gap:9px;padding:6px 10px;border-radius:9px;
     font-size:12.5px;color:var(--ink2);text-align:left}
   .foot-btn:hover{background:var(--hover);color:var(--ink)}
   .meta{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink3);min-width:0}
   .meta.clickable{cursor:pointer;border-radius:7px;padding:2px 4px;margin:0 -4px;transition:color .15s ease,background .15s ease}
+  /* 侧栏底部三行（设置/本地/工作区）与上方导航列同几何：内容起点 22px，
+     图标套 15px 居中包裹盒，保证所有图标中线落在同一竖直线上（29.5px） */
+  .side-foot .meta.clickable{padding:2px 10px;margin:0;gap:9px}
+  .side-foot .ic{width:15px;flex:none;display:flex;align-items:center;justify-content:center}
   .meta.clickable:hover{color:var(--ink);background:var(--hover)}
   .dot{width:7px;height:7px;border-radius:50%;background:#c0beba;flex:none;transition:background .3s}
   .dot.ok{background:#2fa46a;box-shadow:0 0 0 3px rgba(47,164,106,.15)}
@@ -362,12 +372,14 @@
   .sk-item .sk-field .fl{flex:none;color:var(--ink3);min-width:44px}
   .sk-item .sk-field.use .fl{color:var(--accent)}
   .sk-item .sk-field.not .fl{color:var(--ink3)}
-  .sk-item .sk-ver{font-size:10.5px;border:1px solid var(--line2);border-radius:5px;
-    padding:0 6px;line-height:1.7;color:var(--ink3);white-space:nowrap;flex:none;
+  .sk-item .sk-ver{font-size:10.5px;border:1px solid var(--line2);border-radius:5px;    padding:0 6px;line-height:1.7;color:var(--ink3);white-space:nowrap;flex:none;
     font-family:ui-monospace,Menlo,Consolas,monospace}
   .sk-item .sk-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
     margin-top:8px;font-size:11px;color:var(--ink3)}
   .sk-item .sk-actions{margin-left:auto}
+  /* 报告文件名可点：悬停下划线提示，点了去资源管理器里定位文件 */
+  .sk-item .sk-name.link{cursor:pointer}
+  .sk-item .sk-name.link:hover{text-decoration:underline}
   .sk-item .sk-path{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;
     color:var(--ink3);word-break:break-all;margin-top:7px}
 
@@ -922,20 +934,21 @@
 
     <div class="side-foot">
       <button class="foot-btn" id="btnSettings" title="打开设置（可用模型管理）">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 2.6 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 9.5 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21.4 11a2 2 0 1 1 0 4 1.7 1.7 0 0 0-1.2 1.2z"/></svg>
+        <span class="ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 2.6 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 9.5 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21.4 11a2 2 0 1 1 0 4 1.7 1.7 0 0 0-1.2 1.2z"/></svg></span>
         设置
       </button>
-      <!-- 本地部署：点击 = 重启本地服务（stop.bat → start.bat）；
+      <!-- 本地部署：点击 = 重启本地服务（service.py --stop → 重新拉起）；
            云端部署：常绿不可点。状态由 /api/health 轮询决定 -->
-      <button class="meta clickable" id="ollamaMeta" title="正在检查本地服务与 Ollama 状态" style="background:none;border:0;padding:0;cursor:pointer;font:inherit;color:inherit">
-        <span class="dot" id="ollamaDot"></span>
+      <button class="meta clickable" id="ollamaMeta" title="正在检查本地服务与 Ollama 状态" style="background:none;border:0;cursor:pointer;font:inherit;color:inherit">
+        <span class="ic"><span class="dot" id="ollamaDot"></span></span>
         <span id="ollamaTxt">服务检测中…</span>
       </button>
       <div class="meta clickable" id="wsMeta" title="点击在工作区的资源管理器中打开">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        <span class="ic"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>
         <span class="ws" id="ws" title=""></span>
       </div>
     </div>
+    <div id="sideResize" title="拖动调整侧栏宽度"></div>
   </aside>
   <div class="side-scrim" id="scrim"></div>
 
@@ -1862,6 +1875,31 @@ function gapItem(g){
   head.appendChild(el('span','sk-name', g.key || '(未知)'));
   head.appendChild(el('span','sk-tag', g.kind_label || g.kind || ''));
   if(g.count) head.appendChild(el('span','sk-ver', '×' + g.count));
+  // 删除按钮：参考技能管理的 .sk-actions（margin-left:auto），靠右对齐不跟文案
+  const del = el('button','mini-btn','删除');
+  del.title = '删除该条记录';
+  del.onclick = async ()=>{
+    const ok = await confirmModal({
+      title: `删除记录 ${g.key}？`,
+      sub: '只从台账里删掉这一条；同类缺口再出现时仍会被架构自动重新登记。',
+      danger: true, okText: '删除'
+    });
+    if(!ok) return;
+    const r = await fetch('/api/gaps',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({kind: g.kind || '', key: g.key || ''})
+    }).then(x=>x.json()).catch(()=>null);
+    if(r && typeof r.removed === 'number'){
+      renderGaps(r);
+      // 删掉的若在已知基线里，同步出基线，免得下次核对把它当成「新增」误报
+      gapsKnownKeys = gapsKnownKeys.filter(k => k !== (g.kind||'') + ':' + (g.key||''));
+      toast(del, `已删除记录 ${g.key}`, 'mute');
+    }
+    else toast(del, '删除失败', 'bad');
+  };
+  const box = el('span','sk-actions');
+  box.appendChild(del);
+  head.appendChild(box);
   it.appendChild(head);
   if((g.samples||[]).length) it.appendChild(el('div','sk-desc', g.samples.join('；')));
   it.appendChild(el('div','sk-path', `首次：${g.first || '—'}　最近：${g.last || '—'}`));
@@ -1939,7 +1977,7 @@ $('btnGapRefresh').onclick = ()=>{ loadGaps(); };
    2. 报告查看（时间、代码版本、逐条表现、失败归因分布，落 evals/results/）；
    3. 任务集增删改（前端改好整体提交；受保护任务服务端拒绝删除，
       保存前自动备份、保存后回读校验，坏了自动回滚）。 */
-let evalData = {cases: [], protected: [], categories: {}};
+let evalData = {cases: [], protected: [], categories: {}, reports: []};
 let evalEditRef = null;    // 正在展开编辑的任务对象（null = 无）
 let evalTimer = null;      // 轮询评测进度的定时器
 
@@ -1995,8 +2033,11 @@ function evalTaskItem(c){
   edit.onclick = ()=>{ evalEditRef = evalEditRef === c ? null : c; renderEvalTasks(); };
   const del = el('button','mini-btn','删除');
   del.onclick = ()=> delEvalTask(c);
-  head.appendChild(edit);
-  head.appendChild(del);
+  // 参考技能管理的 .sk-actions（margin-left:auto）：按钮靠右对齐，不跟在文案后面
+  const actions = el('span','sk-actions');
+  actions.appendChild(edit);
+  actions.appendChild(del);
+  head.appendChild(actions);
   it.appendChild(head);
   const p = c.prompt || '';
   it.appendChild(el('div','sk-desc', p.slice(0, 160) + (p.length > 160 ? '…' : '')));
@@ -2120,7 +2161,7 @@ function startEvalPoll(){
     else{
       const passed = (st.results || []).filter(r => r.verdict === 'pass').length;
       toast(null, `评测完成：${passed}/${(st.results || []).length} 通过，报告已生成`, 'ok');
-      if(st.report) openEvalReport(st.report);
+      if(st.report) openEvalReport(st.report, true);   // 评测完成后自动展开（force：不受切换语义影响）
     }
     loadEvals();
   }, 2000);
@@ -2148,33 +2189,65 @@ $('btnEvalStop').onclick = async ()=>{
 };
 $('btnEvalRefresh').onclick = ()=> loadEvals();
 /* ---- 报告 ---- */
+let evalOpenReport = null;   // 当前展开的报告文件名；null = 全部收起
 function renderEvalReports(reports){
+  evalData.reports = reports;
   const box = $('evalReportList');
+  // 面板可能已插进清单内部：先摘出来，防止下面 innerHTML='' 把它连着清掉
+  const pre = $('evalReportView');
+  if(pre && pre.parentNode) pre.parentNode.removeChild(pre);
   box.innerHTML = '';
   $('evalReportCount').textContent = reports.length + ' 份';
   if(!reports.length){
+    pre.classList.add('hide');
     box.appendChild(el('div','task-empty','还没有报告。点「开始评测」跑一轮，报告会自动生成在这里。'));
     return;
   }
+  let openEl = null;
   for(const r of reports){
     const it = el('div','sk-item');
     const head = el('div','sk-head');
-    head.appendChild(el('span','sk-name', r.name));
+    // 文件名可点：在资源管理器里定位这份报告（抵达其所在文件夹）
+    const nameEl = el('span','sk-name link', r.name);
+    nameEl.title = '在资源管理器中定位这份报告';
+    nameEl.onclick = async ()=>{
+      const r2 = await fetch('/api/open-folder',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({path: 'evals/results/' + r.name, select: true})
+      }).then(x=>x.json()).catch(()=>null);
+      if(r2 && r2.ok){ if(r2.note) toast(nameEl, r2.note, 'mute'); }
+      else toast(nameEl, (r2 && r2.error) || '定位文件夹失败', 'bad');
+    };
+    head.appendChild(nameEl);
     head.appendChild(el('span','sk-ver', r.mtime || ''));
-    const view = el('button','mini-btn','查看');
+    // 同一时刻只展开一份：展开的那份按钮显示「收起」，再点即收起；靠右对齐
+    const view = el('button','mini-btn', evalOpenReport === r.name ? '收起' : '查看');
     view.onclick = ()=> openEvalReport(r.name);
-    head.appendChild(view);
+    const actions = el('span','sk-actions');
+    actions.appendChild(view);
+    head.appendChild(actions);
     it.appendChild(head);
     box.appendChild(it);
+    if(evalOpenReport === r.name) openEl = it;
   }
+  // 报告面板插在【当前展开的报告条目】之下、下一份之前——
+  // 固定挂在清单末尾会让人误以为展开的总是最新一份
+  if(openEl){ openEl.after(pre); pre.classList.remove('hide'); }
+  else { box.after(pre); pre.classList.add('hide'); }   // 收起：放回清单之后的原位并隐藏
 }
-async function openEvalReport(name){
+async function openEvalReport(name, force){
+  if(!force && evalOpenReport === name){   // 已展开 → 收起
+    evalOpenReport = null;
+    renderEvalReports(evalData.reports);   // 收起时面板归位隐藏
+    return;
+  }
   try{
     const d = await apiGet('/api/evals/report?name=' + encodeURIComponent(name));
     const pre = $('evalReportView');
     pre.textContent = d.markdown || '(空报告)';
-    pre.classList.remove('hide');
-    pre.scrollIntoView({behavior:'smooth', block:'nearest'});
+    evalOpenReport = name;
+    renderEvalReports(evalData.reports);   // 换按钮文案 + 把面板挪到这份报告之下
+    pre.scrollIntoView && pre.scrollIntoView({behavior:'smooth', block:'nearest'});
   }catch(e){ toast(null, '报告打开失败：' + e.message, 'bad'); }
 }
 $('navEval').onclick = ()=>{ showView('evals'); loadEvals(); };
@@ -3644,7 +3717,7 @@ refreshModels();
 loadTasks();
 
 /* ================= 侧栏服务按钮 =================
-   本地部署：指示灯 + 一键重启（stop.bat → start.bat）。
+   本地部署：指示灯 + 一键重启（service.py --stop → 重新拉起）。
    状态口径——
    - 绿：Ollama 与 Web 服务都在（本地）；
    - 红：有一个没开启（Ollama 无响应 / 服务未响应）；
@@ -3729,7 +3802,7 @@ checkHealth();
 setInterval(checkHealth, 30000);
 setInterval(updateAIHeadTime, 1000);   // 头像行耗时实时跳动
 
-/* 左下角服务按钮：本地 = 确认后重启（stop.bat → start.bat）；云端 = 只读 */
+/* 左下角服务按钮：本地 = 确认后重启（service.py --stop → 重新拉起）；云端 = 只读 */
 $('ollamaMeta').onclick = async () => {
   if(!svcLocal){
     toast(null, '云端部署：服务由托管平台管理，无需重启', 'mute');
@@ -3738,12 +3811,12 @@ $('ollamaMeta').onclick = async () => {
   if(svcRestarting || $('ollamaDot').classList.contains('busy')) return;
   const okGo = await confirmModal({
     title: '重启本地服务？',
-    sub: '复用项目根目录的 stop.bat / start.bat：先停常驻服务与 Web 服务，再重新拉起。期间页面会短暂失联（这里变红褐色），恢复后自动变绿。',
+    sub: '直接调用 service.py：先停常驻服务与 Web 服务，再重新拉起。期间页面会短暂失联（这里变红褐色），恢复后自动变绿。一分钟内的重复点击会被拒绝。',
     okText: '重启'
   });
   if(!okGo) return;
   svcRestarting = true;
-  paintSvc('busy', '正在重启服务…', '已发出重启指令：stop.bat → start.bat，稍候自动恢复');
+  paintSvc('busy', '正在重启服务…', '已发出重启指令：停旧服务 → 拉起新服务，稍候自动恢复');
   let issued = false;
   try{
     const r = await fetch('/api/service/restart',{
@@ -5507,6 +5580,48 @@ const sidebar = $('sidebar'), scrim = $('scrim');
 function closeSidebar(){ sidebar.classList.remove('open'); scrim.classList.remove('on'); }
 $('btnMenu').onclick = ()=>{ sidebar.classList.toggle('open'); scrim.classList.toggle('on'); };
 scrim.onclick = closeSidebar;
+
+/* ================= 侧栏拖拽调宽 =================
+   右缘把手按住左右拖：范围 200–420px，宽度记在 localStorage，
+   下次打开沿用。pointer 事件（鼠标/触屏通用）+ setPointerCapture，
+   拖出窗口也能持续跟随。移动端抽屉态不受影响（transform 开合）。 */
+(function(){
+  const h = $('sideResize');
+  if(!h) return;
+  const MIN = 200, MAX = 420, KEY = 'af_side_w';
+  const saved = parseInt(localStorage.getItem(KEY) || '', 10);
+  if(saved >= MIN && saved <= MAX) sidebar.style.width = saved + 'px';
+  let startX = 0, startW = 0, dragging = false, lastW = 0;
+  h.addEventListener('pointerdown', e=>{
+    dragging = true; startX = e.clientX;
+    startW = sidebar.getBoundingClientRect().width;
+    lastW = startW;
+    if(h.setPointerCapture){ try{ h.setPointerCapture(e.pointerId); }catch(_){ /* jsdom 等 */ } }
+    document.body.classList.add('col-resizing');
+    e.preventDefault();
+  });
+  h.addEventListener('pointermove', e=>{
+    if(!dragging) return;
+    const w = Math.min(MAX, Math.max(MIN, startW + (e.clientX - startX)));
+    lastW = w;
+    sidebar.style.width = w + 'px';
+  });
+  const end = ()=>{
+    if(!dragging) return;
+    dragging = false;
+    document.body.classList.remove('col-resizing');
+    // 用拖动过程中的最后宽度落盘；getBoundingClientRect 在无布局环境是 0
+    const w = lastW || Math.round(sidebar.getBoundingClientRect().width);
+    if(w >= MIN && w <= MAX) localStorage.setItem(KEY, String(w));
+  };
+  h.addEventListener('pointerup', end);
+  h.addEventListener('pointercancel', end);
+  // 双击把手 = 回到默认宽度
+  h.addEventListener('dblclick', ()=>{
+    sidebar.style.width = '';
+    localStorage.removeItem(KEY);
+  });
+})();
 
 /* 首屏：空态落地页，输入框停在页面中部 */
 renderAttach();

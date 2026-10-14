@@ -64,7 +64,12 @@ def _prep_sandbox(sandbox: Path, case) -> None:
 
 def run_case_once(case, label: str, model: str, timeout: int,
                   check_timeout: int) -> dict:
-    """单跑一条任务一次，返回该次的判定记录（不动台账）。"""
+    """单跑一条任务一次，返回该次的判定记录（不动台账）。
+
+    过程记录（rec["process"]）忠实还原 harness 的处理顺序：轮次、skill
+    注入、每次工具调用的完整参数与输出、事件流报错、验证。不做归因分析
+    ——结论靠比对结果，报告只负责把事实摆全（通过的用例同样要全录）。
+    """
     sandbox = RUN_DIR / label / case.id
     _prep_sandbox(sandbox, case)
 
@@ -82,6 +87,8 @@ def run_case_once(case, label: str, model: str, timeout: int,
     verify_n = 0
     stopped = False
     stats: dict = {}
+    cur_step = 0
+    process: list = []
     try:
         for ev in run_task(cli.agent, cli.store, [], case.prompt,
                            auto_plan=True, model_key=model or "",
@@ -89,21 +96,42 @@ def run_case_once(case, label: str, model: str, timeout: int,
             et = ev.get("type")
             if et == "assistant":
                 final_text = ev.get("content") or final_text
-            elif et == "error":
-                error = ev.get("message") or "unknown error"
+            elif et == "step":
+                cur_step = int(ev.get("step") or 0)
+            elif et == "skill":
+                process.append({"s": cur_step, "k": "skill",
+                                "name": ev.get("name") or "",
+                                "detail": ev.get("detail") or ""})
+            elif et == "tool_start":
+                # 参数与输出原样保留（工具层本就有 max_tool_output_chars 兜底）
+                process.append({"s": cur_step, "k": "tool",
+                                "name": ev.get("name") or "",
+                                "args": ev.get("args") if isinstance(
+                                    ev.get("args"), (dict, list)) else str(ev.get("args") or ""),
+                                "out": ""})
+            elif et == "tool_result":
+                if process and process[-1].get("k") == "tool":
+                    process[-1]["out"] = ev.get("output") or ""
             elif et == "verify":
                 verify_n += 1
+                process.append({"s": cur_step, "k": "verify"})
+            elif et == "error":
+                error = ev.get("message") or "unknown error"
+                process.append({"s": cur_step, "k": "error", "msg": error})
             elif et == "stopped":
                 stopped = True
+                process.append({"s": cur_step, "k": "stopped"})
             elif et == "stats":
                 stats = {k: v for k, v in ev.items() if k != "type"}
             if time.time() - t0 > timeout:
                 error = error or f"超时（>{timeout}s）"
+                process.append({"s": cur_step, "k": "error", "msg": error})
                 break
     except KeyboardInterrupt:
         raise
     except Exception as e:  # noqa: BLE001
         error = f"{type(e).__name__}: {e}"
+        process.append({"s": cur_step, "k": "error", "msg": error})
 
     dur = round(time.time() - t0, 1)
     if error and not final_text:
@@ -117,7 +145,14 @@ def run_case_once(case, label: str, model: str, timeout: int,
         if error:
             rec["detail"] += f"（事件流另有报错：{error}）"
     rec.update({"id": case.id, "category": case.category, "duration": dur,
-                "verify_rounds": verify_n})
+                "verify_rounds": verify_n, "steps": cur_step,
+                # 结果证据：最终回复全文（不截断）、沙盒落点（可亲自去查）
+                "reply": final_text.strip(),
+                "sandbox": str(sandbox)})
+    if process:
+        rec["process"] = process
+    if error:
+        rec["error"] = error
     if stats:
         rec["stats"] = stats
     return rec
