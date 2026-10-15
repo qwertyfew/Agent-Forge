@@ -200,7 +200,8 @@ _VERIFY_BLOCK_ROUNDS = 2
 
 def _verify_gate(agent, message: str, holder: dict,
                  auto_approve=None, stop_check=None, read_cache=None,
-                 snapshot: dict[str, float] | None = None):
+                 snapshot: dict[str, float] | None = None,
+                 exhausted: set[str] | None = None):
     """收尾验证闸门（系统侧强制）：模型只有解读权，没有裁定权。
 
     - 任务书里声明了验证命令（如「验证：python tools/x.py」）→ 程序亲自运行，
@@ -225,6 +226,15 @@ def _verify_gate(agent, message: str, holder: dict,
     cmd = verify_gate.extract_verify_cmd(message, cfg.workspace_root)
     expect = ""
     corrected = False
+    # 程序侧出具的声明统一收进 notes、最后一次性拼接：修正轮只重写模型正文，
+    # 绝不吞掉已出具的系统声明。第四轮评测实测（c3）：C 分支先追加了「未经
+    # 系统确认」，随后的产物核查修正轮把 summary 整个重写，声明被抹掉——
+    # 谎报静默放行。声明由程序出具，就必须由程序保证它活着到用户眼前。
+    notes: list[str] = []
+    # 任务级闸门拦到上限仍失败的验证命令记入 exhausted，汇总级闸门不再重跑——
+    # 否则同一条命令被两级闸门各拦三轮，违背「至多三次执行」的流程约定
+    if exhausted is None:
+        exhausted = set()
     if cmd:
         # 停机拦截（Claude Code Stop hook 同款）：验证失败就不许收工，把真实
         # 结果回灌当下一轮指令，连续拦截最多 _VERIFY_BLOCK_ROUNDS 轮防死循环；
@@ -232,11 +242,17 @@ def _verify_gate(agent, message: str, holder: dict,
         # 并附权威报告。模型说修好不算，程序说了算。
         blocks = 0
         res = verify_gate.run_verify_cmd(cmd, cfg.workspace_root)
-        # 任务书写了「确认输出 24」这类期望 → 程序亲自比对：exit=0 但输出
-        # 不含期望值也算验证失败（c1 测出的盲区——谎报「输出 24」实际是 10，
-        # 旧闸门只看退出码，等于没验）。
-        expect = verify_gate.extract_expect_output(message, cmd)
-        res = verify_gate.apply_expect(res, expect)
+        # 任务级闸门拦到上限仍失败的命令（exhausted 里有记录）不再重跑：报告
+        # 已由任务级闸门随子任务摘要出具，这里再拦只会把修正轮翻倍
+        if cmd.strip().lower() in exhausted:
+            res = {"ok": True, "code": 0, "output": "",
+                   "duration": "0.0", "exhausted_skip": True}
+        else:
+            # 任务书写了「确认输出 24」这类期望 → 程序亲自比对：exit=0 但输出
+            # 不含期望值也算验证失败（c1 测出的盲区——谎报「输出 24」实际是
+            # 10，旧闸门只看退出码，等于没验）。
+            expect = verify_gate.extract_expect_output(message, cmd)
+            res = verify_gate.apply_expect(res, expect)
         yield {
             "type": "verify", "cmd": cmd, "ok": res["ok"],
             "exit": res["code"], "duration": res["duration"],
@@ -272,11 +288,14 @@ def _verify_gate(agent, message: str, holder: dict,
                 "output": res["output"], "expect": expect,
                 "recheck": True,
             }
-        summary = (summary + "\n\n---\n"
-                   + verify_gate.report_block(cmd, res)).strip()
+        if not res["ok"]:
+            # 拦到上限仍失败：记入 exhausted，同一轮编排里更靠后的闸门不再重跑
+            holder.setdefault("exhausted_cmds", set()).add(cmd.strip().lower())
+            exhausted.add(cmd.strip().lower())
+        notes.append(verify_gate.report_block(cmd, res))
     elif (verify_gate.claimed_verified(summary)
           and not verify_gate.ran_verification(convo)):
-        summary = (summary + "\n\n---\n" + verify_gate.UNVERIFIED_NOTE).strip()
+        notes.append(verify_gate.UNVERIFIED_NOTE)
 
     # 声明产物核查（独立于验证命令的第二道核查）：三类问题——
     #   missing 文件不存在（REA 一测：零 write_file 谎报「已写入」）
@@ -290,7 +309,11 @@ def _verify_gate(agent, message: str, holder: dict,
     claimed = [p for p in verify_gate.claimed_artifacts(summary)
                if p.lower() not in dset]
     if declared or claimed:
-        entries = [(p, True) for p in declared] + [(p, False) for p in claimed]
+        # 裸文件名声称先对齐（f1 教训：声称 summary.md、实际写在 reports/2026/
+        # 之下，按根目录判不存在就误报）
+        entries = verify_gate.resolve_claim_paths(
+            [(p, True) for p in declared] + [(p, False) for p in claimed],
+            cfg.workspace_root)
         produced = (verify_gate.ran_writes(convo)
                     or verify_gate.ran_verification(convo))
         issues = verify_gate.find_artifact_issues(
@@ -320,8 +343,7 @@ def _verify_gate(agent, message: str, holder: dict,
                    "duration": "",
                    "artifacts": [{"path": c["path"], "declared": c["declared"],
                                   "status": c["status"]} for c in issues]}
-            summary = (summary + "\n\n---\n"
-                       + verify_gate.artifact_issue_block(issues)).strip()
+            notes.append(verify_gate.artifact_issue_block(issues))
 
     # 第五道核查：**自己承认还没做 / 做不了**，同样不许当成交付。
     # 上面几道治的都是「声称做了但没做」；这是它的反面，一直没人管——模型如实招了
@@ -360,8 +382,7 @@ def _verify_gate(agent, message: str, holder: dict,
             if claim:
                 yield {"type": "verify", "cmd": "", "ok": False, "exit": "",
                        "duration": "", "unfinished": claim}
-                summary = (summary + "\n\n---\n"
-                           + verify_gate.UNFINISHED_NOTE).strip()
+                notes.append(verify_gate.UNFINISHED_NOTE)
 
     # 第三道核查：外部事实的一手来源。用过联网搜索、却没抓过任何一手来源，
     # 而总结里又出现了数字 / 版本 / 日期这类外部事实时——由程序在答复末尾追加
@@ -371,8 +392,7 @@ def _verify_gate(agent, message: str, holder: dict,
     if getattr(cfg, "sources_gate", True):
         hits = sources_gate.needs_external_note(summary, convo)
         if hits:
-            summary = (summary + "\n\n---\n"
-                       + sources_gate.external_unverified_block(hits)).strip()
+            notes.append(sources_gate.external_unverified_block(hits))
 
     # 第四道核查：本机事实的来源。任务要的就是「工作区里现在有什么」（列目录 /
     # 有哪些文件 / 看现状），模型却全程一次读取类工具都没调，答复里却列着具体文件
@@ -403,8 +423,11 @@ def _verify_gate(agent, message: str, holder: dict,
         if hits:
             yield {"type": "verify", "cmd": "", "ok": False, "exit": "",
                    "duration": "", "unverified_local": hits}
-            summary = (summary + "\n\n---\n"
-                       + sources_gate.local_unverified_block(hits)).strip()
+            notes.append(sources_gate.local_unverified_block(hits))
+
+    # 程序侧声明统一在这里拼回正文末尾——无论中途经历几轮修正轮重写
+    if notes:
+        summary = (summary + "\n\n---\n" + "\n\n---\n".join(notes)).strip()
 
     if summary != holder.get("summary"):
         holder["summary"] = summary
@@ -523,6 +546,7 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
     log_lock = threading.Lock()
     sink: dict[str, dict] = {}          # task_id -> {"files": [...], "failed": bool, "convo": [...]}
     hist_holder: dict = {"convo": base_convo}   # 串行接力时最后一份完整历史
+    exhausted_cmds: set = set()         # 任务级闸门拦到上限仍失败的验证命令
 
     def spawn_agent():
         """给并行任务起一个独立的 Agent：Agent 持有 per-run 可变状态，不能共用。"""
@@ -614,6 +638,33 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
         finally:
             if gate is not None:
                 gate.release()
+
+        # 任务级闸门（流程第 6 步：依次验证每个任务的结果）：子任务一收尾，
+        # 系统就亲自核验它任务书（goal）里声明的验证命令与交付物——失败当场
+        # 拦截，把真实输出回灌给同一个 agent 继续做（初次执行 + 至多
+        # _VERIFY_BLOCK_ROUNDS 次修正 = 至多三次执行，到限仍失败则放行并附
+        # 系统侧报告，汇总时如实带出），不等全部任务跑完再算总账。调度器被
+        # 明确要求把交付物与验证命令原样写进对应任务的 goal（见 dispatcher
+        # 提示词），这里照着 goal 核对；总任务级的声明仍由最后的汇总闸门把守。
+        if not failed:
+            task_book = t.goal or t.title or message
+            task_snap = verify_gate.snapshot_artifacts(
+                task_book, agent.cfg.workspace_root)
+            task_holder = {"summary": summary or _last_assistant(convo),
+                           "convo": convo}
+            for ev in _verify_gate(ag, task_book, task_holder,
+                                   auto_approve=auto_approve, stop_check=stopped,
+                                   read_cache=read_cache, snapshot=task_snap,
+                                   exhausted=exhausted_cmds):
+                k = ev.get("type")
+                if k == "assistant":
+                    convo = ev["history"]
+                    summary = (ev.get("content") or "").strip() or summary
+                if k in ("delta", "thinking", "tool_start", "tool_result",
+                         "stats", "step", "verify"):
+                    ev = {**ev, "task_id": t.id}
+                yield ev
+            exhausted_cmds.update(task_holder.get("exhausted_cmds") or ())
 
         # 桥接后把结果译回中文，保证给用户的是中文
         if bridged and summary and not _mostly_chinese(summary):
@@ -758,32 +809,38 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
         final_convo = hist_holder["convo"]
 
     # 收尾：决策模型把各 agent 的结果汇总成一份答复（多任务时才做）
+    final = ""
     if total >= 2 and getattr(agent.cfg, "dispatcher_synthesis", True):
-        final = dispatcher.synthesize(message, state.result_items())
-        if final:
-            # 输出边界的语言闸门：整合模型也可能是英文倾向的弱模型，而桥接执行的
-            # 子任务摘要常常整段英文。用户记忆里「回复一律中文」这类偏好不能只靠
-            # 提示词自觉——最后这里程序化兜底，不是中文就强制回译。
-            if not _mostly_chinese(final):
-                zh = dispatcher.translate(final, "Chinese")
-                if zh:
-                    final = zh
-            # 收尾验证闸门在语言闸门之后：附上的系统侧报告随最终答复一起出去
-            holder = {"summary": final, "convo": final_convo}
-            yield from _verify_gate(agent, message, holder,
-                                    auto_approve=auto_approve, stop_check=stopped,
-                                    read_cache=read_cache, snapshot=snap)
-            final = holder["summary"]
-            final_convo = holder["convo"]
-            final_convo = [*final_convo, {"role": "assistant", "content": final}]
-            yield {"type": "assistant", "content": final, "history": final_convo}
+        final = dispatcher.synthesize(message, state.result_items()) or ""
+    if final:
+        # 输出边界的语言闸门：整合模型也可能是英文倾向的弱模型，而桥接执行的
+        # 子任务摘要常常整段英文。用户记忆里「回复一律中文」这类偏好不能只靠
+        # 提示词自觉——最后这里程序化兜底，不是中文就强制回译。
+        if not _mostly_chinese(final):
+            zh = dispatcher.translate(final, "Chinese")
+            if zh:
+                final = zh
+        # 收尾验证闸门在语言闸门之后：附上的系统侧报告随最终答复一起出去
+        holder = {"summary": final, "convo": final_convo}
+        yield from _verify_gate(agent, message, holder,
+                                auto_approve=auto_approve, stop_check=stopped,
+                                read_cache=read_cache, snapshot=snap,
+                                exhausted=exhausted_cmds)
+        final = holder["summary"]
+        final_convo = holder["convo"]
+        final_convo = [*final_convo, {"role": "assistant", "content": final}]
+        yield {"type": "assistant", "content": final, "history": final_convo}
     else:
-        # 没做汇总（单任务或关掉 synthesis）时同样要过闸门：拿最后一份历史
-        # 的末条助手正文当总结。
+        # 没做汇总（单任务、关掉 synthesis，或 synthesize() 返回空）时同样要过
+        # 闸门：拿最后一份历史的末条助手正文当总结。第四轮评测实测（c3/f1
+        # 静默的根因）：原本这里只在 total>=2 且 synthesis 开启时才进来，而
+        # synthesize() 返回空时 if final 不成立、外层 else 又配不上——两处
+        # 收尾闸门全部被跳过，谎报与假产出静默溜过。
         holder = {"summary": _last_assistant(final_convo), "convo": final_convo}
         yield from _verify_gate(agent, message, holder,
                                 auto_approve=auto_approve, stop_check=stopped,
-                                read_cache=read_cache, snapshot=snap)
+                                read_cache=read_cache, snapshot=snap,
+                                exhausted=exhausted_cmds)
         if holder["summary"] and holder["summary"] != _last_assistant(final_convo):
             final_convo = holder["convo"]
             yield {"type": "assistant", "content": holder["summary"],
@@ -880,6 +937,7 @@ def run_task(
     # 产物核查的起点快照：任务书声明交付文件的 mtime 此刻定格，收尾时用它
     # 判断「本轮是否真的更新过」，上一轮的旧文件糊弄不了核查
     gate_snap = verify_gate.snapshot_artifacts(message, agent.cfg.workspace_root)
+    exhausted_cmds: set = set()         # 步骤级闸门拦到上限仍失败的验证命令
     pinned_key = (model_key or "").strip()
     pinned: dict | None = None
     # 任务池 = 「勾选且本机能跑」。一个都没有时退回到所有能跑的模型——
@@ -1106,6 +1164,28 @@ def run_task(
                 if not failed:
                     break
 
+        # 任务级闸门（流程第 6 步）：多步任务每步一收尾就核验该步任务书
+        # （st.detail）里声明的验证命令与交付物，失败当场拦截修正——真实输出
+        # 回灌给同一 agent 继续做，至多三次执行。单任务不在此拦（detail 就是
+        # 原始消息，收尾闸门把守即可，避免同一命令验两遍）；总任务级的声明
+        # 仍由最后的收尾闸门把守。
+        if multi and not failed:
+            step_book = st.detail or message
+            step_snap = verify_gate.snapshot_artifacts(
+                step_book, agent.cfg.workspace_root)
+            step_holder = {"summary": summary or _last_assistant(hist),
+                           "convo": hist}
+            for ev in _verify_gate(agent, step_book, step_holder,
+                                   auto_approve=auto_approve, stop_check=stopped,
+                                   read_cache=read_cache, snapshot=step_snap,
+                                   exhausted=exhausted_cmds):
+                k = ev.get("type")
+                if k == "assistant":
+                    hist = ev["history"]
+                    summary = (ev.get("content") or "").strip() or summary
+                yield ev
+            exhausted_cmds.update(step_holder.get("exhausted_cmds") or ())
+
         # 记下这一步的摘要与产出，供下一步的简报使用
         new_files: list[str] = []
         if file_log is not None and len(file_log) > files_before:
@@ -1127,7 +1207,8 @@ def run_task(
     holder = {"summary": summary, "convo": hist}
     yield from _verify_gate(agent, message, holder,
                             auto_approve=auto_approve, stop_check=stopped,
-                            read_cache=read_cache, snapshot=gate_snap)
+                            read_cache=read_cache, snapshot=gate_snap,
+                            exhausted=exhausted_cmds)
     if holder["summary"] != summary:
         summary, hist = holder["summary"], holder["convo"]
         yield {"type": "assistant", "content": summary, "history": hist}

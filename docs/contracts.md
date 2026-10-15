@@ -50,6 +50,9 @@ A 与 B 常常成对出现：**A 是"挡"，B 是"证明挡得住"**。只有 A 
 | 21 | 「查 git 上叫 REA 的项目」四跑：模型连搜四枪、最后一枪抓的是 `api.github.com/repos/bbylw/rea-cn`——一个 80 star 的中文镜像站，而正主 `morluto/rea` 有 19 万 star。它没错在「没抓一手来源」（抓了），错在**找错了对象**：搜索结果里压根没有正主，模型只能锚定它看到的第一个 GitHub 链接。根因是工具链缺一档能力——`git_*` 全是本地仓库操作、`fetch_json` 只认已知的 `owner/repo`，**没有能把「REA」这个字符串变成候选清单的工具** | ① 新增 `github_search`（打官方搜索接口，按 star 排序返回候选：全名 / star / fork / 语言 / 许可证 / 最近更新 / 简介 / 地址），并进检索族成套下发；② `web_search` 侧再兜一枪——`repo_keyword` 判定「在找某个仓库」就自动查一次官方接口，把权威候选**排在最前**、并点明「哪个是正主以这份为准，别拿搜索摘要判断」；③ 它同时算一手来源（`sources.py` 的 `FETCH_TOOLS`），否则「用官方接口查过 star」的答复会被误判成转述 | A+B（`test_web_tools.py` 85 项 / `test_toolselect.py` 38 项 / `test_sources_gate.py`） |
 | 29 | **闸门只拦一轮、只看退出码、词表有死角**（第三轮评测 17/24 的核心教训）：c1 谎报「已修复、输出 24」，实际文件没修、脚本跑出 10——修正轮嘴硬就放行；exit=0 照样过；行中式声明（「运行 X 确认输出 N」）提取不到、动词表缺「修复/新建/写进」。调研 Aider `--auto-test` / SWE-bench / Claude Code Stop hook 后重造：**三层闸门**——① 写类工具落盘当场复核、失败即回灌（Aider 式，上限 3 次）；② 期望输出断言 `apply_expect`（输出不含期望值也算验证失败）；③ 收尾停机拦截 `_VERIFY_BLOCK_ROUNDS=2`、每轮拦截结束**重新亲跑**验证（Claude Code 同款，上限按本地跑批成本从 8 收到 2）+ 词表补漏（行中声明提取、动词表扩词、介词容忍） | A+B（`test_verify_gate.py` 110 项：R1-R7 第三轮语料 / R8-R13 c1 专项 / R14-R17 即时复核） |
 | 29 | 评测跑批的 run_command **全灭**：`bench_tasks.py` 把 `workspace_root` 写成 `str(sandbox)`，`shell.py` 调 `.resolve()` 直接 AttributeError。第二轮曾误判为「模型甩锅」，第三轮靠四条确定性证据定罪：异常文本是程序抛的、同签名跨任务复现、代码静态矛盾（str 无 `.resolve`）、修复后重跑转绿——**结论靠复现，不靠猜** | `Path(sandbox)` + `shell.py` 防御性强转；R7 源码断言钉死（bench 退回 str 测试立刻红） | A+B（`test_verify_gate.py` R7） |
+| 29+ | **收尾闸门在调度路径上整段缺席**（第四轮评测 c3/f1 静默的总根因）：run_task 走多 agent 调度时委托 `run_multi_agent` 并 return，而后者在 `synthesize()` 返回空时两处闸门全被跳过（`if final:` 不成立、外层 else 配不上）——同一任务四次重跑两次谎报被拦、两次静默溜过，全看决策模型的随机路径 | 汇总失败退回最后一份助手正文，闸门任何路径都必须跑；程序侧声明收进 notes 列表统一末尾拼接，修正轮只重写模型正文（声明被修正轮吞掉是同一批修的第二个洞） | A+B（`test_verify_gate.py` R18） |
+| 29+ | 模型的 run_command 里 `python` 解析到微软商店占位符（exit=9009）——第 28 步的 PATH 修复只给了核验命令，模型自己的命令仍继承原始 PATH（c2/c5 脚本没错却跑不起来，f4 没了 python 只能肉眼复制） | `shell.py` 子进程 PATH 前插当前解释器目录（与 `run_verify_cmd` 同款） | A+B（`test_shell_env.py` 4 项） |
+| 29+ | 动词与路径之间的**填充语**挡死提取：「新建了空的 `summary.md` 文件」「新建一个空的 summary.md」——declared 与 claimed 全空，产物核查无米下锅；裸文件名声称（`summary.md` 实际在 reports/2026/ 下）按根目录判不存在又**误报** | `_FILLER` 填充语（一个/份/空的/的）+ declared 动词表补 创建/新建；`resolve_claim_paths` 按工作区内唯一同名文件重解析，不唯一不猜；词表补「验证状态：通过」「实际输出」「输出结果为」（零命令编造实测值的滑句式，「预期输出为」负向断言不误伤） | A+B（`test_verify_gate.py` R19-R21） |
 
 ### 二、具体缺陷（bug 级）
 
@@ -104,12 +107,14 @@ for f in tools/test_*.mjs; do NODE_PATH="<jsdom 所在 node_modules>" node "$f" 
 复核"某条到底是 A 还是 C"，就问一句：**把这条从代码里删掉，测试会不会红？**
 红 → 它是 A+B；不红 → 它只是 C/D，得说明为什么允许它待在那一层。
 
-**最近一次复核（2026-10-15）**：逐条比对代码符号，上表所有标 A / A+B 的条目**符号在位**；
-33 个常驻测试文件（24 Python + 9 前端）**全部通过**；Python 侧 794 项断言逐条打印、
+**最近一次复核（2026-10-15，第四轮评测后）**：逐条比对代码符号，上表所有标 A / A+B 的条目**符号在位**；
+34 个常驻测试文件（25 Python + 9 前端）**全部通过**；Python 侧 816 项断言逐条打印、
 前端 225 项，重跑即复现——
 标 `A+B` 的每一条都有对应的红点可复现（第 21/22 轮的突变验证记录见 git 历史；
-本轮新增保证同样做过突变验证：把第三轮语料 R1-R4 的措辞退回旧词表立刻红 /
-`_VERIFY_BLOCK_ROUNDS` 改 0 时 B 组拦截断言立刻红 / bench 退回 str 时 R7 立刻红；
+第三/四轮的新增保证同样做过突变验证：把第三轮语料 R1-R4 的措辞退回旧词表立刻红 /
+`_VERIFY_BLOCK_ROUNDS` 改 0 时 B 组拦截断言立刻红 / bench 退回 str 时 R7 立刻红 /
+R18 的 notes 拼接改回原地追加时「声明被修正轮吞掉」立刻复现 /
+R19 的 resolve_claim_paths 摘掉时 f1 误报立刻复现 / R21 的 _FILLER 摘掉时两处漏检立刻复现；
 恢复后全量再跑一遍确认干净）。
 
 > 跑法：Python 用项目 `.venv/Scripts/python.exe`（`yaml` 只在 venv 里）；
@@ -205,7 +210,8 @@ NAME / DESC / VERSION / WHEN / WHEN_NOT / KEYWORDS
 |---|---|---|
 | `tools/test_readcache.py` | 常驻（11 项） | 只读调用共享缓存：命中/回放计数/失效/容量/线程安全 |
 | `tools/test_memory.py` | 常驻（46 项） | 长期记忆只放偏好、不再分层：`MemoryStore` 无 `layer` 字段与 `layer_counts`、落盘行无层标签、**旧格式（带 ` · L2`）仍能解析且层标签被丢弃**、注入块只列正文且按时间正序、`remember` 无 `layer` 参数、`autonote` 摘掉残留层前缀并过滤过程指令/一次性结论；`update` 保出处改正文、raw 行落标准格式 |
-| `tools/test_verify_gate.py` | 常驻（110 项） | 验证闸门三层：命令提取（声明式/行中式/反引号兜底、破坏性命令拒绝）与执行、期望输出断言三态、谎报识别（含「符合预期」）、产物三类核查（missing/stale/ghost）、未完成自述核查、**停机拦截多轮语义（拦截到 `_VERIFY_BLOCK_ROUNDS` 上限 + 每轮 recheck 事件）**、即时复核 `inline_verify_note` 三态、第三轮评测语料回归（R1-R7）、中文路径与编码（CN1-CN5） |
+| `tools/test_verify_gate.py` | 常驻（128 项） | 验证闸门三层：命令提取（声明式/行中式/反引号兜底、破坏性命令拒绝）与执行、期望输出断言三态、谎报识别（含「符合预期」「验证状态：通过」「实际输出」「输出结果为」滑句式）、产物三类核查（missing/stale/ghost）、裸文件名声称对齐（resolve_claim_paths）、填充语提取（一个/空的/的）、未完成自述核查、**停机拦截多轮语义（拦截到 `_VERIFY_BLOCK_ROUNDS` 上限 + 每轮 recheck 事件）**、**程序声明不被修正轮吞掉（notes 统一拼接）**、即时复核 `inline_verify_note` 三态、第三/四轮评测语料回归（R1-R21）、中文路径与编码（CN1-CN5） |
+| `tools/test_shell_env.py` | 常驻（4 项） | run_command 子进程环境：PATH 前插当前解释器目录（`python` 解析到跑 harness 的同一个解释器，9009 修复）、子进程 stdout UTF-8、工作区相对路径脚本可跑 |
 | `tools/test_skill_meta.py` | 常驻（11 项） | `skills.write_meta`：yaml frontmatter 三字段重写、其余字段与正文原样、原子替换、空 description 拒绝、非受管目录拒绝 |
 | `tools/test_edit_view.mjs` | 常驻（11 项） | 前端记忆/技能条目行内编辑：编辑器预填、保存请求参数、按栏目提示、空内容拦截、全选模式拦截、外部目录技能无编辑按钮 |
 | `tools/test_sources_gate.py` | 常驻（50 项） | 一手来源核查（外部事实）：搜索/抓取的识别（含 `github_search` 算一手来源）、事实判据（量化 + 时效性两路）的召回与误报边界、三条件联动、闸门接入 |

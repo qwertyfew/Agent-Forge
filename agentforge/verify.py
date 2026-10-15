@@ -76,9 +76,15 @@ _DANGEROUS = (
 )
 
 # 模型总结里的「验证通过」类措辞。谎报的经典句式都在这里。
+# 第四轮评测补充（探针抓到的两种滑句式）：「验证状态：通过」被「状态：」隔开、
+# 「实际输出：3 / 输出结果为：3」——零命令却报出"实测"输出，纯属编造。
+# 「输出为」加负向断言排除「预期/期望输出为」（那是说明，不是谎报）；
+# 真跑过 run_command 的任务根本不进这道分支（ran_verification 短路），无误伤面。
 _CLAIM_VERIFIED = re.compile(
     r"验证通过|验证已通过|测试通过|测试全部?通过|全部通过|断言通过|全部断言通过"
     r"|自检通过|护栏(?:全部)?(?:生效|通过)|符合预期"
+    r"|验证状态[:：]?\s*通过"
+    r"|(?<![预期望该应])输出(?:结果)?为|实际输出"
     r"|all (?:tests |assertions )?passed"
     r"|tests? pass(?:ed)?",
     re.I,
@@ -96,13 +102,20 @@ _PATH_TOK = r"([A-Za-z0-9_][A-Za-z0-9._/\\-]*\.[A-Za-z0-9]{1,8})"
 # 「到/为/至」是写入动词带的介词（「写入到 x.txt」「写进到」少见但「输出为」常见）。
 _SEP = r"\s*[:：`*_~\s]*(?:到|为|至)?\s*"
 
+# 动词与路径之间的填充语（第四轮评测 f1 实测两处漏检都死在这里）：
+# 总结「新建了空的 `summary.md` 文件」、任务书「新建一个空的 summary.md」——
+# 动词和路径之间夹着「一个/空的/的」，旧分隔符只认标点与介词，双双漏提取，
+# declared 与 claimed 全空，产物核查无米下锅。
+_FILLER = r"(?:一?\s*[个份]\s*)?(?:空的?|空白|新)?\s*(?:的)?\s*"
+
 # 任务书里的产物声明·动词式：「（报告）写入 docs/x.md」「保存到 x.json」「输出到 out/r.md」。
 # 「写进」是第三轮评测真实任务书的措辞（把文件名写进 largest.txt），漏了它 declared 全空。
+# 「创建/新建」是第四轮评测 f1 任务书的措辞（新建一个空的 summary.md），同样曾全盲。
 # 前面紧邻「禁止/不要/勿/别/不」的不算（那是禁令，不是交付要求）。
 _ARTIFACT_WRITE = re.compile(
     r"(?<!禁止)(?<!不要)(?<!勿)(?<!别)(?<!不)"
-    r"(?:写入|写至|写进|保存(?:到|为|在)|存(?:到|为|入)|输出到|输出为|落盘(?:到|为)?)"
-    + _SEP + _PATH_TOK,
+    r"(?:写入|写至|写进|创建|新建|保存(?:到|为|在)|存(?:到|为|入)|输出到|输出为|落盘(?:到|为)?)"
+    + _FILLER + _SEP + _PATH_TOK,
 )
 
 # 任务书里的产物声明·冒号式：「产出文件：docs/x.md」「输出路径：out/x.md」「交付物：x.md」。
@@ -121,9 +134,9 @@ _ARTIFACT_CLAIM = re.compile(
     r"(?:了|好)?"
     + _SEP + _PATH_TOK +
     r"|(?:写入|创建|新建|保存到|保存在|生成|落盘|产出)(?:了|好|文件)(?:一?份)?"
-    + _SEP + _PATH_TOK +
+    + _FILLER + _SEP + _PATH_TOK +
     # 「完成了 count_users.py 的编写」：动词在路径后面，非贪婪防回溯咬掉文件名尾巴
-    r"|完成(?:了)?[^。\n；;]{0,16}?" + _PATH_TOK + r"\s*的?\s*(?:编写|实现|开发|制作|修复|设计|撰写)"
+    r"|完成(?:了)?[^。\n；;]{0,16}?" + _PATH_TOK + r"\s*的?\s*(?:编写|实现|开发|制作|修复|设计|撰写|创建)"
     + r"|(?:has been |have been )?(?:written to|saved to|saved as|created|generated)"
     + _SEP + _PATH_TOK,
     re.I,
@@ -373,6 +386,38 @@ def snapshot_artifacts(text: str, root: str | Path) -> dict[str, float]:
         except OSError:
             continue
     return snap
+
+
+def resolve_claim_paths(entries: list[tuple[str, bool]],
+                        root: str | Path) -> list[tuple[str, bool]]:
+    """裸文件名声称对齐：总结声称「已写入 summary.md」而实际写在 reports/2026/
+    之下时，按工作区内**唯一的同名文件**重解析——否则按根目录判「不存在」，
+    附上的系统核查声明反而是假的（第四轮评测 f1 实测：文件真在、声明却冤枉它）。
+
+    只对「没有目录成分的裸文件名 + 按原路径不存在」出手；同名命中不唯一
+    （或超过查找上限）时维持原样——不确定的不猜。
+    """
+    rootp = Path(root).resolve()
+    out: list[tuple[str, bool]] = []
+    for p, declared in entries:
+        clean = str(p).strip().strip("`'\"")
+        target = _resolve_inside(clean, rootp)
+        if target is not None and target.is_file():
+            out.append((p, declared))
+            continue
+        bare = Path(clean).name
+        if bare and bare == clean:
+            hits: list[Path] = []
+            for i, f in enumerate(rootp.rglob(bare)):
+                if i >= 200:          # 大工作区兜底：够用即止，不拖垮收尾
+                    break
+                if f.is_file():
+                    hits.append(f)
+            if len(hits) == 1:
+                out.append((hits[0].relative_to(rootp).as_posix(), declared))
+                continue
+        out.append((p, declared))
+    return out
 
 
 def path_mtime(path: str, root: str | Path) -> float | None:

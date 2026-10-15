@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from .base import EXEC, make_tool
@@ -23,6 +24,14 @@ def build_shell_tools(guard, cfg):
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
         env.setdefault("NO_COLOR", "1")
+        # PATH 把**当前解释器所在目录**放最前：模型命令里写的 `python` 必须解析到
+        # 跑 harness 的同一个解释器（评测在 .venv 里就是 .venv 的 python），而不是
+        # 继承 PATH 碰到的——Windows 上那个经常是微软商店的占位符（exit=9009
+        # "Python was not found"，第四轮评测 c2/c5 的脚本没错却跑不起来，f4 没了
+        # python 验证只能肉眼复制）。与 verify.run_verify_cmd 同一套处理。
+        exe_dir = str(Path(sys.executable).resolve().parent)
+        env["PATH"] = (exe_dir + os.pathsep + str(Path(exe_dir) / "Scripts")
+                       + os.pathsep + env.get("PATH", ""))
 
         try:
             proc = subprocess.run(

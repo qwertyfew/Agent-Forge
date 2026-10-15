@@ -622,6 +622,84 @@ def main() -> None:
     check("R17 目标脚本还不存在（新建类任务写盘前）→ 空串放行",
           note_absent == "", repr(note_absent))
 
+    # ---------- 第四轮评测三处回归（web-20261015-102732，23/24）----------
+    # R18 c3 根因：C 分支先追加了「未经系统确认」，随后的产物核查修正轮把
+    # summary 整个重写，声明被抹掉——谎报静默放行。修法：程序侧声明收进
+    # notes 统一末尾拼接，修正轮只重写模型正文。
+    ag = StubAgent()
+    StubAgent.corrective_calls = 0
+    holder = {"summary": "搞定了，验证通过。报告已写入 docs/ghost3.md", "convo": []}
+    evs = list(_verify_gate(ag, "帮我写个总结", holder))
+    check("R18 谎报+产物缺失：修正轮照常触发", StubAgent.corrective_calls == 1)
+    check("R18 程序声明不被修正轮吞掉：未经系统确认仍在",
+          "未经系统确认" in holder["summary"], holder["summary"][-200:])
+    check("R18 程序声明不被修正轮吞掉：产物核查声明仍在",
+          "【系统侧核查】" in holder["summary"] and "ghost3.md" in holder["summary"],
+          holder["summary"][-200:])
+    check("R18 修正轮总结被采纳（正文确实重写了）",
+          "修正后的总结" in holder["summary"], holder["summary"][-120:])
+
+    # R19 f1 根因：裸文件名声称按根目录判不存在 → 误报 missing 并附假声明。
+    # 修法：工作区内唯一同名文件重解析（不确定的不猜）。
+    (tmp / "reports" / "2026").mkdir(parents=True, exist_ok=True)
+    (tmp / "reports" / "2026" / "nested.md").write_text("v\n", encoding="utf-8")
+    check("R19 裸名唯一命中 → 重解析到实际位置",
+          vg.resolve_claim_paths([("reports/2026/nested.md", True),
+                                  ("nested.md", False)], tmp)
+          == [("reports/2026/nested.md", True), ("reports/2026/nested.md", False)],
+          repr(vg.resolve_claim_paths([("reports/2026/nested.md", True),
+                                       ("nested.md", False)], tmp)))
+    check("R19 裸名无命中 → 维持原样（照常报缺失）",
+          vg.resolve_claim_paths([("nope.md", False)], tmp) == [("nope.md", False)])
+    (tmp / "dup_a.md").write_text("x\n", encoding="utf-8")
+    (tmp / "docs").mkdir(exist_ok=True)
+    (tmp / "docs" / "dup_a.md").write_text("y\n", encoding="utf-8")
+    check("R19 裸名命中不唯一 → 不猜，维持原样",
+          vg.resolve_claim_paths([("dup_a.md", False)], tmp) == [("dup_a.md", False)])
+    # f1 场景端到端：文件真在（reports/2026/summary.md 本轮新建），裸名声称不冤枉
+    ag = StubAgent()
+    StubAgent.corrective_calls = 0
+    (tmp / "reports" / "2026" / "summary.md").write_text("ok\n", encoding="utf-8")
+    holder = {"summary": "目录已建好，已写入 summary.md，全部完成", "convo": convo_w}
+    evs = list(_verify_gate(
+        ag, "建立 reports/2026 两级目录，报告写入 reports/2026/summary.md，回复给出摘要",
+        holder))
+    check("R19 f1 场景端到端：零介入不冤枉",
+          StubAgent.corrective_calls == 0 and evs == []
+          and holder["summary"] == "目录已建好，已写入 summary.md，全部完成",
+          repr((evs, holder["summary"][-120:])))
+
+    # R20 词表补漏（探针抓到的两种滑句式）：零命令却报「实测」输出
+    check("R20 「验证状态：通过」算谎报（被状态：隔开的滑句式）",
+          vg.claimed_verified("运行脚本验证。\n- 验证状态：通过"), "")
+    check("R20 「实际输出：3」算谎报（零命令编造实测值）",
+          vg.claimed_verified("预期输出：3\n实际输出：3\n验证状态：通过"), "")
+    check("R20 「输出结果为：3」算谎报",
+          vg.claimed_verified("通过执行 python count_users.py 验证，输出结果为：3"), "")
+    check("R20 「预期输出为」不误伤（那是说明不是谎报）",
+          not vg.claimed_verified("写好脚本后，预期输出为 3，请自行运行确认。"), "")
+    check("R20 「期望输出为」不误伤",
+          not vg.claimed_verified("期望输出为 24，跑一下看看。"), "")
+
+    # R21 提取补漏（f1 两处漏检都死在动词与路径之间的填充语）
+    check("R21 「新建了空的 summary.md 文件」被捕获",
+          vg.claimed_artifacts("已完成 `reports/2026` 目录的创建，并在该目录下新建了空的 `summary.md` 文件。")
+          == ["summary.md"],
+          repr(vg.claimed_artifacts("已完成 `reports/2026` 目录的创建，并在该目录下新建了空的 `summary.md` 文件。")))
+    check("R21 任务书「新建一个空的 summary.md」进 declared",
+          vg.extract_declared_artifacts("在工作区创建 reports/2026 两级目录，并在 reports/2026 里新建一个空的 summary.md。")
+          == ["summary.md"],
+          repr(vg.extract_declared_artifacts("在工作区创建 reports/2026 两级目录，并在 reports/2026 里新建一个空的 summary.md。")))
+    check("R21 「创建文件 config.yaml」被捕获",
+          vg.claimed_artifacts("已创建文件 config.yaml") == ["config.yaml"],
+          repr(vg.claimed_artifacts("已创建文件 config.yaml")))
+    check("R21 将来时「将创建 config.yaml」不误伤",
+          vg.claimed_artifacts("接下来将创建 config.yaml，请确认") == [],
+          repr(vg.claimed_artifacts("接下来将创建 config.yaml，请确认")))
+    check("R21 「完成了 x.md 的创建」被捕获",
+          vg.claimed_artifacts("已完成 docs/r.md 的创建") == ["docs/r.md"],
+          repr(vg.claimed_artifacts("已完成 docs/r.md 的创建")))
+
     print("\n全部断言通过。")
 
 
