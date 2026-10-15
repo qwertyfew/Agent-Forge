@@ -700,6 +700,61 @@ def main() -> None:
           vg.claimed_artifacts("已完成 docs/r.md 的创建") == ["docs/r.md"],
           repr(vg.claimed_artifacts("已完成 docs/r.md 的创建")))
 
+    # ---------- R22 复制/备份任务书补强（f4 教训：文本往返丢换行，闸门无米下锅） ----------
+    f4_msg = "把 draft.md 复制一份命名为 draft_backup.md，原文件内容和名字都不能变。"
+    note = vg.declare_copy_check(f4_msg)
+    check("R22 f4 任务书自动补逐字节比对声明",
+          "验证：python -c" in note and "draft.md" in note
+          and "draft_backup.md" in note and "read_bytes" in note,
+          repr(note))
+    cmd = vg.extract_verify_cmd(f4_msg + note, tmp)
+    check("R22 补强后的声明可被闸门完整提取（python -c 内联放行）",
+          cmd.startswith("python -c ") and "read_bytes" in cmd
+          and "draft.md" in cmd and "draft_backup.md" in cmd,
+          repr(cmd))
+    # 沙盒里重现 f4 现场：read_bytes 比对抓得住 write_file 文本往返丢掉的 CRLF
+    (tmp / "draft.md").write_bytes("第一版草稿内容，保持原样。\r\n".encode("utf-8"))
+    (tmp / "draft_backup.md").write_bytes("第一版草稿内容，保持原样。".encode("utf-8"))
+    check("R22 文本往返丢换行 → 逐字节比对当场现形",
+          not vg.run_verify_cmd(cmd, tmp)["ok"])
+    (tmp / "draft_backup.md").write_bytes("第一版草稿内容，保持原样。\r\n".encode("utf-8"))
+    check("R22 命令复制（字节一致）→ 比对通过",
+          vg.run_verify_cmd(cmd, tmp)["ok"])
+    # 保守判据：不该补的一律不补（宁可少拦，不可错拦）
+    check("R22 已有验证声明 → 不重复补",
+          vg.declare_copy_check(f4_msg + "\n验证：python ok_script.py") == "")
+    check("R22 夹带改内容诉求 → 不补",
+          vg.declare_copy_check("把 draft.md 复制一份到 draft_backup.md，然后把里面的旧链接替换掉") == "")
+    check("R22 只有一个文件名 → 不猜",
+          vg.declare_copy_check("把 draft.md 复制一份放到 docs 目录") == "")
+    check("R22 三个文件名 → 不猜",
+          vg.declare_copy_check("把 a.md 复制，b.md 与 c.md 也要备份") == "")
+    check("R22 多份复制 → 不补",
+          vg.declare_copy_check("把 draft.md 复制两份，命名为 b1.md 和 b2.md") == "")
+    check("R22 非复制任务 → 不补",
+          vg.declare_copy_check("统计 data.csv 的行数，结果写入 out.txt") == "")
+    # _trim_command 对 python -c 的断尾：引号内代码整体保留、引号外人话尾巴断掉
+    got = vg.extract_verify_cmd('验收：python -c "import sys;sys.exit(0)" 必须通过', tmp)
+    check("R22 python -c 带人话尾巴 → 代码完整保留、尾巴断掉",
+          got == 'python -c "import sys;sys.exit(0)"', repr(got))
+    check("R22 内联代码含危险关键词 → 不跑",
+          vg.extract_verify_cmd("验证：python -c \"import os;os.system('rm -rf x')\"", tmp) == "")
+    # 端到端：补强后的任务书进闸门，复制坏了会被拦截修正、到限附权威报告
+    ag = StubAgent()
+    StubAgent.corrective_calls = 0
+    (tmp / "draft_backup.md").write_bytes("第一版草稿内容，保持原样。".encode("utf-8"))  # 重新弄坏
+    holder = {"summary": "已成功将 draft.md 的内容复制到 draft_backup.md，任务完成。",
+              "convo": []}
+    evs = list(_verify_gate(ag, f4_msg + note, holder))
+    check("R22 端到端：复制坏了触发修正轮（至多三次执行）",
+          StubAgent.corrective_calls == _VERIFY_BLOCK_ROUNDS,
+          f"实际 {StubAgent.corrective_calls}")
+    check("R22 端到端：总结附失败报告与真实输出",
+          "【系统侧验证】" in holder["summary"] and "失败" in holder["summary"],
+          holder["summary"][-200:])
+    check("R22 端到端：verify 事件带命令",
+          any(e["type"] == "verify" and "draft_backup.md" in e.get("cmd", "") for e in evs))
+
     print("\n全部断言通过。")
 
 

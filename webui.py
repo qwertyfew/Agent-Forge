@@ -511,6 +511,14 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._json(self.evals.save_tasks(req.get("cases") or []))
 
+    def _handle_evals_suggest(self):
+        """一键生成评测任务字段：用户只填任务指令，其余由决策模型产出。"""
+        req = self._evals_body()
+        if "__error__" in req:
+            self._json({"error": req["__error__"]}, 400)
+            return
+        self._json(self.evals.suggest_case(str(req.get("prompt") or "")))
+
     def _handle_skills(self):
         """技能管理：删除单个技能 / 清空全部技能 / 编辑作用与触发边界。
 
@@ -1365,6 +1373,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/evals/tasks":
             self._handle_evals_tasks()
             return
+        if path == "/api/evals/suggest":
+            self._handle_evals_suggest()
+            return
         if path == "/api/ollama/ensure":
             self._handle_ollama_ensure()
             return
@@ -2055,7 +2066,8 @@ def serve(cfg: Config, auto_approve: bool, port: int, host: str = "127.0.0.1"):
         "Handler",
         (_Handler,),
         {"cli": cli, "cfg": cfg, "store": cli.store, "tasks": tasks,
-         "prefs": prefs, "mem": mem, "evals": EvalsDesk(cfg)},
+         "prefs": prefs, "mem": mem,
+         "evals": EvalsDesk(cfg, hub=cli.agent.hub)},
     )
     httpd = ThreadingHTTPServer((host, port), handler)
     url = f"http://{host}:{port}"

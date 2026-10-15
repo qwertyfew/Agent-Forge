@@ -67,6 +67,11 @@ _CMD_START = re.compile(
     r"^(?:python3?|py|node|npx|npm|pytest|bash|sh|pwsh|powershell|\.)\b", re.I
 )
 
+# python -c「内联比对」命令：没有脚本文件可比存在性，但声明行里明确写出的
+# 内联代码照跑（f4 教训：复制类任务的逐字节比对声明全是 -c 内联代码，
+# 旧口径要求「命令指向工作区内真实脚本」，这类声明整条被弃，闸门静默退化）。
+_INLINE_PYC = re.compile(r"(?i)^python3?\s+-c\b")
+
 # 明确禁止系统侧代跑的东西。验证命令来自任务书，正常是「python xxx.py」；
 # 带破坏性关键词的一律拒绝执行，宁可跳过闸门也不冒险。
 _DANGEROUS = (
@@ -154,7 +159,19 @@ def _clip(text: str, limit: int = VERIFY_OUTPUT_LIMIT) -> str:
 
 def _trim_command(candidate: str) -> str:
     """从声明行的剩余部分里抠出纯命令（去掉「全过」「必须通过」这类人话尾巴）。"""
-    toks = candidate.strip().strip("`").strip().split()
+    candidate = candidate.strip().strip("`").strip()
+    # python -c「内联代码」：代码段整体保留（拆 token 会把 import 语句咬断），
+    # 只断掉引号外的人话尾巴——「python -c "..." 必须通过」这种。
+    m = re.match(r"(?i)^(python3?|py)\s+-c\s+(.*)$", candidate)
+    if m:
+        exe, rest = m.group(1), m.group(2).strip()
+        q = rest[:1]
+        if q in ('"', "'"):
+            end = rest.find(q, 1)
+            code = rest[1:end] if end > 0 else rest[1:]
+            return f'{exe} -c "{code}"'
+        return f"{exe} -c {rest}".strip()
+    toks = candidate.split()
     keep: list[str] = []
     for i, t in enumerate(toks):
         if i == 0:
@@ -196,8 +213,10 @@ def _script_exists(cmd: str, root: Path) -> bool:
 def extract_verify_cmd(text: str, root: str | Path) -> str:
     """从任务书提取声明的验证命令；找不到声明行时兜底扫描裸命令行。
 
-    只认「指向工作区内真实存在的脚本」的命令——提取不出来或脚本不存在
-    都返回空串（此时收尾验证退化为「声称核查」，见 claimed_verified）。
+    只认「指向工作区内真实存在的脚本」的命令，或声明行里明确写出的
+    python -c 内联比对（无脚本文件可比，已过 _DANGEROUS 过滤）；
+    提取不出来或两类都不满足时返回空串（此时收尾验证退化为「声称核查」，
+    见 claimed_verified）。
     """
     text = str(text or "")
     root = Path(root)
@@ -231,9 +250,66 @@ def extract_verify_cmd(text: str, root: str | Path) -> str:
         if any(d in low for d in _DANGEROUS):
             continue
         if not _script_exists(cmd, root):
-            continue
+            # python -c 内联命令没有脚本文件可比存在性（见 _INLINE_PYC 注释）；
+            # 声明行里明确写出的 -c 代码已过 _DANGEROUS 过滤，工作区内只读
+            # 比对，风险可控——放行。
+            if not _INLINE_PYC.match(cmd):
+                continue
         return cmd
     return ""
+
+
+# ---------------------------------------------------------------------------
+# 复制/备份类任务的任务书补强（第四轮评测 f4 教训）
+# ---------------------------------------------------------------------------
+# f4-backup-copy 实测：模型把 draft.md 读出来再用 write_file 写回去——文本往返
+# 丢了尾部换行符，两个文件肉眼看一模一样，逐字节比对才现形。任务书没写验证
+# 声明，闸门无米下锅，错误直接放行。
+#
+# 补法由 harness 出手而不是指望模型自觉：复制/备份语义 + 恰好两个文件名 +
+# 没夹带改内容的诉求 + 没有现成验证声明时，替用户往任务书追加一条 python -c
+# 逐字节比对（read_bytes 原样比较 CRLF 与编码，不做文本往返）。声明进任务书后
+# 三处同时生效：模型看得见（知道验收标准）、写盘后的即时验证跑它（干活时就被
+# 拦住）、收尾闸门亲跑它（谎报现形）。
+_COPY_SEMANTIC = re.compile(r"复制|拷贝|备份|\bcopy\b|\bbackup\b", re.I)
+
+# 任务里夹带了「要改内容」的诉求时，逐字节一致本来就不成立——不补，宁可少拦。
+_COPY_TRANSFORM = re.compile(
+    r"修改|编辑|替换|删除|去掉|去除|清理|清除|转换|翻译|压缩|解压|改写|重写"
+    r"|格式化|整理|追加|合并|拆分|提取|汇总|统计|重命名"
+    r"|两份|多份|数份|几份|各一|互相|批量",
+    re.I,
+)
+
+
+def declare_copy_check(message: str) -> str:
+    """复制/备份类任务自动补一条「逐字节一致」的验证声明；不满足条件返回空串。
+
+    只认保守形态：恰好出现两个不同的文件名 token（第一个为源、第二个为目标，
+    与「把 A 复制一份命名为 B」的语序一致）。识别不了源/目标、任务里要顺带
+    改内容、已有验证声明——一律不补，不可错拦。
+    """
+    text = str(message or "")
+    if not _COPY_SEMANTIC.search(text):
+        return ""
+    if _COPY_TRANSFORM.search(text):
+        return ""
+    if (_DECLARE.search(text) or _DECLARE_INLINE.search(text)
+            or _VERIFY_RUN.search(text)):
+        return ""                      # 已有声明，不重复补
+    toks: list[str] = []
+    for m in re.compile(_PATH_TOK).finditer(text):
+        p = m.group(1)
+        if p.lower() not in {t.lower() for t in toks}:
+            toks.append(p)
+    if len(toks) != 2:
+        return ""                      # 源/目标识别不了，不猜
+    src, dst = toks
+    cmd = (f'python -c "import sys,pathlib;'
+           f"a=pathlib.Path('{src}').read_bytes();"
+           f"b=pathlib.Path('{dst}').read_bytes();"
+           'sys.exit(0 if a==b else 1)"')
+    return f"\n验证：{cmd}"
 
 
 def _decode_output(raw: bytes) -> str:

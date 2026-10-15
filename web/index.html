@@ -2270,8 +2270,10 @@ function renderEvalTasks(){
     box.appendChild(el('div','task-empty','任务集是空的。点「新增任务」加一条（旧文件每次保存前都备份在 evals/.run/）。'));
     return;
   }
+  // 新增草稿永远渲染在最上面（见 btnEvalAdd 的说明），其余按分类分组
+  for(const c of evalData.cases.filter(x => x._isNew)) box.appendChild(evalTaskItem(c));
   let lastCat = null;
-  for(const c of evalData.cases){
+  for(const c of evalData.cases.filter(x => !x._isNew)){
     const cat = c.category || 'general';
     if(cat !== lastCat){
       box.appendChild(el('div','sk-path', `—— ${cat} ——`));
@@ -2286,7 +2288,7 @@ function evalTaskItem(c){
   if(selState.eval.on) it.appendChild(selCheckbox('eval', c.id, prot));
   const head = el('div','sk-head');
   head.appendChild(el('span','sk-name', (prot ? '🔒 ' : '') + (c.id || '(无 id)')));
-  head.appendChild(el('span','sk-tag', c.category || 'general'));
+  head.appendChild(el('span','sk-tag', c._draft ? '草稿' : (c.category || 'general')));
   const layers = Object.keys(c.expect || {}).join('/');
   if(layers) head.appendChild(el('span','sk-ver', layers));
   const edit = el('button','mini-btn','编辑');
@@ -2302,8 +2304,61 @@ function evalTaskItem(c){
   const p = c.prompt || '';
   it.appendChild(el('div','sk-desc', p.slice(0, 160) + (p.length > 160 ? '…' : '')));
   if(c.notes) it.appendChild(el('div','sk-path', c.notes));
-  if(evalEditRef === c) it.appendChild(evalEditor(c));
+  if(evalEditRef === c) it.appendChild(c._draft ? evalDraftEditor(c) : evalEditor(c));
   return it;
+}
+/* 新增草稿编辑器：只有任务指令一个必填项——「LLM 一键生成」把 id/分类/seed/
+   expect 交给决策模型出，产出塞回草稿并切换到完整编辑器供核对；不想用 LLM
+   就走「手动填写」，展开旧版全字段编辑器。 */
+function evalDraftEditor(c){
+  const box = el('div','eval-edit');
+  const ta = document.createElement('textarea');
+  ta.rows = 3;
+  ta.placeholder = '只填任务指令（会原样喂给完整 agent 管线），其余字段交给 LLM 一键生成';
+  ta.value = c.prompt || '';
+  const gen = el('button','mini-btn','LLM 一键生成其余字段');
+  const resetGen = ()=>{ gen.disabled = false; gen.textContent = 'LLM 一键生成其余字段'; };
+  gen.onclick = async ()=>{
+    const p = ta.value.trim();
+    if(!p){ toast(gen, '先把任务指令填上再生成', 'bad'); return; }
+    gen.disabled = true; gen.textContent = '生成中…';
+    try{
+      const r = await fetch('/api/evals/suggest',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({prompt: p})
+      }).then(x=>x.json());
+      if(r.error){ toast(gen, r.error, 'bad'); resetGen(); return; }
+      const k = r.case || {};
+      // 生成的 id 撞上已有任务时自动加尾号，不静默覆盖
+      let cid = k.id || 'new-task';
+      const taken = new Set(evalData.cases.filter(x => x !== c).map(x => x.id));
+      const base = cid; let n = 2;
+      while(taken.has(cid)) cid = base + '-' + (n++);
+      Object.assign(c, {id: cid, category: k.category || 'analysis',
+                        prompt: p, expect: k.expect || {},
+                        seed: k.seed || {}, notes: k.notes || ''});
+      delete c._draft;
+      evalEditRef = c;
+      renderEvalTasks();
+      toast(null, '字段已生成，检查无误后点「保存到此任务集」', 'ok');
+    }catch(e){ toast(gen, '生成失败：' + e.message, 'bad'); resetGen(); }
+  };
+  const manual = el('button','mini-btn','手动填写');
+  manual.onclick = ()=>{
+    delete c._draft;
+    renderEvalTasks();
+    const editor = $('evalTaskList').querySelector('.eval-edit');
+    if(editor){ const first = editor.querySelector('input'); if(first) first.focus(); }
+  };
+  const cancel = el('button','mini-btn','取消');
+  cancel.onclick = ()=>{
+    if(c._isNew) evalData.cases = evalData.cases.filter(x => x !== c);
+    evalEditRef = null; renderEvalTasks();
+  };
+  const foot = el('div','ee-foot');
+  foot.appendChild(cancel); foot.appendChild(manual); foot.appendChild(gen);
+  box.appendChild(ta); box.appendChild(foot);
+  return box;
 }
 function evalEditor(c){
   const box = el('div','eval-edit');
@@ -2383,20 +2438,22 @@ async function delEvalTask(c){
   evalData.cases = evalData.cases.filter(x => x !== c);
   await saveEvalTasks(null);
 }
-/* 新增任务：插入一条空白草稿并展开行内编辑器（含 id/分类/指令/判定/seed） */
+/* 新增任务：先给一条「只填任务」的草稿（草稿渲染在清单顶部——旧版 push 到
+   末尾再 scrollIntoView，整个页面被拽到底部，像转跳；置顶后几乎不滚动），
+   其余字段由 LLM 一键生成，生成结果进完整编辑器供核对后再保存 */
 $('btnEvalAdd').onclick = ()=>{
   if(selState.eval.on){ toast(null, '先退出全选模式再新增任务', 'mute'); return; }
   if(evalEditRef){ toast(null, '已有任务在编辑中，先保存或取消', 'mute'); return; }
-  const c = {id: '', category: 'coding', prompt: '', expect: {}, seed: {},
-             notes: '', _isNew: true};
-  evalData.cases.push(c);
+  const c = {id: '', category: '', prompt: '', expect: {}, seed: {},
+             notes: '', _isNew: true, _draft: true};
+  evalData.cases.unshift(c);
   evalEditRef = c;
   renderEvalTasks();
   const editor = $('evalTaskList').querySelector('.eval-edit');
   if(editor){
     editor.scrollIntoView && editor.scrollIntoView({behavior:'smooth', block:'nearest'});
-    const first = editor.querySelector('input');
-    if(first) first.focus();
+    const ta = editor.querySelector('textarea');
+    if(ta) ta.focus();
   }
 };
 /* ---- 运行与进度 ---- */

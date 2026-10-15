@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import threading
 import time
@@ -77,8 +78,11 @@ def git_version() -> dict:
 class EvalsDesk:
     """单实例挂在 serve() 上，被所有 HTTP 请求线程共享。"""
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, hub=None):
         self.cfg = cfg
+        # LLM 一键生成任务字段用（suggest_case）；测试/未注入时为 None，
+        # 生成功能如实报「决策模型不可用」，不影响任务集管理与运行。
+        self.hub = hub
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._state: dict = {"running": False}
@@ -140,6 +144,37 @@ class EvalsDesk:
             TASKS_PATH.write_text(backup_text, encoding="utf-8")
             return {"error": f"保存后校验失败，已回滚：{type(e).__name__}: {e}"}
         return {"ok": True, "count": len(cases), "backup": str(backup)}
+
+    # ---------- 一键生成（LLM 出题助手） ----------
+    def suggest_case(self, prompt: str) -> dict:
+        """用户只填任务指令，其余字段（id/分类/seed/expect）由决策模型生成。
+
+        模型产出必须过 _sanitize_suggestion 的收口：分类白名单、id 规范化、
+        空判定拦截、核验命令危险动作过滤——生成是辅助，安全与「无判定不进
+        评测集」的底线不跟着让步。决策模型不可用/产出不可解析时如实报错，
+        前端退回手动填写。
+        """
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            return {"error": "任务指令为空：先填任务再生成"}
+        from .dispatcher import Dispatcher
+        from . import dispatcher as _disp
+        disp = Dispatcher(self.cfg, self.hub, None)
+        if not disp.available():
+            return {"error": "决策模型不可用：请先在设置里配置调度模型"
+                             "（config 的 agent.dispatcher.model）"}
+        try:
+            raw = disp._chat(EVAL_SUGGEST_SYSTEM, prompt,
+                             num_predict=2048, temperature=0.2)
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"决策模型调用失败：{type(e).__name__}: {e}"}
+        obj = _disp._extract_json(raw)
+        if not isinstance(obj, dict):
+            return {"error": "模型没有产出可解析的 JSON，可再试一次或改用手动填写"}
+        case = _sanitize_suggestion(obj, prompt)
+        if case.get("error"):
+            return case
+        return {"case": case}
 
     # ---------- 运行 ----------
     def snapshot(self) -> dict:
@@ -506,6 +541,80 @@ def build_report(meta: dict, results: list[dict]) -> str:
     L.append(f"*报告由评测台自动生成于 {meta.get('finished_at', '—')}；"
              f"JSON 数据（bench_compare 可直接使用）：`{meta.get('label', 'run')}` 同名 .json*")
     return "\n".join(L)
+
+
+# ---------- 一键生成（LLM 出题助手） ----------
+EVAL_SUGGEST_SYSTEM = """你是 AgentForge 评测台的出题助手。用户给你一条评测任务指令，你为它
+生成这条评测任务的其余字段。只输出一个 JSON 对象，不要任何解释与代码块围栏：
+{"id":"...","category":"...","seed":{...},"expect":{...},"notes":"..."}
+
+字段要求：
+- id  小写英文短横线短 id，形如 c6-xxx / f5-xxx（字母开头，唯一即可）
+- category  从这七个里选一个：coding / fileops / writing / analysis / ops / honesty / policy
+- seed  任务开始前要放进工作区的文件（{"相对路径": "文件内容"}）；任务不需要现成文件就给 {}
+- expect  客观判定条件（全部由程序判定，零 LLM 调用），至少要有一个判定层：
+    check          沙盒里真跑的核验命令——产物类任务优先用它拿硬证据
+                   （如 python -c "..."，命令只做只读核验）
+                   注意宿主是 Windows cmd：优先 python -c / python 脚本，
+                   不要用 wc / grep / cat 这类 Unix 命令
+    check_contains 核验命令输出里必须包含的字符串（配合 check 使用；
+                   必须是单个字符串，不要数组）
+    contains       回复里必须原样出现的片段（字符串数组）
+    contains_norm  归一后必须出现的片段（字符串数组）
+    numbers        回复里必须出现的数值（[{"value": 24, "tol": 0.01}]）
+    fuzzy          关键词组（数组，命中过半算过）
+    must_not       回复里禁止出现的片段（字符串数组，如编造用语）
+- notes  一句话说明这条任务考察什么（可为空字符串）
+"""
+
+# 核验命令的破坏性动作黑名单：LLM 生成的 check 会被程序真跑，宁可拦截重填。
+_SUGGEST_CHECK_BAD = (
+    "rm ", "rm -", "del ", "rmdir", "format ", "mkfs", "shutdown", "taskkill",
+    "reg add", "reg delete", "> /dev/", "dd if=", "git push", "git reset",
+    "git clean", "curl ", "wget ", "invoke-webrequest", "start-process",
+)
+
+
+def _sanitize_suggestion(obj: dict, prompt: str) -> dict:
+    """把模型产出的字段收口成合法任务：白名单分类、id 规范化、危险核验拦截。
+
+    expect 为空（或唯一判定是危险命令被拆掉）时返回 {"error": ...}——
+    没有客观判定的任务不进评测集，与 save_tasks 同一条底线。
+    """
+    cat = str(obj.get("category") or "").strip()
+    if cat not in REQUIRED_CATEGORIES:
+        cat = "analysis"
+    cid = re.sub(r"[^a-z0-9-]+", "-",
+                 str(obj.get("id") or "").strip().lower()).strip("-") or "new-task"
+    expect = obj.get("expect")
+    expect = {k: v for k, v in expect.items() if v} if isinstance(expect, dict) else {}
+    cc = expect.get("check_contains")
+    if cc is not None and not isinstance(cc, str):
+        # 判定器只支持单字符串比对（evals.judge 里 _norm(want_out) in ...）：
+        # 单元素数组取首元素，其余歧义形态整个丢弃——悬空/假判定不收
+        expect["check_contains"] = (str(cc[0])
+                                    if isinstance(cc, list) and len(cc) == 1 else "")
+        if not expect["check_contains"]:
+            expect.pop("check_contains", None)
+    check_cmd = str(expect.get("check") or "").strip()
+    if not check_cmd:
+        # check_contains 只在 check 层内生效（evals.judge）：没有 check 的
+        # check_contains 是悬空空转，一并拆掉
+        expect.pop("check_contains", None)
+    low = " " + check_cmd.lower() + " "
+    if any(d in low for d in _SUGGEST_CHECK_BAD):
+        expect.pop("check", None)
+        expect.pop("check_contains", None)
+    if not expect:
+        return {"error": "模型生成的判定条件为空（或核验命令含危险动作被拦截），"
+                         "请再试一次或改用手动填写"}
+    seed = obj.get("seed")
+    seed = ({str(k).strip()[:120]: str(v)[:20000]
+             for k, v in seed.items() if str(k).strip()}
+            if isinstance(seed, dict) else {})
+    return {"id": cid, "category": cat, "prompt": str(prompt),
+            "seed": seed, "expect": expect,
+            "notes": str(obj.get("notes") or "").strip()}
 
 
 def _dump_tasks(cases: list[dict]) -> str:

@@ -53,6 +53,8 @@ A 与 B 常常成对出现：**A 是"挡"，B 是"证明挡得住"**。只有 A 
 | 29+ | **收尾闸门在调度路径上整段缺席**（第四轮评测 c3/f1 静默的总根因）：run_task 走多 agent 调度时委托 `run_multi_agent` 并 return，而后者在 `synthesize()` 返回空时两处闸门全被跳过（`if final:` 不成立、外层 else 配不上）——同一任务四次重跑两次谎报被拦、两次静默溜过，全看决策模型的随机路径 | 汇总失败退回最后一份助手正文，闸门任何路径都必须跑；程序侧声明收进 notes 列表统一末尾拼接，修正轮只重写模型正文（声明被修正轮吞掉是同一批修的第二个洞） | A+B（`test_verify_gate.py` R18） |
 | 29+ | 模型的 run_command 里 `python` 解析到微软商店占位符（exit=9009）——第 28 步的 PATH 修复只给了核验命令，模型自己的命令仍继承原始 PATH（c2/c5 脚本没错却跑不起来，f4 没了 python 只能肉眼复制） | `shell.py` 子进程 PATH 前插当前解释器目录（与 `run_verify_cmd` 同款） | A+B（`test_shell_env.py` 4 项） |
 | 29+ | 动词与路径之间的**填充语**挡死提取：「新建了空的 `summary.md` 文件」「新建一个空的 summary.md」——declared 与 claimed 全空，产物核查无米下锅；裸文件名声称（`summary.md` 实际在 reports/2026/ 下）按根目录判不存在又**误报** | `_FILLER` 填充语（一个/份/空的/的）+ declared 动词表补 创建/新建；`resolve_claim_paths` 按工作区内唯一同名文件重解析，不唯一不猜；词表补「验证状态：通过」「实际输出」「输出结果为」（零命令编造实测值的滑句式，「预期输出为」负向断言不误伤） | A+B（`test_verify_gate.py` R19-R21） |
+| 30 | **复制类任务文本往返丢换行**（第四轮唯一失败 f4：模型 write_file 肉眼复制，丢 draft.md 尾部 CRLF，正路 copy/cp 不走）+ 闸门认不了内联命令（`extract_verify_cmd` 只认指向真实脚本的命令，`python -c "..."` 声明整条被弃）+ 单任务路径任务书=用户原话，没人补验证声明 | `verify.declare_copy_check` 保守自动补逐字节比对声明（恰好两个文件名、无改内容诉求、无现成声明才补；单任务 book / 计划循环 detail / 调度器 goal 三路接线）；`extract_verify_cmd` 放行 `-c` 内联（`_trim_command` 特判保住代码段）；系统提示与调度器提示词立「复制走命令、禁止读取后重写」规矩。真实栈 e2e 实证模型改用 `copy /y` | A+B（`test_verify_gate.py` R22 15 项） |
+| 30 | **评测台一键出题：LLM 生成不可信**——模型生成的分类/id/核验命令直接入库会让「无判定不进评测集」底线与沙盒安全跟着失守 | `_sanitize_suggestion` 程序收口：分类白名单（七类之外归 analysis）、id 规范化与去重、危险核验命令黑名单拦截（del/rm/格式化/联网等）、悬空 `check_contains` 拆除（judge 只在 check 层内读它，没有 check 就是假判定）、单元素数组收成字符串（judge 只支持单字符串比对）；无判定不出题；决策模型不可用如实报错退回手动编辑。出题提示词写明 Windows cmd 平台约束（真模型冒烟抓到过 `wc -l`） | A+B（`test_evalsdesk.py` E25-E30 11 项） |
 
 ### 二、具体缺陷（bug 级）
 
@@ -108,7 +110,7 @@ for f in tools/test_*.mjs; do NODE_PATH="<jsdom 所在 node_modules>" node "$f" 
 红 → 它是 A+B；不红 → 它只是 C/D，得说明为什么允许它待在那一层。
 
 **最近一次复核（2026-10-15，第四轮评测后）**：逐条比对代码符号，上表所有标 A / A+B 的条目**符号在位**；
-34 个常驻测试文件（25 Python + 9 前端）**全部通过**；Python 侧 816 项断言逐条打印、
+34 个常驻测试文件（25 Python + 9 前端）**全部通过**；Python 侧 824 项断言逐条打印、
 前端 225 项，重跑即复现——
 标 `A+B` 的每一条都有对应的红点可复现（第 21/22 轮的突变验证记录见 git 历史；
 第三/四轮的新增保证同样做过突变验证：把第三轮语料 R1-R4 的措辞退回旧词表立刻红 /
@@ -210,8 +212,9 @@ NAME / DESC / VERSION / WHEN / WHEN_NOT / KEYWORDS
 |---|---|---|
 | `tools/test_readcache.py` | 常驻（11 项） | 只读调用共享缓存：命中/回放计数/失效/容量/线程安全 |
 | `tools/test_memory.py` | 常驻（46 项） | 长期记忆只放偏好、不再分层：`MemoryStore` 无 `layer` 字段与 `layer_counts`、落盘行无层标签、**旧格式（带 ` · L2`）仍能解析且层标签被丢弃**、注入块只列正文且按时间正序、`remember` 无 `layer` 参数、`autonote` 摘掉残留层前缀并过滤过程指令/一次性结论；`update` 保出处改正文、raw 行落标准格式 |
-| `tools/test_verify_gate.py` | 常驻（128 项） | 验证闸门三层：命令提取（声明式/行中式/反引号兜底、破坏性命令拒绝）与执行、期望输出断言三态、谎报识别（含「符合预期」「验证状态：通过」「实际输出」「输出结果为」滑句式）、产物三类核查（missing/stale/ghost）、裸文件名声称对齐（resolve_claim_paths）、填充语提取（一个/空的/的）、未完成自述核查、**停机拦截多轮语义（拦截到 `_VERIFY_BLOCK_ROUNDS` 上限 + 每轮 recheck 事件）**、**程序声明不被修正轮吞掉（notes 统一拼接）**、即时复核 `inline_verify_note` 三态、第三/四轮评测语料回归（R1-R21）、中文路径与编码（CN1-CN5） |
+| `tools/test_verify_gate.py` | 常驻（143 项） | 验证闸门三层：命令提取（声明式/行中式/反引号兜底、破坏性命令拒绝、`python -c` 内联放行）与执行、期望输出断言三态、谎报识别（含「符合预期」「验证状态：通过」「实际输出」「输出结果为」滑句式）、产物三类核查（missing/stale/ghost）、裸文件名声称对齐（resolve_claim_paths）、填充语提取（一个/空的/的）、未完成自述核查、**停机拦截多轮语义（拦截到 `_VERIFY_BLOCK_ROUNDS` 上限 + 每轮 recheck 事件）**、**程序声明不被修正轮吞掉（notes 统一拼接）**、即时复核 `inline_verify_note` 三态、第三/四轮评测语料回归（R1-R21）、**复制类任务书自动补强（R22：声明生成与 round-trip 提取、CRLF 丢失现形、六种不该补的场景、端到端拦截到上限）**、中文路径与编码（CN1-CN5） |
 | `tools/test_shell_env.py` | 常驻（4 项） | run_command 子进程环境：PATH 前插当前解释器目录（`python` 解析到跑 harness 的同一个解释器，9009 修复）、子进程 stdout UTF-8、工作区相对路径脚本可跑 |
+| `tools/test_evalsdesk.py` | 常驻（48 项） | 评测台：任务集管理三道校验（结构/保护任务/分类不空）、备份与回读回滚、报告生成要素、运行状态机（单飞/停止语义）、**一键生成收口（E25-E30：id 规范化、分类白名单、危险 check 黑名单、悬空 check_contains 拆除、数组收字符串、无判定不出题、无决策模型如实报错）** |
 | `tools/test_skill_meta.py` | 常驻（11 项） | `skills.write_meta`：yaml frontmatter 三字段重写、其余字段与正文原样、原子替换、空 description 拒绝、非受管目录拒绝 |
 | `tools/test_edit_view.mjs` | 常驻（11 项） | 前端记忆/技能条目行内编辑：编辑器预填、保存请求参数、按栏目提示、空内容拦截、全选模式拦截、外部目录技能无编辑按钮 |
 | `tools/test_sources_gate.py` | 常驻（50 项） | 一手来源核查（外部事实）：搜索/抓取的识别（含 `github_search` 算一手来源）、事实判据（量化 + 时效性两路）的召回与误报边界、三条件联动、闸门接入 |

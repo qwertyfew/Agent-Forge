@@ -934,9 +934,15 @@ def run_task(
     不在此重试。
     """
     stopped = stop_check or (lambda: False)
+    # 复制/备份类任务的任务书补强（f4 教训）：harness 替用户补一条逐字节比对的
+    # 验证声明。单任务路径里执行模型看到的任务书（book）与收尾闸门核对的保持
+    # 同一份；路由判断（_worth_dispatch / needs_plan）与汇总用的仍是原始 message，
+    # 不受补强影响。
+    _copy_note = verify_gate.declare_copy_check(message)
+    book = message + _copy_note if _copy_note else message
     # 产物核查的起点快照：任务书声明交付文件的 mtime 此刻定格，收尾时用它
     # 判断「本轮是否真的更新过」，上一轮的旧文件糊弄不了核查
-    gate_snap = verify_gate.snapshot_artifacts(message, agent.cfg.workspace_root)
+    gate_snap = verify_gate.snapshot_artifacts(book, agent.cfg.workspace_root)
     exhausted_cmds: set = set()         # 步骤级闸门拦到上限仍失败的验证命令
     pinned_key = (model_key or "").strip()
     pinned: dict | None = None
@@ -1014,6 +1020,12 @@ def run_task(
     plan: list[Subtask] = []
     if auto_plan and needs_plan(message, len(entries)):
         plan = [s for s in make_plan(message, entries) if (s.detail or "").strip()]
+        # 计划循环的任务书补强：复制/备份语义落在某一步时，给那步的 detail
+        # 补逐字节比对声明（prompt 与步骤级闸门都用 detail，天然同份）
+        for _st in plan:
+            _note = verify_gate.declare_copy_check(_st.detail)
+            if _note:
+                _st.detail += _note
 
     multi = len(plan) >= 2
     if not multi:
@@ -1118,7 +1130,7 @@ def run_task(
         if i == 0:
             prompt = STEP_FIRST.format(
                 message=message, total=total, title=st.title, detail=st.detail
-            ) if multi else message
+            ) if multi else book
             relay = None
         else:
             if brief_relay:
@@ -1203,9 +1215,11 @@ def run_task(
         if failed:
             return
 
-    # 收尾验证闸门：验证命令系统亲自跑，谎报在这里现形（见 _verify_gate）
+    # 收尾验证闸门：验证命令系统亲自跑，谎报在这里现形（见 _verify_gate）。
+    # 单任务路径用补强后的 book（与执行模型看到的一致）；多步任务各步已按
+    # detail 各自核验过，这里仍守原始总任务。
     holder = {"summary": summary, "convo": hist}
-    yield from _verify_gate(agent, message, holder,
+    yield from _verify_gate(agent, message if multi else book, holder,
                             auto_approve=auto_approve, stop_check=stopped,
                             read_cache=read_cache, snapshot=gate_snap,
                             exhausted=exhausted_cmds)

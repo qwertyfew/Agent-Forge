@@ -25,6 +25,7 @@ import threading
 from dataclasses import dataclass, field
 
 from .config import Config
+from . import verify as verify_gate
 from .planner import KIND_DIM, KIND_LABEL, kind_of, resolve_kind, short_title, split_task
 
 # 决策模型不该“脑补”出候选里没有的模型名，所以提示词里给白名单并要求留空表示交给系统。
@@ -45,6 +46,11 @@ DISPATCH_SYSTEM = """你是 AgentForge 的任务调度器（Dispatcher）。你�
 - 每个任务都必须自包含、可被独立执行；不要把「然后」「接着」这类连续的同一件事硬拆开。
 - 用户任务里写明的验证命令（如「验证：python tools/x.py」）要**原样保留**在对应任务
   的 goal 里——系统会在任务收尾时亲自运行它核对结果，删掉它等于拆掉验收。
+- **复制 / 备份类任务要在 goal 里写死手段与验证**：goal 必须写明「用复制命令完成
+  （Windows：copy /y，跨平台：cp），禁止读取后用 write_file 重写——文本往返会丢
+  换行符」，并附一行逐字节比对的验证声明，例：
+  验证：python -c "import sys,pathlib;a=pathlib.Path('源文件').read_bytes();b=pathlib.Path('目标文件').read_bytes();sys.exit(0 if a==b else 1)"
+  （源/目标换成任务里的真实文件名。系统收尾时会亲自运行这条命令。）
 - depends_on **只在「后一个任务必须拿到前一个任务的产出文本或文件才能开始」时才填**。
   只是主题相关、措辞上提到对方，都不算依赖——那种情况留空，让它们并行跑。
   例：「统计日志里的错误数」与「给客户写周报」互不依赖，两条都留空（各写各的，可以同时做）；
@@ -375,8 +381,23 @@ class Dispatcher:
         if self.available():
             p = self._llm_plan(message, entries)
             if p is not None:
+                self._augment_copy_checks(p.tasks)
                 return p
-        return self._rules_plan(message, entries)
+        p = self._rules_plan(message, entries)
+        self._augment_copy_checks(p.tasks)
+        return p
+
+    def _augment_copy_checks(self, tasks: list[TaskSpec]) -> None:
+        """给复制/备份类任务的 goal 补逐字节比对验证声明（f4 教训）。
+
+        决策模型不一定记得提示词里的复制规矩（本地小模型指令跟随弱），
+        程序按 verify.declare_copy_check 的保守判据兜底补写——goal 补强后
+        执行模型与任务级闸门看到的是同一份任务书。
+        """
+        for t in tasks:
+            note = verify_gate.declare_copy_check(t.goal)
+            if note:
+                t.goal += note
 
     def _llm_plan(self, message: str, entries: list[dict]) -> DispatchPlan | None:
         max_tasks = int(getattr(self.cfg, "dispatcher_max_tasks", 6) or 6)

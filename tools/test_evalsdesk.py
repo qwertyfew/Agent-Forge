@@ -235,6 +235,104 @@ with tempfile.TemporaryDirectory() as td:
 v = git_version()
 check("E24 git_version 返回 commit+dirty", "commit" in v and isinstance(v["dirty"], bool), str(v))
 
+# ---- E25-E30 一键生成（suggest_case）：替身决策模型，不碰真模型 ----
+class _Spec:
+    name = "stub-decision"
+    display = "Stub 决策模型"
+    available = True
+
+
+class _StubCfg:
+    dispatcher_model = "stub"
+    models = {"stub": _Spec()}
+
+
+class _FakeHub:
+    def __init__(self, reply: str):
+        self.reply = reply
+
+    def chat(self, spec, messages, tools=None, options=None, think=False):
+        class _R:
+            content = self.reply
+        return _R()
+
+
+def _reply_for(case_obj: dict) -> str:
+    return json.dumps(case_obj, ensure_ascii=False)
+
+
+good_reply = _reply_for({
+    "id": "F5 Copy File!", "category": "fileops",
+    "seed": {"draft.md": "内容\n"},
+    "expect": {"check": 'python -c "print(\'OK\')"', "check_contains": "OK"},
+    "notes": "考察文件复制",
+})
+
+desk3 = EvalsDesk(cfg=_StubCfg(), hub=_FakeHub(good_reply))
+r = desk3.suggest_case("把 draft.md 复制一份命名为 draft_backup.md")
+check("E25 一键生成成功且 id 规范化（非法字符转短横线、收尾清干净）",
+      "case" in r and r["case"]["id"] == "f5-copy-file", str(r)[:200])
+check("E25b 分类白名单内保留、prompt 用用户原话",
+      r.get("case", {}).get("category") == "fileops"
+      and r["case"]["prompt"] == "把 draft.md 复制一份命名为 draft_backup.md", str(r)[:200])
+check("E25c seed/expect/notes 原样收下",
+      r.get("case", {}).get("seed") == {"draft.md": "内容\n"}
+      and r["case"]["expect"].get("check_contains") == "OK"
+      and r["case"]["notes"] == "考察文件复制", str(r)[:240])
+
+# E26 危险核验命令被拦截：唯一判定是 check → 拆掉后 expect 为空 → 拒绝出题
+bad = EvalsDesk(cfg=_StubCfg(), hub=_FakeHub(_reply_for({
+    "id": "bad-cmd", "category": "ops",
+    "expect": {"check": "del /f draft.md"},
+})))
+r = bad.suggest_case("删除文件")
+check("E26 危险 check 被安全过滤拦下（无判定不出题）",
+      "error" in r and "危险" in r["error"], str(r))
+
+# E26b 悬空 check_contains（没有 check）整个拆掉 → expect 为空 → 拒绝；
+#      数组形态的单元素 check_contains 收成字符串
+dangling = EvalsDesk(cfg=_StubCfg(), hub=_FakeHub(_reply_for({
+    "id": "dangling-cc", "category": "coding",
+    "expect": {"check_contains": "OK"},
+})))
+check("E26b 无 check 的 check_contains 是悬空判定 → 拆掉并拒绝出题",
+      "error" in dangling.suggest_case("跑一下脚本"), "")
+coerce = EvalsDesk(cfg=_StubCfg(), hub=_FakeHub(_reply_for({
+    "id": "coerce-cc", "category": "coding",
+    "expect": {"check": "python -c \"print(7)\"", "check_contains": ["7"]},
+})))
+r = coerce.suggest_case("输出 7")
+check("E26c 单元素数组的 check_contains 收成字符串",
+      r.get("case", {}).get("expect", {}).get("check_contains") == "7", str(r)[:200])
+
+# E27 expect 为空 → 拒绝（与 save_tasks 同一条底线）
+empty = EvalsDesk(cfg=_StubCfg(), hub=_FakeHub(_reply_for(
+    {"id": "x", "category": "coding", "expect": {}})))
+check("E27 空 expect 拒绝出题", "error" in empty.suggest_case("随便写点东西") and
+      "判定条件" in empty.suggest_case("随便写点东西")["error"], "")
+
+# E28 决策模型不可用 → 如实报错（不装死也不假装生成）
+none_desk = EvalsDesk(cfg=None, hub=None)
+check("E28 无决策模型 → 报「决策模型不可用」",
+      "决策模型不可用" in none_desk.suggest_case("任务")["error"], "")
+
+# E29 模型产出不是 JSON → 如实报错
+badjson = EvalsDesk(cfg=_StubCfg(), hub=_FakeHub("我觉得这条任务很好，无需改动。"))
+check("E29 非 JSON 产出 → 报错提示可重试或手动", "JSON" in badjson.suggest_case("任务")["error"], "")
+
+# E30 空指令 / 白名单外分类 / 非 dict seed 的收口
+r = desk3.suggest_case("   ")
+check("E30a 空指令拒绝", "error" in r, str(r))
+odd = EvalsDesk(cfg=_StubCfg(), hub=_FakeHub(_reply_for({
+    "id": "odd-cat", "category": "not-a-cat", "seed": "不是字典",
+    "expect": {"contains_norm": ["完成"]},
+})))
+r = odd.suggest_case("写一句完成的话")
+check("E30b 白名单外分类归 analysis、非 dict seed 收成 {}",
+      r.get("case", {}).get("category") == "analysis"
+      and r["case"]["seed"] == {} and r["case"]["expect"] == {"contains_norm": ["完成"]},
+      str(r)[:200])
+
 print(f"\n共 {_n[0]} 项断言"
       + ("，全部通过。" if not _fails else f"，失败 {len(_fails)} 条：{_fails}"))
 sys.exit(1 if _fails else 0)

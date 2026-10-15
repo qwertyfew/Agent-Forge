@@ -202,14 +202,20 @@ check('W14b 点文件名发出定位请求（evals/results 路径 + select 模�
       && folderCall.opts.body.includes('"select":true'),
       folderCall ? folderCall.opts.body : '没发请求');
 
-/* W15-W18 「新增任务」编辑器与「全选清理」勾选流程 */
+/* W15-W18 「新增任务」编辑器与「全选清理」勾选流程
+   （新版：草稿只填任务指令，其余字段走 LLM 一键生成或手动展开） */
 const clickEv = (elm) => elm.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 clickEv(document.getElementById('btnEvalAdd'));
 await sleep(40);
 const editor = document.querySelector('#evalTaskList .eval-edit');
-check('W15 点「新增任务」出现行内编辑器（id/指令/判定/seed 可输入）',
-      !!editor && !!editor.querySelector('input') && !!editor.querySelector('textarea'),
-      editor ? '有编辑器' : '没有编辑器');
+const draftBtns = editor ? [...editor.querySelectorAll('.mini-btn')].map(b => b.textContent) : [];
+check('W15 点「新增任务」出现草稿编辑器（任务指令 textarea + 取消/手动填写/LLM 一键生成）',
+      !!editor && !!editor.querySelector('textarea')
+      && ['取消', '手动填写', 'LLM 一键生成其余字段'].every(t => draftBtns.includes(t)),
+      '按钮：' + draftBtns.join('|'));
+check('W15b 新草稿渲染在清单顶部（修「转跳到底部」回归锚）',
+      document.querySelector('#evalTaskList .sk-item .sk-tag')?.textContent === '草稿',
+      document.querySelector('#evalTaskList .sk-item .sk-tag')?.textContent);
 const editorCancel = [...editor.querySelectorAll('.mini-btn')].find(b => b.textContent === '取消');
 clickEv(editorCancel);
 await sleep(40);
