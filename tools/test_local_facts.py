@@ -155,6 +155,43 @@ def test_needs_local_note() -> None:
               [_call("read_file"), _tool("read_file")], ASK) == [])
 
 
+def test_needs_local_note_general() -> None:
+    """一般场景（2026-10-15 收口）：任务书不是在问现状，但项目/代码类工作
+    + 全程零读取 + 总结断言工作区现状 → 同样出手。"""
+    zero: list[dict] = []
+    # 命中：改代码任务，答复断言工作区现状，零读取
+    msg = "排查一下项目里的依赖问题，把结论回复我"
+    fab = ("依赖问题出在 agentforge/loop.py 和 agentforge/config.py，"
+           "工程目录里还有 tools/ 没纳入打包。")
+    check("一般场景：改代码 + 零读取 + 断言现状 → 出手",
+          sg.needs_local_note(fab, zero, msg) != [],
+          repr(sg.needs_local_note(fab, zero, msg)))
+    check("一般场景：读过工作区 → 不出手",
+          sg.needs_local_note(fab, [_call("read_file"), _tool("read_file")], msg) == [])
+    # 不误伤：写作任务谈项目不算（消息没有任何工程/文件信号）
+    check("一般场景：写作任务不误伤",
+          sg.needs_local_note(FABRICATED, zero, "帮我写一篇项目介绍文章") == [])
+    # 本轮产出不算现状陈述（produced 排除）
+    check("一般场景：名字都是本轮产出 → 不出手",
+          sg.needs_local_note("已创建 spider.py 和 spider_test.py 并验证通过。",
+                              zero, "写个爬虫脚本，工作区结构自己定",
+                              produced="spider.py\nspider_test.py") == [])
+    # 任务书点过名的文件不算（exclude_text）
+    check("一般场景：任务书点过名的文件 → 不出手",
+          sg.needs_local_note("已修改 web/index.html 与 web/app.js。",
+                              zero, "修改 web/index.html，顺带处理 web/app.js") == [])
+    # 单项 + 存在性断言 → 出手
+    check("一般场景：单项 + 存在性断言 → 出手",
+          sg.needs_local_note("项目里还存在 helper.py 这个重复实现。",
+                              zero, "重构 agentforge 目录下的解析模块") != [],
+          repr(sg.needs_local_note("项目里还存在 helper.py 这个重复实现。",
+                                   zero, "重构 agentforge 目录下的解析模块")))
+    # 单项收尾回执、无断言 → 不出手
+    check("一般场景：单项回执无断言 → 不出手",
+          sg.needs_local_note("本次改动集中在 parser.py。",
+                              zero, "重构 agentforge 目录下的解析模块") == [])
+
+
 def test_blocks() -> None:
     hits = sg.needs_local_note(FABRICATED, [], ASK)
     block = sg.local_unverified_block(hits)
@@ -267,6 +304,7 @@ def main() -> None:
     test_ran_local_inspection()
     test_local_fact_tokens()
     test_needs_local_note()
+    test_needs_local_note_general()
     test_blocks()
     test_gate_wiring()
     print("\n全部通过。")

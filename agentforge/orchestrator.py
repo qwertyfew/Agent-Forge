@@ -23,6 +23,8 @@ import re
 import threading
 from typing import Any, Iterator
 
+from pathlib import Path
+
 from .dispatcher import Dispatcher, SharedState, TaskSpec
 from .loop import Agent
 from .planner import (
@@ -31,6 +33,9 @@ from .planner import (
     needs_plan, plan_summary,
 )
 from .readcache import ReadCache
+from . import artifact
+from . import gaps
+from . import honesty_guard
 from . import runcontrol
 from . import sources as sources_gate
 from . import verify as verify_gate
@@ -198,17 +203,61 @@ def _worth_dispatch(message: str, pool_size: int) -> bool:
 _VERIFY_BLOCK_ROUNDS = 2
 
 
+def _file_records(paths: list[str], root) -> list[dict]:
+    """把一串文件路径翻成诚实守卫 / 前端要的产物描述（含 rel / exists / action）。
+
+    写类工具产出的文件一律记为 created / tool / certain；前端 addFilesCard 据此
+    把产出文件卡片挂在汇总结果下方，保证「汇总 ↔ 文件」对得上。
+    """
+    recs = []
+    for p in paths or []:
+        if not p:
+            continue
+        recs.append({"path": str(p), "action": "created", "via": "tool",
+                     "certain": True, "exists": Path(p).exists()})
+    return artifact.describe(recs, root)
+
+
+def _produced_files(state: "SharedState") -> tuple[list[str], dict[str, str]]:
+    """汇总所有子任务的产出文件路径，并返回 路径→子任务标题 的映射。"""
+    paths: list[str] = []
+    seen: set[str] = set()
+    path_title: dict[str, str] = {}
+    for r in state.results.values():
+        for p in (r.files or []):
+            if p and p not in seen:
+                seen.add(p)
+                paths.append(p)
+                path_title.setdefault(p, r.title)
+    return paths, path_title
+
+
+def _read_artifact(path: str, cap: int = 2500) -> str | None:
+    """读取文本文件内容（截断到 cap 字符）；非文本 / 过大 / 二进制返回 None。"""
+    p = Path(path)
+    try:
+        if not p.is_file():
+            return None
+        if p.stat().st_size > 200_000:
+            return None
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+    if "\x00" in text[:2000]:          # 二进制文件，不当成可内联的内容
+        return None
+    return text[:cap]
+
+
 def _verify_gate(agent, message: str, holder: dict,
                  auto_approve=None, stop_check=None, read_cache=None,
                  snapshot: dict[str, float] | None = None,
-                 exhausted: set[str] | None = None):
+                 exhausted: set[str] | None = None,
+                 files: list[dict] | None = None):
     """收尾验证闸门（系统侧强制）：模型只有解读权，没有裁定权。
 
     - 任务书里声明了验证命令（如「验证：python tools/x.py」）→ 程序亲自运行，
       真实结果通过 verify 事件播报；失败时给模型一轮修正机会（可修可如实说明），
       之后无论模型总结说什么，都会在答复末尾附上程序写的系统侧验证报告。
-    - 没声明验证命令、但模型总结声称「验证通过」且全程没跑过 run_command →
-      在答复末尾追加「未经系统确认」声明。
     - 独立第二道核查：任务书声明的交付文件与总结声称「已写入 X」的文件，
       系统核查三类问题——不存在（missing）/ 本轮未更新（stale，mtime 与任务
       开始快照一致，吃老本）/ 幽灵声明（ghost，全程零写操作却说已写入）；
@@ -293,9 +342,10 @@ def _verify_gate(agent, message: str, holder: dict,
             holder.setdefault("exhausted_cmds", set()).add(cmd.strip().lower())
             exhausted.add(cmd.strip().lower())
         notes.append(verify_gate.report_block(cmd, res))
-    elif (verify_gate.claimed_verified(summary)
-          and not verify_gate.ran_verification(convo)):
-        notes.append(verify_gate.UNVERIFIED_NOTE)
+    # 【设计原则·2026-10-15】删除原「声称验证通过但未调用 run_command → 追加『未经系统确认』」
+    # 的分支。闸门只判定产物是否正确（上面的验证命令分支）与产物/声明的真实性
+    # （下面几道核查）；是否调用过 run_command 属于执行过程，与任务是否完成无关，
+    # 不构成闸门的职责。任务成果已由上面的验证命令分支独立验收，无需再检验过程。
 
     # 声明产物核查（独立于验证命令的第二道核查）：三类问题——
     #   missing 文件不存在（REA 一测：零 write_file 谎报「已写入」）
@@ -402,7 +452,13 @@ def _verify_gate(agent, message: str, holder: dict,
     # 硬约束：先给一轮修正机会去真看一眼——「技能加载了但没拦住」的解法不是把
     # 提示词写得更重，而是让系统替它把这一步做实；修正后仍然没看，才由程序附声明。
     if getattr(cfg, "local_facts_gate", True):
-        hits = sources_gate.needs_local_note(summary, convo, message)
+        # 本轮程序已确认的产出文件不算「对现状的陈述」（模型自己刚写的），
+        # 把 rel 路径拼进排除文本，避免「已创建 spider.py 并验证」被当成编造。
+        produced = "\n".join(
+            str(f.get("rel") or f.get("path") or "") for f in (files or []) if f
+        )
+        hits = sources_gate.needs_local_note(summary, convo, message,
+                                             produced=produced)
         if hits and not corrected:
             corrected = True
             prompt = sources_gate.LOCAL_FACTS_CORRECTIVE_PROMPT.format(
@@ -424,6 +480,61 @@ def _verify_gate(agent, message: str, holder: dict,
             yield {"type": "verify", "cmd": "", "ok": False, "exit": "",
                    "duration": "", "unverified_local": hits}
             notes.append(sources_gate.local_unverified_block(hits))
+
+    # 第六道核查（通用诚实守卫）：基于执行轨迹的证据比对，而非枚举能力。
+    # 判定只问两件事——① 产物 / 动作是否真实（文件真写出来 / 命令真跑成）；
+    # ② 没做成时有没有坦白。任务未达成却把锅甩给用户 / 假装做了 → 给一轮修正机会
+    # 逼其如实说明（覆盖 h3「发布到 npm」甩锅这类旧 preflight 枚举不到的情形）。
+    # 与上面几道同源：模型只有解读权，没有裁定权；判定与任务类型 / 数量无关，可扩展。
+    if getattr(cfg, "honesty_gate", True):
+        hres = honesty_guard.assess(message, summary, convo, files or [], cfg)
+        if hres["verdict"] == "force_confess" and not corrected:
+            corrected = True
+            prompt = honesty_guard.corrective_prompt(summary)
+            for ev in agent.run(convo, prompt, auto_route=False,
+                                stop_check=stop_check, auto_approve=auto_approve,
+                                read_cache=read_cache):
+                k = ev.get("type")
+                if k in ("user", "route"):
+                    continue
+                if k == "assistant":
+                    convo = ev["history"]
+                    summary = (ev.get("content") or "").strip() or summary
+                yield ev
+            # 修正后再判一次；仍不坦白才在答复末尾附上系统侧诚实声明
+            hres2 = honesty_guard.assess(message, summary, convo, files or [], cfg)
+            if hres2["verdict"] == "force_confess":
+                notes.append(
+                    "（系统侧诚实核查：任务未达成，已在最终答复中要求如实说明未达成的原因，"
+                    "不得把责任甩回给用户。）")
+
+    # 第七道核查（关键事实回显）：任务书点名「保留 X / 确保 Y / 写明 Z」时，
+    # 程序提取其中的硬 token（引号内容 / 时间 / 日期 / 数字），比对答复是否包含。
+    # 缺了给一轮修正；仍缺则在答复末尾附系统侧声明。治 w3 类「文件写对了、
+    # 回复把关键事实丢了」——方案 B 保证信息在场，这里保证信息进答复。
+    if getattr(cfg, "facts_gate", True):
+        miss_facts = verify_gate.missing_required_facts(summary, message)
+        if miss_facts and not corrected:
+            corrected = True
+            prompt = verify_gate.FACTS_CORRECTIVE_PROMPT.format(
+                tokens="\n".join(f"- {t}" for t in miss_facts),
+                summary=summary or "（无）",
+            )
+            for ev in agent.run(convo, prompt, auto_route=False,
+                                stop_check=stop_check, auto_approve=auto_approve,
+                                read_cache=read_cache):
+                k = ev.get("type")
+                if k in ("user", "route"):
+                    continue
+                if k == "assistant":
+                    convo = ev["history"]
+                    summary = (ev.get("content") or "").strip() or summary
+                yield ev
+            miss_facts = verify_gate.missing_required_facts(summary, message)
+        if miss_facts:
+            yield {"type": "verify", "cmd": "", "ok": False, "exit": "",
+                   "duration": "", "missing_facts": miss_facts}
+            notes.append(verify_gate.missing_facts_block(miss_facts))
 
     # 程序侧声明统一在这里拼回正文末尾——无论中途经历几轮修正轮重写
     if notes:
@@ -652,10 +763,13 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
                 task_book, agent.cfg.workspace_root)
             task_holder = {"summary": summary or _last_assistant(convo),
                            "convo": convo}
+            task_files = _file_records(
+                [r.get("path") for r in local_log if r.get("path")],
+                agent.cfg.workspace_root)
             for ev in _verify_gate(ag, task_book, task_holder,
                                    auto_approve=auto_approve, stop_check=stopped,
                                    read_cache=read_cache, snapshot=task_snap,
-                                   exhausted=exhausted_cmds):
+                                   exhausted=exhausted_cmds, files=task_files):
                 k = ev.get("type")
                 if k == "assistant":
                     convo = ev["history"]
@@ -808,10 +922,27 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
     else:
         final_convo = hist_holder["convo"]
 
+    # 汇总层（方案 B）：读取各子任务产出文件的内容，交给协调者据此核对，
+    # 先清掉小步骤标记——执行已结束，此后的缺口记录源都显式带步骤
+    gaps.clear_step()
+    # 避免「答案写在文件里、汇总却漏掉关键事实」（w3 那类系统性丢事实）。
+    # 同时把产出文件描述交给诚实守卫与前端：诚实守卫据此判定产物真实性，
+    # 前端据此把文件卡片挂在汇总结果下方，保证「汇总 ↔ 文件」对得上。
+    agg_paths, path_title = _produced_files(state)
+    root = agent.cfg.workspace_root
+    file_records = _file_records(agg_paths, root)
+    artifacts = []
+    for p in agg_paths:
+        content = _read_artifact(p)
+        if content is None:
+            continue
+        rel = artifact.rel_to_root(root, p) or str(p)
+        artifacts.append({"title": path_title.get(p, ""), "rel": rel, "content": content})
+
     # 收尾：决策模型把各 agent 的结果汇总成一份答复（多任务时才做）
     final = ""
     if total >= 2 and getattr(agent.cfg, "dispatcher_synthesis", True):
-        final = dispatcher.synthesize(message, state.result_items()) or ""
+        final = dispatcher.synthesize(message, state.result_items(), artifacts) or ""
     if final:
         # 输出边界的语言闸门：整合模型也可能是英文倾向的弱模型，而桥接执行的
         # 子任务摘要常常整段英文。用户记忆里「回复一律中文」这类偏好不能只靠
@@ -825,7 +956,7 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
         yield from _verify_gate(agent, message, holder,
                                 auto_approve=auto_approve, stop_check=stopped,
                                 read_cache=read_cache, snapshot=snap,
-                                exhausted=exhausted_cmds)
+                                exhausted=exhausted_cmds, files=file_records)
         final = holder["summary"]
         final_convo = holder["convo"]
         final_convo = [*final_convo, {"role": "assistant", "content": final}]
@@ -840,13 +971,18 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
         yield from _verify_gate(agent, message, holder,
                                 auto_approve=auto_approve, stop_check=stopped,
                                 read_cache=read_cache, snapshot=snap,
-                                exhausted=exhausted_cmds)
+                                exhausted=exhausted_cmds, files=file_records)
         if holder["summary"] and holder["summary"] != _last_assistant(final_convo):
             final_convo = holder["convo"]
             yield {"type": "assistant", "content": holder["summary"],
                    "history": final_convo}
         else:
             final_convo = holder["convo"]
+
+    # 产出文件卡片：把本轮所有产出文件（带 rel/exists）随最终答复送前端，
+    # 前端 addFilesCard 渲染成可点击展开的图标，保证汇总结果和文件对上。
+    if file_records:
+        yield {"type": "artifacts", "files": file_records}
 
     yield {"type": "complete", "steps": total, "multi": total >= 2}
 
@@ -1148,6 +1284,12 @@ def run_task(
                 relay = None
             yield {"type": "subtask", "index": i + 1, "total": total, "text": st.detail}
 
+        # 小步骤标记：缺口台账要说明「当时在做哪一步」。多任务用该步任务书，
+        # 单任务用原始消息（gaps.norm_step 剥掉「帮我/请」等客套前缀——
+        # 「帮我在git检索REA」→「在git检索REA」）；多路径重试时会被下面的
+        # 方案文本覆盖成更细的一步。
+        gaps.set_step(st.detail or message)
+
         files_before = len(file_log) if file_log is not None else 0
         summary, failed, halted, hist = yield from _step_events(i, prompt, relay)
         if halted:
@@ -1165,6 +1307,9 @@ def run_task(
                 yield {"type": "multipath", "index": i + 1, "total": total,
                        "phase": "try", "approach_index": ap_i,
                        "approach_total": len(approaches), "approach": ap}
+                # 架构拟出的实现路径就是当前小步骤（如「先在git检索REA」）——
+                # 这一步里发生的缺口登记，台账会记到这条路径上
+                gaps.set_step(ap)
                 retry_prompt = (
                     prompt + f"\n\n[换路重试 · 方案 {ap_i}/{len(approaches)}] "
                     "上一条路径没能完成这一步。这次按下面这条实现路径来做"

@@ -451,7 +451,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_gaps(self):
         """能力缺口台账：清空（全部或按 kind/key）、手工修订一条的名称与样例。
 
-        记录侧由架构自动完成（loop 的未知工具、preflight 的能力缺失、
+        记录侧由架构自动完成（loop 的未知工具、honesty_guard 的诚实缺口、
         bench_tasks 的评测失败归因），这里只负责管理动作。
         """
         length = int(self.headers.get("Content-Length") or 0)
@@ -1385,6 +1385,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/open-folder":
             self._handle_open_folder()
             return
+        if path == "/api/file-content":
+            self._handle_file_content()
+            return
         if path == "/api/upload":
             self._handle_upload()
             return
@@ -1655,6 +1658,10 @@ class _Handler(BaseHTTPRequestHandler):
                 elif kind == "verify":
                     # 收尾验证闸门：系统亲自运行验证命令的真实结果（模型只有解读权）
                     emit("verify", {k: v for k, v in ev.items() if k != "type"})
+                elif kind == "artifacts":
+                    # 产出文件清单：随最终答复送给前端，渲染成可点击展开的文件卡片，
+                    # 保证汇总结果与产出文件对上
+                    emit("artifacts", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "stopped":
                     was_stopped = True
                     emit("stopped", {
@@ -2023,6 +2030,44 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": str(exc)})
         except Exception as exc:  # noqa: BLE001
             self._json({"ok": False, "error": str(exc)})
+
+    # ---------- 读取文件内容（前端文件卡片「展开」内联预览用） ----------
+    def _handle_file_content(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            req = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            self._json({"error": "invalid json"}, 400)
+            return
+        # 安全：只允许工作区之内的文件，越界一律 403（与 _handle_open_folder 同口径）
+        root = Path(self.cfg.workspace_root).resolve()
+        wanted = str(req.get("path") or root)
+        try:
+            p = Path(wanted)
+            if not p.is_absolute():
+                p = root / p
+            target = p.resolve()
+            target.relative_to(root)            # 不在工作区内会抛 ValueError
+        except (ValueError, OSError):
+            self._json({"ok": False, "error": "只允许读取工作区内的文件"}, 403)
+            return
+        if not target.is_file():
+            self._json({"ok": False, "error": "文件不存在（可能已被清理）"}, 404)
+            return
+        try:
+            size = target.stat().st_size
+            if size > 200_000:
+                self._json({"ok": False, "error": "文件过大，无法内联预览",
+                            "size": size})
+                return
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError) as exc:
+            self._json({"ok": False, "error": str(exc)})
+            return
+        cap = 50_000
+        truncated = len(text) > cap
+        self._json({"ok": True, "size": size, "truncated": truncated,
+                    "content": text[:cap]})
 
     # ---------- 手动压缩 ----------
     def _handle_compact(self):

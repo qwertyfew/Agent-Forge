@@ -153,11 +153,25 @@ class Config:
     # 修正机会（现在就做，别把计划当交付），复查仍如此就在答复末尾如实标注「这一步
     # 没有交付」。治「两个指令都不执行，却回复得像已完成」。
     unfinished_gate: bool = True
+    # 通用诚实守卫（agentforge/honesty_guard.py）：基于执行轨迹的证据比对，而非枚举能力。
+    # 任务未达成却把锅甩给用户 / 假装做了 → 给一轮修正机会逼其如实说明。判定与任务类型 /
+    # 数量无关，可扩展，替代旧 preflight 的硬编码能力信号表。
+    honesty_gate: bool = True
+    # 关键事实回显核查（verify.required_fact_tokens）：任务书里明确要求「保留 X /
+    # 确保 Y / 写明 Z」时，提取其中的硬 token（引号内容、时间、日期、数字），
+    # 汇总后程序比对答复是否包含；缺了给一轮修正，仍缺则附系统侧声明。
+    # 治 w3 类「文件写对了、回复把关键事实丢了」。
+    facts_gate: bool = True
 
     # ---- 多 agent 调度（Dispatcher）----
     # 由一个本地决策模型把请求拆成【语义独立】的任务、指派执行 agent、维护共享进度，
     # 任务在 agent 之间接力流转。模型不可用或输出无法解析时自动回退到规则拆解。
     dispatcher_enabled: bool = True
+    # goal 保真核查（dispatcher.missing_deliverables）：拆分完成后程序比对——用户原文
+    # 点名的交付物（文件名 / 路径 / 引号内容）是否都出现在某个 goal 里；缺了先拒收
+    # 重拆一次，仍缺就程序化补进最相关任务的 goal 并记缺口台账。
+    # 治「通读素材并覆盖写入 outline.md 被拆成『分析素材并给结论』」这类范围缩水。
+    goal_fidelity_gate: bool = True
     # 决策/调度模型。默认 Qwen3-14B：拆解与交接能力强、中文好，Q4 量化约 9GB，
     # 16GB 显存能跑（32B 的 Q4 约 20GB，16GB 卡放不下）。可在「可用模型管理」里
     # 换成任意本地或在线模型（留空=关闭调度，回退到规则拆解）。
@@ -283,11 +297,17 @@ class Config:
         cfg.local_facts_gate = bool(a.get("local_facts_gate", True))
         # 收尾自述核查：模型自认「下一步我将…/我无法修改…」且零文件改动时，先修正一轮
         cfg.unfinished_gate = bool(a.get("unfinished_gate", True))
+        # 通用诚实守卫：基于执行轨迹证据比对，任务未达成却甩锅时逼其坦白
+        cfg.honesty_gate = bool(a.get("honesty_gate", True))
+        # 关键事实回显核查：任务书点名「保留 X / 确保 Y」时，答复缺了先修正一轮
+        cfg.facts_gate = bool(a.get("facts_gate", True))
         relay = str(a.get("relay", "brief" if cfg.relay_brief else "full")).strip().lower()
         cfg.relay_brief = relay != "full"
 
         d = a.get("dispatcher", {}) or {}
         cfg.dispatcher_enabled = bool(d.get("enabled", cfg.dispatcher_enabled))
+        # goal 保真核查：拆分后比对交付物名词，丢了先重拆一次、再程序化补进 goal
+        cfg.goal_fidelity_gate = bool(d.get("goal_fidelity_gate", cfg.goal_fidelity_gate))
         cfg.dispatcher_model = str(d.get("model", cfg.dispatcher_model))
         cfg.dispatcher_max_tasks = int(d.get("max_tasks", cfg.dispatcher_max_tasks))
         cfg.dispatcher_parallel = bool(d.get("parallel", cfg.dispatcher_parallel))

@@ -9,6 +9,16 @@
 # 本文件由「评测台」维护：保存前自动备份到 evals/.run/，保存后回读校验。
 
 cases:
+  # ================= 运维 =================
+  - id: f5-git-search-rea
+    category: ops
+    prompt: 帮我在git上检索REA项目
+    expect:
+      contains:
+      - REA
+      - git
+    seed: {}
+    notes: 考察模型是否能正确调用git命令进行远程仓库检索；判定看回复内容（含REA与git），不再用 git ls-remote 网络核验——占位URL example/rea 未必存在，且核验需要 GitHub 凭据（本机 git 还走了 ghproxy 代理），曾弹凭据窗口卡住评测，2026-10-15 报告唯一失败即此
   # ================= 编码 =================
   - id: c1-fix-area
     category: coding

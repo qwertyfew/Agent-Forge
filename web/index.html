@@ -340,9 +340,6 @@
     border-bottom:1px solid var(--line)}
   .sk-sec-head h4{margin:0;font-size:13px;font-weight:650;color:var(--ink)}
   /* ============ 评测台 ============ */
-  .eval-runrow{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 2px;border-bottom:1px solid var(--line)}
-  .eval-runrow label{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink3)}
-  .eval-runrow select,.eval-runrow input{font:inherit;font-size:12.5px;padding:4px 8px;border:1px solid var(--line2);border-radius:8px;background:var(--panel);color:var(--ink)}
   .eval-runhint{font-size:12px;color:var(--ink3)}
   .eval-status{display:flex;align-items:center;gap:8px;padding:10px 12px;margin-top:12px;border:1px solid var(--line2);border-radius:10px;background:var(--panel);font-size:12.5px;color:var(--ink)}
   .eval-spin{width:12px;height:12px;flex:none;border:2px solid var(--line2);border-top-color:var(--ink2);border-radius:50%;animation:evalspin 1s linear infinite}
@@ -557,6 +554,21 @@
   }
   .file-btn:active{transform:translateY(0)}
 
+  /* 产出文件卡片：每张卡片可点击展开内联预览（方案 B：汇总 ↔ 文件对得上） */
+  .file-item{display:flex;flex-direction:column;gap:0;max-width:440px}
+  .file-card{position:relative}
+  .fc-toggle{margin-left:auto;flex:none;width:22px;height:22px;border:1px solid var(--line);
+    background:var(--card);border-radius:6px;color:var(--ink2);cursor:pointer;font-size:11px;
+    line-height:1;display:inline-flex;align-items:center;justify-content:center;
+    transition:all .15s ease}
+  .fc-toggle:hover{border-color:var(--accent);color:var(--accent)}
+  .fc-toggle.open{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+  .fc-preview{margin:6px 0 2px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+    background:var(--code-bg, var(--card));max-height:300px;overflow:auto}
+  .fc-preview pre{margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;
+    line-height:1.5;color:var(--ink);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .fc-preview .fc-meta-line{font-size:10.5px;color:var(--ink3);margin-bottom:6px}
+
   /* 任务计划卡片：无框流排，与思考块/工具时间线同一视觉语言，不再突兀 */
   .plan{padding:2px 0}
   .plan-head{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px}
@@ -656,6 +668,9 @@
      避免「取消/确认清理」被单独挤到下一行 */
   .pane-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:nowrap}
   .pane-actions>*{flex:none;white-space:nowrap}
+  /* 评测台按钮竖排：全选在上，全部评测在下（进全选后变批量评测） */
+  .pane-col{display:flex;flex-direction:column;gap:6px;align-items:stretch}
+  .pane-col>*{flex:none;white-space:nowrap}
   .btn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 14px;border-radius:9px;
     border:1px solid var(--line2);font-size:12.5px;color:var(--ink);background:var(--panel)}
   .btn:hover{border-color:var(--ink3)}
@@ -1329,23 +1344,14 @@
               </p>
             </div>
             <div class="pane-actions">
-              <button class="btn" id="btnEvalRun">开始评测</button>
-              <button class="btn hide" id="btnEvalStop">停止</button>
-              <button class="btn" id="btnEvalSel">全选</button>
+              <div class="pane-col">
+                <button class="btn" id="btnEvalSel">全选</button>
+                <button class="btn hide" id="btnEvalUnsel">取消全选</button>
+                <button class="btn" id="btnEvalRun">全部评测</button>
+                <button class="btn hide" id="btnEvalStop">停止</button>
+              </div>
               <span class="selbar hide" id="selbarEval"></span>
             </div>
-          </div>
-
-          <div class="eval-runrow" id="evalRunRow">
-            <label>分类 <select id="evalCat"><option value="">全部</option></select></label>
-            <label>每条遍数 <select id="evalRepeat">
-              <option value="1" selected>1（单次）</option>
-              <option value="2">2</option>
-              <option value="3">3（pass³）</option>
-              <option value="5">5（pass⁵）</option>
-            </select></label>
-            <label>报告名 <input type="text" id="evalLabel" placeholder="web" maxlength="40"></label>
-            <span class="eval-runhint">评测在后台线程执行，可切走；跑完会弹提示</span>
           </div>
 
           <div class="eval-status hide" id="evalStatus">
@@ -1737,6 +1743,7 @@ function enterSel(view){
   $('btn' + selCap(view) + 'Sel').classList.add('hide');
   renderSelBar(view);
   $('selbar' + selCap(view)).classList.remove('hide');
+  if(view === 'eval') syncEvalRunBtn();
   selRerender[view]();
 }
 function exitSel(view, reload){
@@ -1745,9 +1752,19 @@ function exitSel(view, reload){
   st.checked.clear();
   $('btn' + selCap(view) + 'Sel').classList.remove('hide');
   $('selbar' + selCap(view)).classList.add('hide');
+  if(view === 'eval') syncEvalRunBtn();
   if(reload === undefined || reload === true)
     ({mem: loadMemory, skill: loadSkills, gap: loadGaps, eval: loadEvals})[view]();
   else selRerender[view]();
+}
+/* 评测台专属：进全选后「全部评测」变「批量评测」（只跑勾选条目），
+   同时冒出「取消全选」——只清空勾选不退出全选模式，方便快速重勾几条 */
+function syncEvalRunBtn(){
+  const on = selState.eval.on;
+  const run = $('btnEvalRun'), unsel = $('btnEvalUnsel');
+  if(!run) return;
+  run.textContent = on ? '批量评测' : '全部评测';
+  if(unsel) unsel.classList.toggle('hide', !on);
 }
 async function confirmSel(view){
   const st = selState[view];
@@ -1795,6 +1812,12 @@ $('btnMemSel').onclick = ()=> enterSel('mem');
 $('btnSkillSel').onclick = ()=> enterSel('skill');
 $('btnGapSel').onclick = ()=> enterSel('gap');
 $('btnEvalSel').onclick = ()=> enterSel('eval');
+$('btnEvalUnsel').onclick = ()=>{
+  selState.eval.checked.clear();
+  renderSelBar('eval');
+  selRerender.eval();
+  toast(null, '已取消全部勾选（仍在全选模式），可重新勾选需要的条目', 'mute');
+};
 
 /* ================= 记忆管理 =================
    任务跑完会自动往工作区记忆里沉淀「用户偏好」（规则 + 本地模型提炼），
@@ -2131,6 +2154,8 @@ function gapItem(g){
   box.appendChild(del);
   head.appendChild(box);
   it.appendChild(head);
+  // 小步骤：缺口发生时正在做的子任务 / 多路径方案（架构在每步开始前标记）
+  if(g.last_step) it.appendChild(el('div','sk-path', `小步骤：${g.last_step}`));
   if((g.samples||[]).length) it.appendChild(el('div','sk-desc', g.samples.join('；')));
   it.appendChild(el('div','sk-path', `首次：${g.first || '—'}　最近：${g.last || '—'}`));
   if(gapEditKey === gkey) it.appendChild(gapEditor(g));
@@ -2245,21 +2270,12 @@ async function loadEvals(){
     evalData = {cases: (d.tasks && d.tasks.cases) || [],
                 protected: (d.tasks && d.tasks.protected) || [],
                 categories: (d.tasks && d.tasks.categories) || {}};
-    renderEvalCatOptions();
     renderEvalTasks();
     renderEvalReports(d.reports || []);
     applyEvalState(d.state || {});
   }catch(e){
     renderListError($('evalTaskList'), e, loadEvals);
   }
-}
-function renderEvalCatOptions(){
-  const sel = $('evalCat');
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">全部</option>'
-    + Object.keys(evalData.categories)
-        .map(c => `<option value="${c}">${c}（${evalData.categories[c]}）</option>`).join('');
-  sel.value = [...sel.options].some(o => o.value === cur) ? cur : '';
 }
 function renderEvalTasks(){
   const box = $('evalTaskList');
@@ -2291,12 +2307,16 @@ function evalTaskItem(c){
   head.appendChild(el('span','sk-tag', c._draft ? '草稿' : (c.category || 'general')));
   const layers = Object.keys(c.expect || {}).join('/');
   if(layers) head.appendChild(el('span','sk-ver', layers));
+  // 单条评测：只跑这一条，跑完轮询自动展开报告（服务端 cases=id 过滤）
+  const run1 = el('button','mini-btn','评测');
+  run1.onclick = ()=> runEvalSubset([c.id], run1);
   const edit = el('button','mini-btn','编辑');
   edit.onclick = ()=>{ evalEditRef = evalEditRef === c ? null : c; renderEvalTasks(); };
   const del = el('button','mini-btn','删除');
   del.onclick = ()=> delEvalTask(c);
   // 参考技能管理的 .sk-actions（margin-left:auto）：按钮靠右对齐，不跟在文案后面
   const actions = el('span','sk-actions');
+  actions.appendChild(run1);
   actions.appendChild(edit);
   actions.appendChild(del);
   head.appendChild(actions);
@@ -2398,7 +2418,10 @@ function evalEditor(c){
     catch(e){ toast(save, 'seed 不是合法 JSON：' + e.message, 'bad'); return; }
     const cid = idIn.value.trim();
     if(!cid){ toast(save, 'id 不能为空', 'bad'); return; }
-    if(c._isNew && evalData.cases.some(x => x.id === cid)){
+    // 排除草稿自身：新增草稿在点「新增任务」时就已 unshift 进 cases（仅本地，
+    // 不写服务端），LLM 生成字段后 c.id 已赋值——不排除自己会永远撞上「id 已存在」，
+    // 保存被误拦、任务从未入库（刷新后消失）
+    if(c._isNew && evalData.cases.some(x => x !== c && x.id === cid)){
       toast(save, 'id 已存在：' + cid, 'bad'); return;
     }
     Object.assign(c, {id: cid, category: catSel.value, prompt: promptTa.value,
@@ -2443,7 +2466,13 @@ async function delEvalTask(c){
    其余字段由 LLM 一键生成，生成结果进完整编辑器供核对后再保存 */
 $('btnEvalAdd').onclick = ()=>{
   if(selState.eval.on){ toast(null, '先退出全选模式再新增任务', 'mute'); return; }
-  if(evalEditRef){ toast(null, '已有任务在编辑中，先保存或取消', 'mute'); return; }
+  // 已有任务在编辑：直接取消（草稿丢弃，普通编辑弃掉本地未保存的输入），
+  // 然后照常弹创建窗口——不再用 toast 把用户顶回去
+  if(evalEditRef){
+    const prev = evalEditRef;
+    if(prev._isNew) evalData.cases = evalData.cases.filter(x => x !== prev);
+    evalEditRef = null;
+  }
   const c = {id: '', category: '', prompt: '', expect: {}, seed: {},
              notes: '', _isNew: true, _draft: true};
   evalData.cases.unshift(c);
@@ -2499,21 +2528,38 @@ function startEvalPoll(){
     loadEvals();
   }, 2000);
 }
-$('btnEvalRun').onclick = async ()=>{
-  const repeat = +($('evalRepeat').value || 1);
-  const body = {category: $('evalCat').value, repeat,
-                label: $('evalLabel').value.trim()};
-  try{
-    const r = await fetch('/api/evals/run',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(body)
-    }).then(x=>x.json());
-    if(r.error){ toast($('btnEvalRun'), r.error, 'bad'); return; }
-    toast(null, `评测已启动：${r.total} 条任务，可在本页看进度`, 'ok');
-    showEvalRunning({running:true, done:0, total:r.total, current:'准备中', repeat});
+/* 运行入口：三档共用一个后端（/api/evals/run 的 cases=逗号分隔 id 过滤）。
+   - 全部评测（未进全选）：整集单次跑；
+   - 批量评测（全选模式）：只跑勾选的条目；
+   - 单条评测（条目上的「评测」按钮）：runEvalSubset 只跑那一条。
+   分类/遍数/报告名输入框已按需求移除，固定单次、报告名 web。 */
+function evalRunStart(body, anchor, doneMsg){
+  return fetch('/api/evals/run',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  }).then(x=>x.json()).then(r=>{
+    if(r.error){ toast(anchor, r.error, 'bad'); return false; }
+    toast(null, doneMsg(r.total), 'ok');
+    showEvalRunning({running:true, done:0, total:r.total, current:'准备中', repeat:1});
     startEvalPoll();
-  }catch(e){ toast($('btnEvalRun'), '启动失败：' + e.message, 'bad'); }
+    return true;
+  }).catch(e=>{ toast(anchor, '启动失败：' + e.message, 'bad'); return false; });
+}
+$('btnEvalRun').onclick = ()=>{
+  const st = selState.eval;
+  if(st.on){
+    if(!st.checked.size){ toast($('btnEvalRun'), '没有勾选任何条目：勾选后批量评测，或点「取消全选」', 'bad'); return; }
+    evalRunStart({cases: [...st.checked].join(','), repeat:1, label:'web'},
+                 $('btnEvalRun'), n => `批量评测已启动：${n} 条勾选任务`);
+  }else{
+    evalRunStart({repeat:1, label:'web'}, $('btnEvalRun'),
+                 n => `全部评测已启动：${n} 条任务`);
+  }
 };
+async function runEvalSubset(ids, anchor){
+  await evalRunStart({cases: ids.join(','), repeat:1, label:'web'},
+                     anchor, n => `单条评测已启动（${ids[0]}），跑完自动展开报告`);
+}
 $('btnEvalStop').onclick = async ()=>{
   const r = await fetch('/api/evals/stop',{
     method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
@@ -2533,7 +2579,7 @@ function renderEvalReports(reports){
   $('evalReportCount').textContent = reports.length + ' 份';
   if(!reports.length){
     pre.classList.add('hide');
-    box.appendChild(el('div','task-empty','还没有报告。点「开始评测」跑一轮，报告会自动生成在这里。'));
+    box.appendChild(el('div','task-empty','还没有报告。点「全部评测」跑一轮，报告会自动生成在这里。'));
     return;
   }
   let openEl = null;
@@ -3571,7 +3617,7 @@ function beginLiveTask(info){
     id: info.id || '', startedAt: info.created_at || (Date.now()/1000),
     status: 'running', tools: 0, cost: 0, localOnly: true,
     progress: '准备中…', models: [], stopping: false,
-    round: 0, stepIndex: 0, stepTotal: 0
+    round: 0, stepIndex: 0, stepTotal: 0, filesRendered: false
   };
   rebaseAIHeadTime(info.created_at);
   renderRunBar();
@@ -3842,12 +3888,15 @@ function addFilesCard(files){
   if(!list.length) return;
   const wrap = el('div','file-cards');
   list.slice(0,8).forEach(f=>{
+    const item = el('div','file-item');
     const name = f.rel || stripRoot(f.path);
     const m = /\.([a-z0-9]+)$/i.exec(name||'');
     const ext = m ? m[1].toLowerCase() : '';
-    const btn = el('button','file-card');
+    // 卡片本体：点整张卡用系统程序打开（全局点击代理 → /api/open-folder）；
+    // 行尾的小箭头负责展开/收起内联预览，且会 stopPropagation 以免误触发打开。
+    const btn = el('div','file-card');
     if(f.path) btn.dataset.openpath = f.path;
-    btn.title = '点击打开';
+    btn.title = '点击打开文件';
     const ico = el('span','fc-ico',(ext || 'f').slice(0,4).toUpperCase());
     ico.style.background = FC_COLOR[ext] || '#7a8290';
     btn.appendChild(ico);
@@ -3855,13 +3904,74 @@ function addFilesCard(files){
     meta.appendChild(el('b','fc-name', name));
     meta.appendChild(el('i','fc-size', f.size != null ? fmtSize(f.size) : (ACTION_LABEL[f.action] || '')));
     btn.appendChild(meta);
-    wrap.appendChild(btn);
+    const toggle = el('button','fc-toggle','▸');
+    toggle.type = 'button';
+    toggle.title = '展开 / 收起内容（核对汇总是否对得上文件）';
+    toggle.addEventListener('click', (e)=>{
+      e.stopPropagation();          // 别顺手把文件打开
+      toggleFilePreview(item, toggle, f);
+    });
+    btn.appendChild(toggle);
+    item.appendChild(btn);
+    const prev0 = el('div','fc-preview');   // 默认 hidden，展开时懒加载
+    prev0.hidden = true;
+    item.appendChild(prev0);
+    wrap.appendChild(item);
   });
   if(list.length > 8){
     wrap.appendChild(el('div','fc-more', `其余 ${list.length - 8} 个文件见侧栏「清空」清单`));
   }
   log.appendChild(wrap);
   scrollBottom();
+}
+
+// 懒加载并就地展开/收起某个产出文件的内容，方便用户核对汇总结论与文件是否对得上。
+function toggleFilePreview(item, toggle, f){
+  const prev = item.querySelector('.fc-preview');
+  if(!prev) return;
+  if(!prev.hidden){
+    prev.hidden = true;
+    prev.classList.remove('open');
+    toggle.textContent = '▸';
+    toggle.classList.remove('open');
+    return;
+  }
+  // 展开
+  prev.hidden = false;
+  toggle.textContent = '▾';
+  toggle.classList.add('open');
+  if(prev.dataset.loaded === '1') return;     // 已加载过，直接复用
+  prev.dataset.loaded = '1';
+  const path = f.path || '';
+  if(!path){ prev.textContent = '（该记录没有路径，无法预览）'; return; }
+  prev.innerHTML = '';
+  prev.appendChild(el('div','fc-meta-line','加载中…'));
+  const pre = el('pre','');
+  prev.appendChild(pre);
+  fetch('/api/file-content', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ path })
+  }).then(x=>x.json()).then(r=>{
+    if(!r || r.ok === false){
+      prev.innerHTML = '';
+      prev.appendChild(el('div','fc-meta-line', '读取失败：' + String((r && r.error) || '未知错误')));
+      prev.dataset.loaded = '';
+      return;
+    }
+    let txt = r.content || '';
+    const head = el('div','fc-meta-line',
+      `${fmtSize(r.size || 0)}` + (r.truncated ? ' · 已截断（文件较大）' : ''));
+    prev.innerHTML = '';
+    prev.appendChild(head);
+    const body = el('pre','');
+    body.textContent = txt || '（文件为空）';
+    prev.appendChild(body);
+    scrollBottom();
+  }).catch(()=>{
+    prev.innerHTML = '';
+    prev.appendChild(el('div','fc-meta-line','读取失败（服务未响应）'));
+    prev.dataset.loaded = '';
+  });
 }
 
 async function openClearDialog(){
@@ -5616,6 +5726,12 @@ function handleTaskEvent(ev, data){
           + (data.ok ? '' : '，详见最终答复附带的系统侧验证报告'), !data.ok);
       }
     }
+    else if(ev === 'artifacts'){
+      // 方案 B：汇总层读过的产出文件清单随最终答复一并送来，
+      // 渲染成可点击展开的文件卡片，保证「汇总结论 ↔ 文件」对得上。
+      addFilesCard(data.files);
+      if(liveTask) liveTask.filesRendered = true;   // 标记已渲染，done 分支不再重复渲染
+    }
     else if(ev === 'skill'){
       if(data.auto){
         addPillNote(`已自动沉淀技能 <b>${esc(data.name||'')}</b>`
@@ -5818,8 +5934,10 @@ function handleTaskEvent(ev, data){
       dropLanes();
       // 整段回复收尾：落定工具、冻结头像行、挂「复制/重新回答/朗读」工具条，一次做完
       settleReply('done');
-      // 收尾把本任务的产出文件做成卡片挂在回复末尾（有产出才挂）
-      if(liveTask && liveTask.id){
+      // 收尾把本任务的产出文件做成卡片挂在回复末尾（有产出才挂）。
+      // 正常情况下这批卡片已由前面的 artifacts 事件渲染；这里只在 artifacts
+      // 事件因故没到时兜底补一次，避免重复渲染。
+      if(liveTask && liveTask.id && !liveTask.filesRendered){
         fetch('/api/tasks?id=' + encodeURIComponent(liveTask.id))
           .then(x=>x.json()).then(r=>{
             const t = r && r.task;

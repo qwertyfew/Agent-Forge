@@ -10,7 +10,6 @@ from typing import Any, Iterator
 
 from .config import Config
 from . import gaps
-from . import preflight
 from . import verify as verify_gate
 from .artifact import FILE_TOOLS, classify_tool_write
 from .context import Compressor, measure
@@ -44,20 +43,19 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
 3. **复用优先**：动手实现一个能力之前，先确认它是否已经存在——用 find_tools 或
    工具索引查工具，用 find_files / search_code 查项目里现成的脚本与函数。
    已有的直接复用；禁止在不知道现状的情况下重复造轮子。
-4. **改完要验证**：代码改动后用 run_command 跑测试或脚本，确认真的能跑通。
-5. **复制/备份走命令**：复制、备份文件且要求内容不变时，用 run_command 执行复制命令
+4. **复制/备份走命令**：复制、备份文件且要求内容不变时，用 run_command 执行复制命令
    （Windows：copy /y；跨平台：cp），**禁止 read_file 后用 write_file 重写**——文本往返
    会丢换行符与编码，肉眼看不出来，逐字节比对一跑就现形。任务书声明了逐字节
    比对验证的，写完确认它通过再收工。
-6. **一次只做一步**：可以连续调用多个互不依赖的只读工具，但有依赖时必须等上一步结果。
-7. **交付前自检**：重要产出交付前对照原始要求核对一遍——要求是否都满足、有无编造的细节、
+5. **一次只做一步**：可以连续调用多个互不依赖的只读工具，但有依赖时必须等上一步结果。
+6. **交付前自检**：重要产出交付前对照原始要求核对一遍——要求是否都满足、有无编造的细节、
    有无沿用作废的旧结论。发现就改，再交付。
-8. **记住该记的**：如果这轮对话里出现了**用户的长期偏好**（稳定的倾向 / 风格 / 习惯，
+7. **记住该记的**：如果这轮对话里出现了**用户的长期偏好**（稳定的倾向 / 风格 / 习惯，
    如「回复先给结论」「产出文档一律简体中文」），用 remember 把它写进长期记忆；下次任务会自动读到。
    环境事实（路径 / 端口 / 版本）工具能现查、项目约定（工作方式 / 流程规则）由架构保证，
    两类都**不要**写进记忆。只写偏好，不要写过程。
    某类任务反复用到的方法论，做成 skill 沉淀，而不是每次靠提示词提醒。
-9. **缺能力就登记**：发现完成任务必需的工具/能力或技能在环境里没有时，用 report_gap
+8. **缺能力就登记**：发现完成任务必需的工具/能力或技能在环境里没有时，用 report_gap
    登记（kind=tool 缺工具/能力；kind=skill 缺技能/方法论，spec 写清它需要做什么）。
    登记后按返回指令走：缺工具→如实告知用户无法完成，绝不编造；
    缺技能→用 github_search / web_search 检索通用做法，在最终回复里总结出可操作的流程。
@@ -244,11 +242,6 @@ class Agent:
         msgs = [{"role": "system", "content": self._system()}]
         if self._skill_hint:
             msgs.append({"role": "system", "content": self._skill_hint})
-        # 工具预检通告：任务需要的能力环境里没有时，架构在这里明说「做不到，
-        # 要如实告知用户」。只有真缺才注入（见 preflight.py 的设计说明）。
-        note = getattr(self, "_preflight_note", "")
-        if note:
-            msgs.append({"role": "system", "content": note})
         # 任务笔记：每轮重新读盘注入。它是模型在压缩风暴里唯一的「随身草稿纸」——
         # 旧工具结果被压成一行后，笔记里记下的定义位置/结论仍然完整在场。
         notes = self._task_notes_block()
@@ -364,13 +357,10 @@ class Agent:
         非只读工具执行后缓存全量作废，防止「读了→改了→再读」拿到旧内容。
         """
         stopped = stop_check or (lambda: False)
-        # 工具预检（每次 run 算一次）：任务意图需要的能力环境里没有时，
-        # 生成「无法完成通告」注入 system 层，并记缺口台账。宁可明说缺，不许装作有。
-        try:
-            self._preflight_note = preflight.note_for(
-                user_text, self.registry.names(), self.cfg)
-        except Exception:  # noqa: BLE001  预检坏了不能挡任务
-            self._preflight_note = ""
+        # 小步骤兜底标记：缺口台账记录时要说明「当时在做哪一步」。编排层会为
+        # 每个子任务/多路径方案标更细的值（orchestrator set_step），这里只在
+        # 没人标记时（CLI 直跑 / 单发对话）用任务原文兜底，不覆盖已有标记。
+        gaps.ensure_step(user_text)
         # 任务内即时验证的失败回灌计数（0-3）：每次 run 归零，跨轮次保留，
         # 防「改挂→提醒→再改挂」死循环；到顶后不再回灌，终审交给收尾闸门。
         self.iv_fails = 0

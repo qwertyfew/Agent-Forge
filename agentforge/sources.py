@@ -34,6 +34,11 @@
     3. 整个任务**没有调用过任何能读工作区的工具**（list_dir / read_file /
        find_files / search_code…，跑过命令也算读过）
 
+**窄场景之外的第二路（2026-10-15 收口「答项目现状须查证」）**：任务书不是在问现状，
+而是项目/代码类工作（改代码、修 bug、查结构——判据 `_PROJECT_WORK_RX`），总结里却
+陈述了工作区现状（≥2 项，或单项 + 存在性断言动词），且全程零读取 → 同样出手。
+本轮程序确认的产出文件名由调用方经 `produced` 传入排除——自己刚写的不算「现状」。
+
 两道都在命中后由程序在答复末尾追加声明：内容属「未经核实」。**不改写正文、
 不阻塞收尾**——只是把证据等级写清楚，让读的人知道该不该采信。要真正采信，得先
 去查，那不归这一层管（这一层只负责把话说清楚）。
@@ -322,6 +327,26 @@ _CREATE_RX = re.compile(
 
 # 回复里「在陈述工作区现状」的标记。光有文件名不够——「已创建 tools/x.py」里也有
 # 文件名，但那是在说自己干了什么，不是对现有目录的陈述。
+# 一般化判据（窄场景之外的第二路）：
+# - 项目/代码类任务信号——点名了文件（x.py / index.html）、或提了代码工程词。
+#   刻意不含「项目/文章/介绍」这类软词：写作任务谈项目不算（宁漏勿误）。
+_PROJECT_WORK_RX = re.compile(
+    r"\.(?:txt|md|py|js|ts|json|ya?ml|html?|css|csv|xml|ini|cfg|toml|bat|sh|"
+    r"ps1|xlsx?|docx?|pptx?|pdf|sql|log)\b"
+    r"|(?:代码|函数|脚本|模块|工程|仓库|repo|工作区|目录|依赖|配置|接口|数据库"
+    r"|构建|编译|部署|重构|修复|排查|测试|bug|报错|异常|命令行)",
+    re.I,
+)
+# 存在性断言：「工作区里还有 src/ 与 tools/」「项目里存在 helper.py」——
+# 单个名字 + 这类断言动词也当现状陈述（窄场景只认列举标记）。
+_ASSERT_RX = re.compile(
+    r"(?:存在|包含|里面?有|中有|共有|位于|目录下|文件夹里|其中|还包括|还有|涉及)"
+)
+# 一般场景的「造东西」排除（窄口径，刻意不含 修改/重构/修复/排查——那是主战场）：
+# 任务要的是**设计/规划**一份清单时，答复里枚举的名字是它自己拟的方案，
+# 不是对现状的陈述（「帮我设计目录结构」不该被标成编造）。
+_DESIGN_RX = re.compile(r"(?:设计|规划|起草|提议|提出|生成|新建|创建|撰写)")
+
 _LISTING_RX = re.compile(
     r"(?:根目录|目录结构|文件列表|目录列表|文件结构|文件夹结构|如下文件|以下(?:文件|目录)"
     r"|文件如下|目录如下|包含以下|工作区(?:里|中|内)|当前(?:目录|文件)|现有(?:文件|目录))",
@@ -373,21 +398,48 @@ def local_fact_tokens(summary: str, exclude_text: str = "", cap: int = MAX_HITS)
 
 
 def needs_local_note(summary: str, convo: list[dict] | None,
-                     message: str = "") -> list[str]:
+                     message: str = "", produced: str = "") -> list[str]:
     """是否需要追加「本机事实未经核实」声明；需要就返回命中的文件/目录名。
 
     与 needs_external_note 同一路数：判据全部由程序算，不看模型自报。
+    两路判定（命中任一即出手）：
+
+    - **窄场景**（原有）：任务书就是在问「工作区里现在有什么」→ 现状陈述判据同旧。
+    - **一般场景**（新增，收口「答项目现状须查证」）：任务书是项目/代码类工作
+      （改代码、修 bug、查工程结构……），总结里却在陈述工作区里的文件/目录现状，
+      而全程零读取 → 一样算「拿没看过的东西当看过的写」。
+
+    produced 是本轮程序已确认的产出文件清单（rel 路径拼接的文本）——这些名字
+    是模型自己刚写出来的，不算对现状的陈述。
     """
-    if not asks_workspace_state(message):
+    msg = str(message or "")
+    exclude = msg + ("\n" + str(produced or "") if produced else "")
+    txt = str(summary or "")
+
+    # ---- 窄场景：任务书要的就是工作区现状（原有逻辑，判据不变） ----
+    if asks_workspace_state(msg):
+        if ran_local_inspection(convo):
+            return []
+        tokens = local_fact_tokens(txt, exclude_text=exclude)
+        if not tokens:
+            return []
+        # 单个名字可能是顺手提一句；要「≥2 项」或「明确在列清单」才当成现状陈述，
+        # 免得把「已创建 foo.py」这类正常收尾也标一遍。
+        if len(tokens) >= 2 or _LISTING_RX.search(txt):
+            return tokens
+        return []
+
+    # ---- 一般场景：项目/代码类任务 + 零读取 + 总结断言工作区现状 ----
+    if not _PROJECT_WORK_RX.search(msg) or _DESIGN_RX.search(msg):
         return []
     if ran_local_inspection(convo):
         return []
-    tokens = local_fact_tokens(summary, exclude_text=message)
+    tokens = local_fact_tokens(txt, exclude_text=exclude)
     if not tokens:
         return []
-    # 单个名字可能是顺手提一句；要「≥2 项」或「明确在列清单」才当成现状陈述，
-    # 免得把「已创建 foo.py」这类正常收尾也标一遍。
-    if len(tokens) >= 2 or _LISTING_RX.search(str(summary or "")):
+    # ≥2 项，或单项 + 存在性断言动词（「项目里还存在 helper.py」）才算现状陈述；
+    # 「已修改 x.py」这类收尾回执不在此列（x.py 多半是它刚写的，produced 已排除）。
+    if len(tokens) >= 2 or _ASSERT_RX.search(txt):
         return tokens
     return []
 
@@ -409,8 +461,8 @@ def local_unverified_block(tokens: list[str]) -> str:
 
 # 命中时给模型的一轮修正机会（硬约束：不能就这么把编的内容交出去）。
 LOCAL_FACTS_CORRECTIVE_PROMPT = """【系统侧核查 · 需要修正】
-你刚才的答复描述了工作区里的文件 / 目录，但这次任务从头到尾没有调用过任何读取
-工作区的工具——这些内容不是看来的。被点出的部分：
+你刚才的答复描述了工作区里的文件 / 目录（项目现状），但这次任务从头到尾没有调用过
+任何读取工作区的工具——这些内容不是看来的。被点出的部分：
 
 {tokens}
 
@@ -418,7 +470,7 @@ LOCAL_FACTS_CORRECTIVE_PROMPT = """【系统侧核查 · 需要修正】
 1. 用 list_dir（必要时配合 find_files / read_file）真实看一遍工作区，把写错的地方改对；
 2. 重新给出答复。查到什么写什么，查不到的如实说「未核实」，不要凭印象补全。
 
-若你认为这些内容其实来自任务书本身（不是在陈述现状），说明一句即可。
+若你认为这些内容其实来自任务书本身或你本轮刚写出的文件（不是在陈述现状），说明一句即可。
 你刚才的答复：
 {summary}"""
 

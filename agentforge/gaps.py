@@ -4,8 +4,8 @@
 
 1. tool_missing        模型调用了一个注册表里不存在的工具（loop._execute）——
                        说明模型认为该有这个能力；
-2. capability_missing  预检发现任务意图需要某能力，但对应工具一个都没注册
-                       （preflight.missing_capabilities）；
+2. capability_missing  任务所需工具/能力在环境里一个都没注册（report_gap 登记，
+                       或由诚实守卫在「未达成且不坦白」时归并）；
 3. eval_fail           评测集里某条任务失败（bench_tasks 判定后回写）——
                        同类任务反复 fail 在同一层，就是该补 skill 或工具的信号。
 
@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 import threading
@@ -27,10 +28,76 @@ KIND_LABEL = {
     "capability_missing": "能力缺失",
     "skill_missing": "技能缺失",
     "eval_fail": "评测失败",
+    "honesty": "诚实缺失",
+    "goal_fidelity": "goal 缩水",
 }
 
 _MAX_DETAIL = 300
 _MAX_SAMPLES = 5
+_MAX_STEP = 80
+
+# ---------------------------------------------------------------------------
+# 「小步骤」上下文：缺口登记时要说明缺口发生在哪个步骤上。
+#   单任务（拆不动）→ 小步骤 = 去掉客套前缀的任务原文（「帮我在git检索REA」
+#                      →「在git检索REA」）；
+#   多任务 → 小步骤 = 当前子任务的任务书（如「部署git项目REA到本地」）；
+#   多路径重试 → 小步骤 = 正在真跑的实现路径（架构拟出的那步，如「先检索」）。
+# 编排层每步开始前 set_step，loop.run 只在没人标记时兜底 ensure_step（不覆盖
+# 编排层的更细标记），跑完 reset 防线程复用串味。评测/诚实守卫等脱离该上下文
+# 的记录源直接给 record 传 step 参数。
+# ---------------------------------------------------------------------------
+_CURRENT_STEP: contextvars.ContextVar = contextvars.ContextVar("gap_step",
+                                                               default=None)
+
+_POLITE_RX = re.compile(
+    r"^(?:麻烦|劳驾|帮忙一下|帮我|帮忙|请你|请|我想|我要|我需要|能不能|可不可以)"
+    r"[,，。：:！!？?\s]*")
+
+
+def norm_step(text, cap: int = _MAX_STEP) -> str:
+    """任务原文 → 小步骤口径：压平空白、剥掉开头的客套前缀、截断。
+
+    「帮我在git检索REA」→「在git检索REA」；「请帮我列出项目目录」→「列出项目目录」。
+    """
+    s = re.sub(r"\s+", " ", str(text or "")).strip()
+    prev = None
+    while prev != s:                      # 「请帮我…」这类叠词逐层剥
+        prev = s
+        s = _POLITE_RX.sub("", s).strip()
+    return s[:cap]
+
+
+def set_step(text: str):
+    """标记当前小步骤（子任务任务书 / 多路径方案）。返回 token 供 reset_step。"""
+    return _CURRENT_STEP.set(norm_step(text) or None)
+
+
+def reset_step(token) -> None:
+    """恢复 set_step 之前的值（token 为 None 表示当时没设过，直接清空）。"""
+    if token is not None:
+        _CURRENT_STEP.reset(token)
+    else:
+        _CURRENT_STEP.set(None)
+
+
+def ensure_step(text: str):
+    """只在没人标记时设置（loop.run 兜底用，不覆盖编排层更细的标记）。
+
+    返回 token 或 None（None = 原本就有标记，无需 reset）。
+    """
+    if _CURRENT_STEP.get() is None:
+        return set_step(text)
+    return None
+
+
+def clear_step() -> None:
+    """任务收尾清空，防线程复用把旧步骤带进下一个任务的台账。"""
+    _CURRENT_STEP.set(None)
+
+
+def current_step() -> str:
+    """当前小步骤（未标记时为空串）。"""
+    return _CURRENT_STEP.get() or ""
 
 
 def _path(cfg) -> Path:
@@ -41,8 +108,13 @@ def _empty() -> dict:
     return {"version": 1, "items": {}}
 
 
-def record(kind: str, key: str, detail: str = "", cfg=None) -> None:
-    """记一条缺口。kind/key 见模块 docstring；detail 是一句人话说明。"""
+def record(kind: str, key: str, detail: str = "", cfg=None, step: str = "") -> None:
+    """记一条缺口。kind/key 见模块 docstring；detail 是一句人话说明；
+    step 是当前小步骤——不传就读上下文（set_step / ensure_step 标记的值）。
+
+    步骤记两处：it["last_step"]（该缺口最近发生的小步骤，页面单独展示）+
+    每条样例加【小步骤】前缀（样例自描述，回看时不用猜当时在干什么）。
+    """
     if cfg is None:
         return
     kind = str(kind or "").strip()
@@ -50,6 +122,7 @@ def record(kind: str, key: str, detail: str = "", cfg=None) -> None:
     if not kind or not key:
         return
     try:
+        step = norm_step(step) or current_step()
         with _LOCK:
             p = _path(cfg)
             try:
@@ -67,9 +140,14 @@ def record(kind: str, key: str, detail: str = "", cfg=None) -> None:
             if not it.get("first"):
                 it["first"] = now
             it["last"] = now
+            if step:
+                it["last_step"] = step
             detail = re.sub(r"\s+", " ", str(detail or "")).strip()[:_MAX_DETAIL]
-            if detail and detail not in it["samples"]:
-                it["samples"] = (it["samples"] + [detail])[-_MAX_SAMPLES:]
+            if detail:
+                if step:
+                    detail = f"【{step}】{detail}"
+                if detail not in it["samples"]:
+                    it["samples"] = (it["samples"] + [detail])[-_MAX_SAMPLES:]
             tmp = p.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1),
                            encoding="utf-8")

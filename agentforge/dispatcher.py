@@ -25,6 +25,7 @@ import threading
 from dataclasses import dataclass, field
 
 from .config import Config
+from . import gaps
 from . import verify as verify_gate
 from .planner import KIND_DIM, KIND_LABEL, kind_of, resolve_kind, short_title, split_task
 
@@ -84,6 +85,11 @@ SYNTH_SYSTEM = """你是 AgentForge 的主协调者。下面是一个总任务�
 - 只保留用户真正关心的结论与产出（改了哪些文件、得到什么结果），不要复述过程；
 - 子任务之间有先后关系的，按最终状态叙述，不要罗列中间态；
 - 不要编造清单里没有的事实；
+- 【读产出文件】如果下面附带了「产出文件内容」，必须据此核对：文件里真正写了什么
+  关键结果（数字 / 日期 / 结论 / 要点），就要写进答复；不得只回一句「已生成 X」而把
+  文件里的关键事实漏掉——用户要看的是文件内容，不是一句回执。
+- 【对上文件名】凡答复涉及某个产出文件，请明确写出它的文件名（如「见 report.md」），
+  让用户能把汇总结论和前端对应的文件卡片对上。
 - 【语言】即使子任务结果、工具输出或摘要里有英文，答复也必须全部用简体中文
 （用户长期偏好如此，专有名词和代码除外）。"""
 
@@ -135,6 +141,89 @@ def is_simple_chat(t: "TaskSpec") -> bool:
         return False
     low = goal.lower()
     return not any(h in low for h in _TOOL_HINTS)
+
+
+# ---------------------------------------------------------------------------
+# goal 保真核查（收口「绝不缩小任务范围」——全链路唯一「拆错=交付错」的条款）
+#
+# 调度器把「通读素材并覆盖写入 outline.md」拆成「分析素材并给结论」，执行者照
+# 缩水后的 goal 干活，交付物凭空消失——拆分质量没有架构校验，这里补上：
+# 程序比对 + 一轮修正（重拆一次）+ 仍缺则程序化补进 goal。
+# 宁漏勿误：只认三类**点名的**交付物——文件名、路径、引号内容；动词短语
+# （「写个报告」）不认，避免 corrective 重拆被泛词空转。
+# ---------------------------------------------------------------------------
+
+# 文件 / 路径 token：带可识别扩展名（含 Windows 反斜杠路径与带目录前缀的相对路径）。
+_FILE_TOK_RX = re.compile(
+    r"[\w\u4e00-\u9fff.\-/\\]+\.(?:txt|md|markdown|py|js|ts|jsx|tsx|json|ya?ml|"
+    r"html?|css|csv|log|xml|ini|cfg|toml|bat|sh|ps1|xlsx?|docx?|pptx?|pdf|sql|env)\b",
+    re.I,
+)
+# 引号内容：用户特意加引号点名的东西（「结论先行」），丢了同样是缩水。
+_QUOTE_TOK_RX = re.compile(r"[「『\"']([^「』\"'\n]{2,40})[」』\"']")
+
+
+def deliverable_tokens(message: str, cap: int = 12) -> list[str]:
+    """用户原文里点名的交付物 token（去重保序限量）。"""
+    txt = str(message or "")
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _FILE_TOK_RX.finditer(txt):
+        t = m.group(0).rstrip(".,;、。")
+        k = t.lower().replace("\\", "/")
+        if k and k not in seen:
+            seen.add(k)
+            out.append(t)
+            if len(out) >= cap:
+                return out
+    for m in _QUOTE_TOK_RX.finditer(txt):
+        t = m.group(1).strip()
+        k = t.lower()
+        if len(t) >= 2 and k not in seen:
+            seen.add(k)
+            out.append(t)
+            if len(out) >= cap:
+                return out
+    return out
+
+
+def missing_deliverables(message: str, tasks: list["TaskSpec"]) -> list[str]:
+    """原文点名的交付物里，哪些没出现在任何 goal 里（归一后比对，\\ 与 / 等价）。"""
+    if not tasks:
+        return []
+    hay = "\n".join(str(t.goal or "") for t in tasks)
+    hay = hay.lower().replace("\\", "/")
+    miss = []
+    for t in deliverable_tokens(message):
+        k = t.lower().replace("\\", "/")
+        if k not in hay:
+            miss.append(t)
+    return miss
+
+
+def _fidelity_retry_text(message: str, missing: list[str]) -> str:
+    """点名丢失的交付物，让决策模型重拆一次（一轮修正）。"""
+    return (str(message) + "\n\n【系统侧拆解核查 · 必须重拆】上面的原始请求里有这些"
+            "用户明确要求的交付物，上一次拆分把它们弄丢了："
+            + "、".join(f"「{t}」" for t in missing)
+            + "。重新拆分：每个交付物必须原样出现在对应任务的 goal 里"
+            "（文件名、路径、引号内容一字不改），不许缩小任务范围，"
+            "不许把交付物改成别的形式。")
+
+
+def _sentence_of(text: str, tok: str) -> str:
+    """token 在原文里所在的句子（用于挑「最相关」的 task 补写）。"""
+    for s in re.split(r"[。！？\n；;]", str(text or "")):
+        if tok.lower() in s.lower():
+            return s
+    return tok
+
+
+def _bigram_overlap(a: str, b: str) -> int:
+    """字符 bigram 交集数（粗粒度相关性，够挑任务即可）。"""
+    sa = {a[i:i + 2] for i in range(max(0, len(a) - 1))} if a else set()
+    sb = {b[i:i + 2] for i in range(max(0, len(b) - 1))} if b else set()
+    return len(sa & sb)
 
 
 @dataclass
@@ -382,10 +471,60 @@ class Dispatcher:
             p = self._llm_plan(message, entries)
             if p is not None:
                 self._augment_copy_checks(p.tasks)
+                if getattr(self.cfg, "goal_fidelity_gate", True):
+                    p = self._enforce_goal_fidelity(message, p, entries, allow_retry=True)
                 return p
         p = self._rules_plan(message, entries)
         self._augment_copy_checks(p.tasks)
+        if getattr(self.cfg, "goal_fidelity_gate", True):
+            # 规则拆解的 goal 是原文切片，交付物按构造保留；万一 split 重写丢了，
+            # 只程序化补进 goal（没有 LLM 可重拆）。
+            p = self._enforce_goal_fidelity(message, p, entries, allow_retry=False)
         return p
+
+    def _enforce_goal_fidelity(self, message: str, p: DispatchPlan,
+                               entries: list[dict], allow_retry: bool = True) -> DispatchPlan:
+        """goal 保真（程序比对 + 一轮修正）：用户点名的交付物不得在拆分中丢失。
+
+        1. 比对：原文的文件名 / 路径 / 引号内容是否都出现在某个 goal 里；
+        2. 缺了且允许重试 → 点名丢失项让决策模型重拆一次，两版取缺得少的；
+        3. 仍缺 → 程序化把缺的交付物补进最相关任务的 goal（补写声明，同
+           _augment_copy_checks 的既有模式），并记缺口台账。
+        """
+        missing = missing_deliverables(message, p.tasks)
+        if not missing:
+            return p
+        if allow_retry:
+            retry = self._llm_plan(_fidelity_retry_text(message, missing), entries)
+            if retry is not None:
+                self._augment_copy_checks(retry.tasks)
+                still = missing_deliverables(message, retry.tasks)
+                if len(still) < len(missing):
+                    p, missing = retry, still
+        if missing:
+            self._augment_missing_deliverables(p.tasks, message, missing)
+            gaps.record("goal_fidelity", "shrunk",
+                        "拆分丢失交付物，已程序化补进 goal：" + "、".join(missing),
+                        self.cfg, step=message)
+        return p
+
+    def _augment_missing_deliverables(self, tasks: list[TaskSpec],
+                                      message: str, missing: list[str]) -> None:
+        """把丢失的交付物补进最相关任务的 goal；挑不出就放链上最后一个任务
+        （依赖链末端通常是最终交付者）。"""
+        if not tasks:
+            return
+        for tok in missing:
+            sent = _sentence_of(message, tok)
+            best, best_score = None, 0
+            for t in tasks:
+                score = _bigram_overlap(sent, t.goal)
+                if score > best_score:
+                    best, best_score = t, score
+            target = best or tasks[-1]
+            target.goal += (f"\n【系统侧范围保全】用户原文明确要求交付「{tok}」，"
+                            "本任务必须覆盖这一交付物：文件名 / 路径 / 内容形式原样照做，"
+                            "不得省略或替换成别的形式。")
 
     def _augment_copy_checks(self, tasks: list[TaskSpec]) -> None:
         """给复制/备份类任务的 goal 补逐字节比对验证声明（f4 教训）。
@@ -555,14 +694,32 @@ class Dispatcher:
         return out or text
 
     # ---------------------------------------------------------- 收尾汇总
-    def synthesize(self, message: str, items: list[tuple[str, str]]) -> str:
-        """把各 agent 的结果整合成一份给用户的答复（决策模型完成）。"""
+    def synthesize(self, message: str, items: list[tuple[str, str]],
+                   artifacts: list[dict] | None = None) -> str:
+        """把各 agent 的结果整合成一份给用户的答复（决策模型完成）。
+
+        artifacts（方案 B）：本轮各子任务的产出文件内容，每项是
+        {title, rel, content}。协调者据此把文件里的关键结果带进答复，
+        并写出文件名，使汇总结果与前端文件卡片对上。
+        """
         if not self.available() or not items:
             return ""
         listing = "\n".join(f"[{title}] {summary}" for title, summary in items if summary)
         if not listing.strip():
             return ""
         user = f"【总任务】\n{message}\n\n【各 agent 的结果】\n{listing}"
+        # 方案 B：把产出文件内容塞给协调者，让它据此核对、把关键事实带进答复
+        if artifacts:
+            blocks = []
+            for a in artifacts:
+                rel = a.get("rel") or a.get("path") or ""
+                title = a.get("title") or ""
+                content = a.get("content") or ""
+                head = f"产出文件：{rel}" + (f"（来自子任务「{title}」）" if title else "")
+                blocks.append(f"{head}\n<文件内容>\n{content}\n</文件内容>")
+            if blocks:
+                user += "\n\n【产出文件内容（必须据此核对，关键结果要写进答复）】\n" \
+                        + "\n\n".join(blocks)
         try:
             return self._chat(SYNTH_SYSTEM, user, num_predict=3072, temperature=0.3)
         except Exception:  # noqa: BLE001

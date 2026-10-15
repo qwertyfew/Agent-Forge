@@ -218,7 +218,7 @@ def main() -> int:
                         f"失败层 {final.get('layer', '?')}: "
                         f"{str(final.get('detail', ''))[:120]}"
                         + (f"（pass^{reps}={p}/{reps}）" if reps > 1 else ""),
-                        ledger_cfg)
+                        ledger_cfg, step=getattr(case, "prompt", ""))
 
         for r_i, r in enumerate(recs):
             tag = f"#{r_i + 1}" if reps > 1 else ""

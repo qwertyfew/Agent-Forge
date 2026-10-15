@@ -270,7 +270,7 @@ class EvalsDesk:
                                 f"失败层 {final.get('layer', '?')}: "
                                 f"{str(final.get('detail', ''))[:120]}"
                                 + (f"（pass^{reps}={p}/{reps}）" if reps > 1 else ""),
-                                self.cfg)
+                                self.cfg, step=getattr(case, "prompt", ""))
         except Exception as e:  # noqa: BLE001
             st["error"] = f"{type(e).__name__}: {e}"
 
@@ -311,7 +311,11 @@ class EvalsDesk:
         if not RESULTS_DIR.is_dir():
             return []
         out = []
-        for p in sorted(RESULTS_DIR.glob("*.md"), reverse=True):
+        # 从新到旧：按修改时间倒序（文件名倒序是历史等价实现，报告名内嵌时间戳；
+        # 改为 mtime 后手动放进来的非标准命名报告也保证新出的排第一条）
+        mds = list(RESULTS_DIR.glob("*.md"))
+        mds.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+        for p in mds:
             out.append({"name": p.name, "size": p.stat().st_size,
                         "mtime": time.strftime("%Y-%m-%d %H:%M",
                                                time.localtime(p.stat().st_mtime))})

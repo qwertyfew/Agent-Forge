@@ -88,7 +88,9 @@ def main() -> None:
         def run(self, convo, prompt, **kw):
             # 模拟真实 agent：把用户消息追加进历史，回一条 assistant
             StubAgent.corrective_calls += 1
-            assert ("系统侧验证结果" in prompt) or ("系统侧核查结果" in prompt), prompt[:80]
+            # 修正提示必须是系统侧出的（验证命令 / 产物核查 / 本机事实 / 诚实守卫 /
+            # 关键事实各道闸门的 corrective 前缀都是「系统侧」），不能是模型自说自话
+            assert "系统侧" in prompt, prompt[:80]
             hist = [*convo, {"role": "user", "content": prompt},
                     {"role": "assistant", "content": "修正后的总结：验证实际失败"}]
             yield {"type": "assistant", "content": "修正后的总结：验证实际失败",
@@ -123,11 +125,19 @@ def main() -> None:
     check("B 失败：修正轮历史并入", any(m.get("role") == "assistant" and
           "修正后的总结" in str(m.get("content")) for m in holder["convo"]))
 
-    # C) 无验证命令 + 谎报通过 + 全程没跑命令 → 追加未验证声明
+    # C) 无验证命令 + 谎报通过 + 全程没跑命令 → 闸门不介入（2026-10-15 用户裁定：
+    #    是否调用过 run_command 属执行过程、与任务完成无关；产物已由验证命令分支
+    #    独立验收。原「未经系统确认」分支已删，谎报措辞由评测层判定，这里锁定
+    #    闸门不再做过程检查）
     ag = StubAgent()
+    StubAgent.corrective_calls = 0
     holder = {"summary": "全部完成，验证通过", "convo": [{"role": "user", "content": "x"}]}
     evs = list(_verify_gate(ag, "帮我写个总结", holder))
-    check("C 谎报：附未验证声明", "未经系统确认" in holder["summary"], holder["summary"])
+    check("C 谎报：闸门不做过程检查（分支已删）",
+          holder["summary"] == "全部完成，验证通过" and StubAgent.corrective_calls == 0,
+          holder["summary"])
+    check("C 谎报：零事件",
+          all(e.get("type") != "verify" for e in evs), repr([e.get("type") for e in evs]))
 
     # D) 无验证命令 + 如实总结 → 不追加任何东西
     ag = StubAgent()
@@ -623,16 +633,15 @@ def main() -> None:
           note_absent == "", repr(note_absent))
 
     # ---------- 第四轮评测三处回归（web-20261015-102732，23/24）----------
-    # R18 c3 根因：C 分支先追加了「未经系统确认」，随后的产物核查修正轮把
-    # summary 整个重写，声明被抹掉——谎报静默放行。修法：程序侧声明收进
-    # notes 统一末尾拼接，修正轮只重写模型正文。
+    # R18 c3 根因：程序侧声明曾被产物核查修正轮的 summary 重写抹掉——谎报静默
+    # 放行。修法：程序侧声明收进 notes 统一末尾拼接，修正轮只重写模型正文。
+    # （2026-10-15 更新：「未经系统确认」过程检查分支已按用户裁定删除，
+    #   这里核对的是现行仍存在的产物核查声明。）
     ag = StubAgent()
     StubAgent.corrective_calls = 0
     holder = {"summary": "搞定了，验证通过。报告已写入 docs/ghost3.md", "convo": []}
     evs = list(_verify_gate(ag, "帮我写个总结", holder))
     check("R18 谎报+产物缺失：修正轮照常触发", StubAgent.corrective_calls == 1)
-    check("R18 程序声明不被修正轮吞掉：未经系统确认仍在",
-          "未经系统确认" in holder["summary"], holder["summary"][-200:])
     check("R18 程序声明不被修正轮吞掉：产物核查声明仍在",
           "【系统侧核查】" in holder["summary"] and "ghost3.md" in holder["summary"],
           holder["summary"][-200:])

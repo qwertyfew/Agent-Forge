@@ -35,6 +35,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 # 「验证：xxx」这类声明行。容忍 markdown 列表符、编号、「验证脚本/命令/方式」等变体。
@@ -354,6 +355,15 @@ def run_verify_cmd(cmd: str, root: str | Path,
                "PATH": exe_dir + os.pathsep
                        + str(Path(exe_dir) / "Scripts") + os.pathsep
                        + os.environ.get("PATH", "")}
+        # 核验命令必须全自动：禁掉 git 的凭据弹窗（credential helper GUI /
+        # 终端账号密码提示）——评测台跑 `git ls-remote` 类核验时曾在用户机器上
+        # 弹出过凭据窗口，卡到人工输入才继续。置空 helper 后 git 退回终端提示，
+        # 再用 GIT_TERMINAL_PROMPT=0 把终端提示也关死 → 需要凭据的核验会立刻
+        # 失败（exit 128）而不是挂起等输入。判定回归到「命令是否通过」本身。
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GIT_CONFIG_COUNT"] = "1"
+        env["GIT_CONFIG_KEY_0"] = "credential.helper"
+        env["GIT_CONFIG_VALUE_0"] = ""
         proc = subprocess.run(
             cmd, cwd=str(root), shell=True,
             capture_output=True, timeout=timeout, env=env,
@@ -889,3 +899,140 @@ UNFINISHED_NOTE = (
     "【系统侧核查】本回复承认仍有未完成的工作（或自述做不到），而本任务全程没有产生任何"
     "文件改动。系统已给过一轮修正机会。此处如实标注：**这一步没有交付**。"
 )
+
+
+# ---------------------------------------------------------------------------
+# 关键事实回显核查（收口「答案必须进答复」，w3 类 norm 失败的 harness 侧兜底）
+#
+# 任务书里明确要求「保留 X / 确保 Y / 写明 Z」时，程序从这些要求句里提取**硬 token**
+# （引号内容 / 时间 / 日期 / 数字），汇总后比对最终答复是否包含；缺了给一轮修正，
+# 仍缺就在答复末尾附系统侧声明。判定纯程序比对，与评测 judge 的 contains_norm 同思路，
+# 但从「事后判卷」前移到「收尾前逼模型补上」。
+# ---------------------------------------------------------------------------
+
+# 要求句信号：句子里出现这些词，才认为是任务书在点名「答复里必须有」的内容。
+_REQ_SENT_RX = re.compile(
+    r"(?:保留|写明|注明|写上|标出|务必|必须|一定要|不要漏|确保|包含|含有|给出|回答|记住|体现)"
+)
+
+# 硬 token：引号内容 / 时间 / 日期 / 数字（含千分位、小数、百分号、万/亿）。
+_QUOTED_RX = re.compile(r"[「『\"']([^「』\"'\n]{1,40})[」』\"']")
+_TIME_RX = re.compile(r"\d{1,2}[:：]\d{2}|\d{1,2}点(?:\d{1,2}分?)?")
+# 日期要求月/日至少有其一：`[-/年]` 后全可选会把路径段「reports/2026/」里的
+# 裸「2026/」当成日期（R19 f1 端到端回归）。
+_DATE_RX = re.compile(r"(?:19|20)\d{2}[-/年]\d{1,2}(?:[-/月]\d{1,2})?[日号]?")
+_NUM_RX = re.compile(r"\d[\d,]*(?:\.\d+)?(?:%|万|亿)?")
+# 掩码用：路径段（reports/2026、docs/r.md）与反引号代码里的数字是**定位符**，
+# 不是要回显的事实，先掩掉再取数字。
+_PATH_RX = re.compile(r"(?:[\w\u4e00-\u9fff.-]+[\\/])+(?:[\w\u4e00-\u9fff.-]+)?")
+_CODE_RX = re.compile(r"`[^`\n]+`")
+
+MAX_FACT_TOKENS = 8      # 要求句里最多取几个 token（防极端任务书刷屏）
+
+
+def _fact_norm(s: str) -> str:
+    """比对口径：NFKC 全半角统一 → 小写 → 去空白与常见标点。
+
+    「14：00」与「14:00」、「1,000」与「1000」算同一个事实；中文数字不转
+    （「三个」≠「3」，宁可修正一轮让模型写准，也不猜）。
+    """
+    s = unicodedata.normalize("NFKC", str(s or "")).casefold()
+    return re.sub(r"[\s，。：:、,;；！!？?·\-—_/\\()（）\"'「」『』]+", "", s)
+
+
+def _mask(buf: list[str], spans: list[tuple[int, int]]) -> None:
+    for a, b in spans:
+        for i in range(max(0, a), min(len(buf), b)):
+            buf[i] = " "
+
+
+def _tokens_from_sentence(s: str) -> list[str]:
+    """一个要求句里的硬 token：引号 / 时间 / 日期 / 代码 / 路径先取或掩掉，
+    最后取数字。
+
+    掩码是必须的：不掩的话 _NUM_RX 会把「14:00」再拆出「14」「00」两条假 token；
+    路径段（reports/2026）里的数字是定位符，同样不能当事实。
+    """
+    out: list[str] = []
+    spans: list[tuple[int, int]] = []
+    for rx in (_QUOTED_RX, _TIME_RX, _DATE_RX):
+        for m in rx.finditer(s):
+            t = (m.group(1) if m.lastindex else m.group(0)).strip()
+            if t:
+                out.append(t)
+            spans.append(m.span())          # 引号取内容，但掩掉整个引号跨度
+    for rx in (_CODE_RX, _PATH_RX):
+        for m in rx.finditer(s):
+            spans.append(m.span())          # 只掩不取
+    if spans:
+        buf = list(s)
+        _mask(buf, spans)
+        s2 = "".join(buf)
+    else:
+        s2 = s
+    for m in _NUM_RX.finditer(s2):
+        t = m.group(0).strip()
+        if t:
+            out.append(t)
+    return out
+
+
+def required_fact_tokens(text: str, cap: int = MAX_FACT_TOKENS) -> list[str]:
+    """从任务书的要求句里提取「答复必须包含」的硬 token（去重保序限量）。
+
+    只看含要求信号的句子；「验证：…」行里的数字是验收参数，不是要回显的事实，
+    整行排除。宁漏勿误：没有要求句就没有 token。
+    """
+    txt = str(text or "")
+    # 排除验证命令行：那里的数字（预期输出、退出码）是给闸门亲跑用的
+    lines = [ln for ln in txt.splitlines()
+             if not ln.strip().startswith(("验证", "verify"))]
+    sents = re.split(r"[。！？\n；;]", "\n".join(lines))
+    out: list[str] = []
+    seen: set[str] = set()
+    for s in sents:
+        if not _REQ_SENT_RX.search(s):
+            continue
+        for t in _tokens_from_sentence(s):
+            if len(t) > 40:
+                continue
+            k = _fact_norm(t)
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            out.append(t)
+            if len(out) >= cap:
+                return out
+    return out
+
+
+def missing_required_facts(summary: str, text: str) -> list[str]:
+    """任务书要求的关键事实里，哪些没出现在答复里（归一后比对）。"""
+    toks = required_fact_tokens(text)
+    if not toks:
+        return []
+    hay = _fact_norm(summary)
+    return [t for t in toks if _fact_norm(t) not in hay]
+
+
+FACTS_CORRECTIVE_PROMPT = """【系统侧核查 · 需要修正】
+任务书里明确要求保留 / 给出以下关键内容，但你的答复里没有出现：
+
+{tokens}
+
+请重新给出答复：把这些内容**原样写进去**（数字、时间、日期、引号里的文字一字不改，
+不要换成中文数字或约略说法）。
+若某项确实无法给出，如实说明原因，不要编造。
+你刚才的答复：
+{summary}"""
+
+
+def missing_facts_block(tokens: list[str]) -> str:
+    """附在最终答复末尾的系统侧声明。程序写的，模型只有解读权。"""
+    lines = [
+        "【系统侧核查】任务书明确要求保留 / 给出下列关键内容，系统在最终答复里"
+        "未能核对到它们（已给过一轮修正机会）：",
+    ]
+    lines += [f"- {t}" for t in tokens]
+    lines.append("请以产出文件为准核对这些事实。（此核查由程序完成，不依赖模型自报。）")
+    return "\n".join(lines)

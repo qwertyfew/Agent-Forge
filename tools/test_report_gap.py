@@ -3,7 +3,8 @@
 口径：调用即证据——report_gap 的登记动作全在架构侧（gaps.record 原样入账），
 返回值是写死的后续动作指令；kind=tool 记 capability_missing、kind=skill 记
 skill_missing；非法 kind / 空 name 拒绝且不入账。同时锁定三处接线：
-toolselect.DEFAULT_CORE 常驻、preflight 邮件能力项、系统提示词第 8 条。
+toolselect.DEFAULT_CORE 常驻、honesty_guard 缺诚实兜底（未达成且不坦白 →
+逼供 + 入台账）、系统提示词第 8 条（缺能力就登记）。
 删掉任何一条断言，对应行为坏了这里必须变红。
 """
 from __future__ import annotations
@@ -15,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agentforge import gaps, preflight
+from agentforge import gaps, honesty_guard
 from agentforge.toolselect import DEFAULT_CORE
 from agentforge.tools.base import SAFE
 from agentforge.tools.gap import build_gap_tools
@@ -99,20 +100,19 @@ with tempfile.TemporaryDirectory() as td:
 # R12 常驻工具名单里有 report_gap（模型随时要能登记，不能靠按需检索才出现）
 check("R12 DEFAULT_CORE 含 report_gap", "report_gap" in DEFAULT_CORE, "")
 
-# R13 预检能力表包含邮件：信号命中且没有 send_email → 缺失
-miss = preflight.assess("帮我给张三发一封邮件约明天开会", [])
-check("R13 邮件意图命中且缺工具 → 判定缺失",
-      any(m["key"] == "email" for m in miss), str(miss))
+# R13 诚实守卫：未达成且不坦白 → 判 force_confess（旧 preflight 枚举不到的甩锅情形）
+r = honesty_guard.assess("把这个包发布到 npm",
+                         "已成功发布到 npm。请把你的 npm token 提供给我。", [])
+check("R13 未达成+不坦白 → force_confess", r["verdict"] == "force_confess", str(r))
 
-# R14 环境里有 send_email → 不缺失（能力在就闭嘴）
-check("R14 有 send_email 不通告", preflight.assess("发一封邮件", ["send_email"]) == [], "")
-
-# R15 预检通告指路 report_gap（预检缺能力时也要落进缺口栏目）
+# R14 诚实守卫缺口入台账（kind=honesty）：把诚实缺失也落进缺口栏目
 with tempfile.TemporaryDirectory() as td2:
-    note = preflight.note_for("发一封邮件", [], StubCfg(Path(td2)))
-    check("R15 预检通告指路 report_gap", "report_gap" in note, note[:80])
+    honesty_guard.assess("把这个包发布到 npm",
+                         "已成功发布到 npm。请把你的 npm token 提供给我。", [],
+                         cfg=StubCfg(Path(td2)))
     snap = gaps.snapshot(StubCfg(Path(td2)))
-    check("R16 预检缺失也入台账", any(i["key"] == "email" for i in snap["items"]), "")
+    check("R14 诚实缺口入台账(honesty)",
+          any(i["kind"] == "honesty" for i in snap["items"]), str(snap))
 
 # R17 系统提示词第 8 条：缺能力就登记
 check("R17 系统提示含「缺能力就登记」规则",
