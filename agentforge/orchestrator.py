@@ -192,6 +192,12 @@ def _worth_dispatch(message: str, pool_size: int) -> bool:
     return needs_plan(message, pool_size) or len((message or "").strip()) >= 60
 
 
+# 停机拦截的连续上限（Claude Code Stop hook 同款机制）：验证失败最多拦这么多轮，
+# 每轮结束重新亲跑验证。Claude Code 默认 8、社区实践常用 4；本地评测批量跑，
+# 每轮拦截都是完整的 agent 循环（分钟级），取 2 兼顾纠错机会与跑批墙钟。
+_VERIFY_BLOCK_ROUNDS = 2
+
+
 def _verify_gate(agent, message: str, holder: dict,
                  auto_approve=None, stop_check=None, read_cache=None,
                  snapshot: dict[str, float] | None = None):
@@ -217,21 +223,33 @@ def _verify_gate(agent, message: str, holder: dict,
     convo = holder.get("convo") or []
     summary = holder.get("summary") or ""
     cmd = verify_gate.extract_verify_cmd(message, cfg.workspace_root)
+    expect = ""
     corrected = False
     if cmd:
+        # 停机拦截（Claude Code Stop hook 同款）：验证失败就不许收工，把真实
+        # 结果回灌当下一轮指令，连续拦截最多 _VERIFY_BLOCK_ROUNDS 轮防死循环；
+        # 每轮拦截结束后重新亲跑验证——修好了立即放行，修不了如实说明后放行
+        # 并附权威报告。模型说修好不算，程序说了算。
+        blocks = 0
         res = verify_gate.run_verify_cmd(cmd, cfg.workspace_root)
+        # 任务书写了「确认输出 24」这类期望 → 程序亲自比对：exit=0 但输出
+        # 不含期望值也算验证失败（c1 测出的盲区——谎报「输出 24」实际是 10，
+        # 旧闸门只看退出码，等于没验）。
+        expect = verify_gate.extract_expect_output(message, cmd)
+        res = verify_gate.apply_expect(res, expect)
         yield {
             "type": "verify", "cmd": cmd, "ok": res["ok"],
             "exit": res["code"], "duration": res["duration"],
-            "output": res["output"],
+            "output": res["output"], "expect": expect,
         }
-        if not res["ok"]:
-            # 失败给一轮修正机会：能修就修（会重新跑验证看到真实通过），
-            # 修不了就如实说明。修正轮的产出无论是什么，报告照附——裁定权在系统。
+        while not res["ok"] and blocks < _VERIFY_BLOCK_ROUNDS:
+            blocks += 1
             corrected = True
             prompt = verify_gate.CORRECTIVE_PROMPT.format(
                 cmd=cmd, verdict="失败", code=res["code"],
-                duration=res["duration"], output=res["output"],
+                duration=res["duration"],
+                output=res["output"]
+                        + (f"\n（任务书期望输出含：{expect}）" if expect else ""),
                 summary=summary or "（无）",
             )
             for ev in agent.run(convo, prompt, auto_route=False,
@@ -244,6 +262,16 @@ def _verify_gate(agent, message: str, holder: dict,
                     convo = ev["history"]
                     summary = (ev.get("content") or "").strip() or summary
                 yield ev
+            # 修正轮结束后复核：重新亲跑，通过就放行，仍失败且没到拦截上限
+            # 就再拦一轮（第 _VERIFY_BLOCK_ROUNDS 轮后放行，报告照附）。
+            res = verify_gate.run_verify_cmd(cmd, cfg.workspace_root)
+            res = verify_gate.apply_expect(res, expect)
+            yield {
+                "type": "verify", "cmd": cmd, "ok": res["ok"],
+                "exit": res["code"], "duration": res["duration"],
+                "output": res["output"], "expect": expect,
+                "recheck": True,
+            }
         summary = (summary + "\n\n---\n"
                    + verify_gate.report_block(cmd, res)).strip()
     elif (verify_gate.claimed_verified(summary)

@@ -213,6 +213,31 @@ class MemoryStore:
         keep = [e["index"] for e in items if e["index"] not in hit]
         return self._rewrite(keep)
 
+    def update(self, index: int, note: str) -> dict:
+        """改写单条记忆的正文，保留原来的时间戳与任务标记（改文本不动出处）。
+
+        index 是 entries() 给出的行号；找不到该行（已删 / 文件变过）返回 {}，
+        由调用方提示刷新。表头与说明行不是条目，不会被这个方法碰到。
+        """
+        text = _clean(note)
+        if not text:
+            return {}
+        items = self.entries()
+        target = next((e for e in items if e["index"] == index), None)
+        if target is None:
+            return {}
+        raw_lines = self.read().splitlines()
+        if index >= len(raw_lines):
+            return {}
+        ts = target["ts"] or _now_text()
+        task = target["task"] or "手动"
+        with self._lock:
+            if not self.path.exists():
+                return {}
+            raw_lines[index] = f"- [{ts} · {task}] {text}"
+            self.path.write_text("\n".join(raw_lines).rstrip() + "\n", encoding="utf-8")
+        return {"index": index, "ts": ts, "task": task, "text": text}
+
     def clear(self) -> int:
         """清空全部记忆（连文件一起删掉，下次写入会重新生成表头）。"""
         with self._lock:

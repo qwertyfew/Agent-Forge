@@ -27,6 +27,7 @@ from agentforge.modelstore import ModelStore
 from agentforge.orchestrator import run_task
 from agentforge.planner import short_title
 from agentforge.prefs import PERMISSION_LABEL, PrefsStore
+from agentforge.skills import write_meta
 from agentforge.taskstore import TaskStore
 
 HERE = Path(__file__).resolve().parent
@@ -448,7 +449,7 @@ class _Handler(BaseHTTPRequestHandler):
         return str(dest)
 
     def _handle_gaps(self):
-        """能力缺口台账：清空（全部或按 kind/key）。
+        """能力缺口台账：清空（全部或按 kind/key）、手工修订一条的名称与样例。
 
         记录侧由架构自动完成（loop 的未知工具、preflight 的能力缺失、
         bench_tasks 的评测失败归因），这里只负责管理动作。
@@ -458,6 +459,19 @@ class _Handler(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(length) or b"{}")
         except json.JSONDecodeError:
             self._json({"error": "invalid json"}, 400)
+            return
+        if (req.get("action") or "").strip() == "update":
+            err = gaps.update(self.cfg,
+                              kind=str(req.get("kind") or ""),
+                              key=str(req.get("key") or ""),
+                              new_key=str(req.get("new_key") or ""),
+                              samples=req.get("samples"))
+            if err:
+                self._json({"ok": False, "error": err}, 400)
+                return
+            snap = gaps.snapshot(self.cfg)
+            snap["ok"] = True
+            self._json(snap)
             return
         removed = gaps.clear(self.cfg,
                              kind=str(req.get("kind") or ""),
@@ -498,10 +512,11 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(self.evals.save_tasks(req.get("cases") or []))
 
     def _handle_skills(self):
-        """技能管理：删除单个技能 / 清空全部技能。
+        """技能管理：删除单个技能 / 清空全部技能 / 编辑作用与触发边界。
 
-        只动项目 skills/ 目录下的技能；每次删除前先整目录备份到 .run/，
+        只动项目 skills/ 目录下的技能；删除前先整目录备份到 .run/，
         再移除并重扫注册表，让它立刻退出后续任务的自动匹配。
+        编辑同样只对 skills/ 下的技能开放，改前也备份一份。
         """
         length = int(self.headers.get("Content-Length") or 0)
         try:
@@ -520,6 +535,35 @@ class _Handler(BaseHTTPRequestHandler):
                 return p.is_relative_to(base)
             except (ValueError, OSError):
                 return str(p).startswith(str(base))
+
+        if action == "update":
+            name = (req.get("name") or "").strip()
+            try:  # 技能可能刚落盘，先重扫再找
+                reg.scan()
+            except Exception:  # noqa: BLE001
+                pass
+            sk = reg.get(name)
+            if sk is None:
+                self._json({"ok": False, "error": "未找到该技能"}, 400)
+                return
+            if not _under(Path(sk.dirpath).resolve(), root):
+                self._json({"ok": False, "error": "该技能不在项目 skills/ 下，不能在这里改"}, 400)
+                return
+            err = write_meta(Path(sk.dirpath),
+                             description=str(req.get("description") or ""),
+                             when_to_use=str(req.get("when_to_use") or ""),
+                             when_not_to_use=str(req.get("when_not_to_use") or ""))
+            if err:
+                self._json({"ok": False, "error": err}, 400)
+                return
+            try:
+                reg.scan()
+            except Exception:  # noqa: BLE001
+                pass
+            snap = self._skills_snapshot()
+            snap.update({"ok": True})
+            self._json(snap)
+            return
 
         if action == "delete":
             name = (req.get("name") or "").strip()
@@ -1735,7 +1779,7 @@ class _Handler(BaseHTTPRequestHandler):
         }
 
     def _handle_memory(self):
-        """记忆管理：新增 / 删除单条 / 全部清空。"""
+        """记忆管理：新增 / 编辑单条 / 删除单条 / 全部清空。"""
         length = int(self.headers.get("Content-Length") or 0)
         try:
             req = json.loads(self.rfile.read(length) or b"{}")
@@ -1749,6 +1793,18 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "内容为空"}, 400)
                 return
             self.mem.append(text, "手动")
+        elif action == "update":
+            try:
+                idx = int(req.get("index"))
+            except (TypeError, ValueError):
+                self._json({"ok": False, "error": "index 无效"}, 400)
+                return
+            if not str(req.get("text") or "").strip():
+                self._json({"ok": False, "error": "内容为空"}, 400)
+                return
+            if not self.mem.update(idx, str(req.get("text"))):
+                self._json({"ok": False, "error": "该条记忆不存在（可能已被删除），刷新后重试"}, 400)
+                return
         elif action == "delete":
             try:
                 idx = int(req.get("index"))

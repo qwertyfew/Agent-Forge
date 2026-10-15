@@ -98,6 +98,36 @@ with tempfile.TemporaryDirectory() as td:
     snap5 = gaps.snapshot(cfg)
     check("G12 损坏文件恢复安全", snap5 == {"items": [], "total": 0}, "")
 
+    # G13-G19 手工修订（update）：只开放名称与样例，count/first/last 不开放
+    gaps.record("tool_missing", "send_sms", "调用 send_sms 失败", cfg)
+    err = gaps.update(cfg, kind="tool_missing", key="send_sms",
+                      new_key="send_sms_v2",
+                      samples=["新版调用失败  ", "again   fail"])
+    snap6 = gaps.snapshot(cfg)
+    check("G13 改名+改样例成功且返回空串", err == "", err)
+    check("G14 改名后台账键迁移、样例逐条压平替换",
+          len(snap6["items"]) == 1 and snap6["items"][0]["key"] == "send_sms_v2"
+          and snap6["items"][0]["samples"] == ["新版调用失败", "again fail"],
+          json.dumps(snap6, ensure_ascii=False))
+    check("G15 次数与首末时间不被 update 触碰",
+          snap6["items"][0]["count"] == 1 and bool(snap6["items"][0]["first"]), "")
+    gaps.record("tool_missing", "other", "", cfg)
+    err = gaps.update(cfg, kind="tool_missing", key="send_sms_v2", new_key="other")
+    check("G16 目标名已存在时拒绝改名", err != "", err)
+    err = gaps.update(cfg, kind="tool_missing", key="no_such", new_key="x")
+    check("G17 记录不存在返回人话原因", err != "", err)
+    err = gaps.update(cfg, kind="tool_missing", key="send_sms_v2", samples=None)
+    snap7 = gaps.snapshot(cfg)
+    check("G18 samples=None 不动样例、只改名成功",
+          err == "" and len(snap7["items"]) == 2
+          and any(i["key"] == "send_sms_v2" and i["samples"] == ["新版调用失败", "again fail"]
+                  for i in snap7["items"]), json.dumps(snap7, ensure_ascii=False))
+    err = gaps.update(cfg, kind="tool_missing", key="send_sms_v2", samples=[])
+    snap8 = gaps.snapshot(cfg)
+    check("G19 samples=[] 显式清空样例",
+          err == "" and any(i["key"] == "send_sms_v2" and i["samples"] == []
+                            for i in snap8["items"]), json.dumps(snap8, ensure_ascii=False))
+
 print(f"\n共 {_n[0]} 项断言"
       + ("，全部通过。" if not _fails else f"，失败 {len(_fails)} 条：{_fails}"))
 sys.exit(1 if _fails else 0)

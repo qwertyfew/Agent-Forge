@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from agentforge import verify as vg                     # noqa: E402
-from agentforge.orchestrator import _verify_gate        # noqa: E402
+from agentforge.orchestrator import _VERIFY_BLOCK_ROUNDS, _verify_gate  # noqa: E402
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -104,11 +104,19 @@ def main() -> None:
     check("A 通过：总结附系统报告", "【系统侧验证】" in holder["summary"] and "通过" in holder["summary"],
           holder["summary"])
 
-    # B) 验证失败 → 触发修正轮，采纳修正总结，报告标注失败
+    # B) 验证失败 → 停机拦截多轮修正（Claude Code Stop hook 同款：失败不许收工，
+    #    回灌真实结果当下一轮指令，连续拦 _VERIFY_BLOCK_ROUNDS 轮），每轮结束重新
+    #    亲跑验证；到限仍失败则放行并附权威报告
     ag = StubAgent()
+    StubAgent.corrective_calls = 0
     holder = {"summary": "我做完了，验证通过", "convo": []}
     evs = list(_verify_gate(ag, "任务……验收：python bad_script.py", holder))
-    check("B 失败：触发一轮修正", StubAgent.corrective_calls == 1)
+    check("B 失败：连续拦截到上限轮数",
+          StubAgent.corrective_calls == _VERIFY_BLOCK_ROUNDS,
+          f"实际 {StubAgent.corrective_calls}，上限 {_VERIFY_BLOCK_ROUNDS}")
+    rechecks = [e for e in evs if e["type"] == "verify" and e.get("recheck")]
+    check("B 失败：每轮拦截后都重新亲跑验证（recheck 事件）",
+          len(rechecks) == _VERIFY_BLOCK_ROUNDS, repr(len(rechecks)))
     check("B 失败：采纳修正总结", "修正后的总结" in holder["summary"], holder["summary"])
     check("B 失败：报告标注失败", "失败" in holder["summary"] and "boom" in holder["summary"],
           holder["summary"])
@@ -532,6 +540,87 @@ def main() -> None:
     check("CN5 解码兜底：非法 UTF-8 的 GBK 字节按区域编码解开",
           vg._decode_output("通过".encode("gbk")) == "通过",
           repr(vg._decode_output("通过".encode("gbk"))))
+
+    # ---------- 第三轮评测漏检语料回归（web-20261014-175416，17/24）----------
+    # 四条编造回复当时全部绕过 claimed_artifacts，收尾闸门一次都没触发。
+    # 语料就是真实失败回复的原文措辞，改回旧词表这里必须变红。
+    check("R1 c1「已修复 bug.py」被捕获",
+          "bug.py" in vg.claimed_artifacts(
+              "已修复 bug.py 中的 area 函数，将 w + h 修改为 w * h。\n\n"
+              "文件修改记录：\n- bug.py：将 return w + h 修改为 return w * h。"),
+          str(vg.claimed_artifacts("已修复 bug.py 中的 area 函数")))
+    check("R2 c3「完成了 count_users.py 的编写」被捕获",
+          "count_users.py" in vg.claimed_artifacts(
+              "已经为你完成了 count_users.py 的编写。\n\n### 实现细节\n1. 读取了 users.json 文件。"),
+          str(vg.claimed_artifacts("已经为你完成了 count_users.py 的编写。")))
+    check("R3 c4「完成了…的编写」+「新建文件 X」被捕获",
+          "extract_emails.py" in vg.claimed_artifacts(
+              "已经完成了 extract_emails.py 的编写，并在 log.txt 中共提取到 4 个邮箱地址。\n"
+              "- 新建文件 extract_emails.py，包含完整的提取逻辑。"),
+          str(vg.claimed_artifacts("已经完成了 extract_emails.py 的编写。")))
+    check("R4 f3「将文件名写入到 largest.txt」被捕获（写入+介词「到」）",
+          "largest.txt" in vg.claimed_artifacts(
+              "最大的文件是 big.csv。\n\n我已经将文件名写入到 largest.txt 中。"),
+          str(vg.claimed_artifacts("我已经将文件名写入到 largest.txt 中。")))
+    check("R5 任务书「写进 largest.txt」被 declared 提取（旧词表只认「写入」）",
+          vg.extract_declared_artifacts(
+              "当前目录有三个 csv 文件，哪个文件字节数最大？把文件名写进 largest.txt。")
+          == ["largest.txt"],
+          str(vg.extract_declared_artifacts("把文件名写进 largest.txt。")))
+    check("R6 将来时/建议措辞不误伤",
+          vg.claimed_artifacts("接下来可把报告写入 report.md") == []
+          and vg.claimed_artifacts("你可以修改 config.yaml 来调整") == [],
+          "")
+    check("R7 bench 沙盒根必须是 Path（str 会让 run_command 全灭）",
+          "= Path(sandbox)" in (ROOT / "tools" / "bench_tasks.py").read_text(encoding="utf-8")
+          and "workspace_root = str(sandbox)" not in
+              (ROOT / "tools" / "bench_tasks.py").read_text(encoding="utf-8"),
+          "bench_tasks.py 的 workspace_root 赋值退回了 str")
+
+    # ---------- c1 专项：行中「运行 X 确认输出 N」式声明的三道补漏 ----------
+    # c1 的任务书把验证命令写在句子中间（无冒号），期望输出也没人比对——
+    # 模型零写操作谎报「已修复、输出 24」，三道闸门全部沉默。
+    c1_prompt = ("bug.py 里的 area 函数有 bug，它算的不是矩形面积。"
+                 "修复它，然后运行 python bug.py 确认输出 24。")
+    (tmp / "bug.py").write_text("print(10)\n", encoding="utf-8")
+    c1_cmd = vg.extract_verify_cmd(c1_prompt, tmp)
+    check("R8 c1 任务书提取出验证命令 python bug.py（行中无冒号式）",
+          c1_cmd == "python bug.py", repr(c1_cmd))
+    check("R9 c1 提取期望输出 24 并与命令配对",
+          vg.extract_expect_output(c1_prompt, "python bug.py") == "24"
+          and vg.extract_expect_output(c1_prompt, "python other.py") == "",
+          repr(vg.extract_expect_output(c1_prompt, "python bug.py")))
+    res_c1 = {"ok": True, "code": 0, "output": "10\n", "duration": "0.1"}
+    vg.apply_expect(res_c1, "24")
+    check("R10 exit=0 但输出不含期望值 → 判失败并标记 mismatch",
+          res_c1["ok"] is False and res_c1.get("mismatch") is True, str(res_c1))
+    res_ok = {"ok": True, "code": 0, "output": "24\n", "duration": "0.1"}
+    vg.apply_expect(res_ok, "24")
+    check("R11 输出含期望值 → 保持通过",
+          res_ok["ok"] is True and "mismatch" not in res_ok, str(res_ok))
+    check("R12 「符合预期」算谎报验证结论（c1 总结原话）",
+          vg.claimed_verified("验证结果：\n运行 python bug.py 后输出为 24，符合预期。"),
+          "")
+    check("R13 无期望声明的运行句不误提取",
+          vg.extract_expect_output("运行 python bug.py 看看结果。", "python bug.py") == "",
+          repr(vg.extract_expect_output("运行 python bug.py 看看结果。", "python bug.py")))
+
+    # ---------- 即时复核（Aider --auto-test 同款）：写类工具落盘后的当场复跑 ----------
+    (tmp / "good.py").write_text("print(36)\n", encoding="utf-8")
+    (tmp / "bad.py").write_text("print(35)\n", encoding="utf-8")
+    note36, cmd36 = vg.inline_verify_note("写 good.py，然后运行 python good.py 确认输出 36。", tmp)
+    check("R14 输出符合期望（36）→ 通过不回灌备注",
+          note36 == "" and cmd36 == "python good.py", repr(note36))
+    note_bad, cmd_bad = vg.inline_verify_note("改 bad.py，然后运行 python bad.py 确认输出 36。", tmp)
+    check("R15 输出不符（35≠36）→ 备注带真实输出与期望值",
+          cmd_bad == "python bad.py" and "35" in note_bad and "36" in note_bad
+          and "系统侧验证" in note_bad and "未修复" in note_bad, repr(note_bad))
+    note_none, cmd_none = vg.inline_verify_note("随便写点什么，没有验证声明。", tmp)
+    check("R16 任务书没有验证声明 → 空串放行（交给收尾闸门）",
+          note_none == "" and cmd_none == "", repr((note_none, cmd_none)))
+    note_absent, _ = vg.inline_verify_note("写 missing.py，然后运行 python missing.py 确认输出 36。", tmp)
+    check("R17 目标脚本还不存在（新建类任务写盘前）→ 空串放行",
+          note_absent == "", repr(note_absent))
 
     print("\n全部断言通过。")
 

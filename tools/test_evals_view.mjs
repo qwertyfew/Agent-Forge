@@ -7,6 +7,7 @@
  * 3. 「开始评测」确实发出 POST /api/evals/run 且状态框出现；
  * 4. 受保护任务点删除：被客户端拦截，不发出保存请求。
  * 5. 报告「查看 ⇄ 收起」切换：展开变收起、收起还原、再点重新拉取。
+ * 6. 「新增任务」出现行内编辑器；「全选清理」勾选框流程。
  *
  * 运行：node tools/test_evals_view.mjs
  * 需要 jsdom（找不到就 SKIP 并以 0 退出）。
@@ -200,6 +201,38 @@ check('W14b 点文件名发出定位请求（evals/results 路径 + select 模�
       && folderCall && folderCall.opts.body.includes('evals/results')
       && folderCall.opts.body.includes('"select":true'),
       folderCall ? folderCall.opts.body : '没发请求');
+
+/* W15-W18 「新增任务」编辑器与「全选清理」勾选流程 */
+const clickEv = (elm) => elm.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+clickEv(document.getElementById('btnEvalAdd'));
+await sleep(40);
+const editor = document.querySelector('#evalTaskList .eval-edit');
+check('W15 点「新增任务」出现行内编辑器（id/指令/判定/seed 可输入）',
+      !!editor && !!editor.querySelector('input') && !!editor.querySelector('textarea'),
+      editor ? '有编辑器' : '没有编辑器');
+const editorCancel = [...editor.querySelectorAll('.mini-btn')].find(b => b.textContent === '取消');
+clickEv(editorCancel);
+await sleep(40);
+check('W16 取消新增后草稿移除、任务数复原',
+      !document.querySelector('#evalTaskList .eval-edit')
+      && document.getElementById('evalTaskCount').textContent === '2 条',
+      document.getElementById('evalTaskCount').textContent);
+clickEv(document.getElementById('btnEvalSel'));
+await sleep(40);
+let evalCbs = document.querySelectorAll('#evalTaskList .sel-cb');
+check('W17 全选后条目出现勾选框：🔒 任务被禁用不参与、确认清理(1 项)',
+      evalCbs.length === 2 && evalCbs[0].disabled && !evalCbs[0].checked
+      && evalCbs[1].checked
+      && document.getElementById('selbarEval').textContent.includes('确认清理(1 项)'),
+      document.getElementById('selbarEval').textContent);
+const taskPostsBefore = calls.filter(c => c.url === '/api/evals/tasks').length;
+clickEv(document.querySelector('#selbarEval .btn.danger'));
+await sleep(60);
+check('W18 确认清理发出保存请求、勾选框消失、全选按钮回来',
+      calls.filter(c => c.url === '/api/evals/tasks').length === taskPostsBefore + 1
+      && document.querySelectorAll('#evalTaskList .sel-cb').length === 0
+      && !document.getElementById('btnEvalSel').classList.contains('hide'),
+      JSON.stringify(calls.filter(c => c.url === '/api/evals/tasks').map(c => c.opts.body || '')));
 
 console.log(failed === 0 ? '\n全部断言通过。' : `\n失败断言 ${failed} 条。`);
 process.exit(failed === 0 ? 0 : 1);

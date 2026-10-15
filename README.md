@@ -35,6 +35,13 @@
   写作维度的模型；调度模型自己给的定性也要过这条规则复核。收尾核查同样管「自己招了」：改动类的活
   在本轮**零文件改动**的情况下写「下一步我将…」「我无法修改…」时，先给一轮机会让它现在就做，
   复查仍如此就在答复末尾如实标注「这一步没有交付」。
+- **三层验证闸门（Stop hook 化）**：写类工具落盘**当场复核**（Aider `--auto-test` 式）——
+  任务书声明的验证命令立刻亲跑，输出不符期望当场回灌，不等收尾；收尾时系统再亲跑一次，
+  失败**禁止收工**——真实输出回灌当下一轮指令，连续拦截最多 2 轮、每轮拦截结束**重新亲跑**
+  （Claude Code Stop hook 同款；上限按本地跑批成本从 8 收到 2）；`exit=0` 但输出不含任务书
+  期望值（「确认输出 24」跑出 10）**也算失败**——只看退出码等于没验。交付文件另有三类核查
+  （不存在 / 本轮没更新 / 幽灵声明），命中先给一轮修正，复查不过就在答复末尾附上程序写的
+  权威报告。判定材料（任务集）在沙盒外，模型摸不到。
 - **长期记忆（只放偏好）**：记忆里只留用户的倾向 / 风格 / 习惯（「回复先给结论」「产出文档一律简体中文」）——
   环境事实（路径 / 端口 / 版本）工具能现查、项目约定（工作方式 / 流程规则）由程序与断言保证，
   两类都**不进**记忆（见下面《设计原则》一节）。
@@ -342,7 +349,7 @@ agentforge/
   skills.py            技能发现与自动注入
   ollamaguard.py       本地模型上游守卫：探测 / 定位 / 拉起 Ollama
   memory.py autonote.py 长期记忆（只放用户偏好）与自动沉淀
-  verify.py            收尾验证闸门（提取/运行/核查，系统侧强制）
+  verify.py            验证闸门（声明提取 / 亲跑命令 / 期望输出断言 / 产物核查，系统侧强制）
   sources.py           一手来源核查（外部事实看数字/时效措辞，本机事实看工作区读没读过）
   reveal.py            用系统默认程序打开文件/文件夹，并把窗口抬到前台（Windows 前台锁）
   artifact.py          产出文件追踪（快照对比）
@@ -357,8 +364,9 @@ tools/                 开发/运维工具（bench.py 模型性能基准、fastp
                        test_readcache.py / test_verify_gate.py / test_sources_gate.py /
                        test_reveal.py / test_taskstore.py / test_planner.py /
                        test_local_facts.py / test_web_tools.py / test_toolselect.py /
-                       test_artifacts.py 常驻回归、
-                       test_tool_panel.mjs / test_task_view.mjs / test_reply_flow.mjs 前端回归）
+                       test_skill_meta.py / test_artifacts.py 等常驻回归、
+                       test_tool_panel.mjs / test_task_view.mjs / test_reply_flow.mjs /
+                       test_edit_view.mjs / test_gaps_view.mjs / test_evals_view.mjs 前端回归）
 docs/                  参考资料（evolution.md 架构演进全文、contracts.md 契约与修复清单、
                        foreign-models.md 外部模型说明、ref/ 外部仓库快照、legacy-ui.png 旧界面存档）
 examples/              示例工作区（demo-excel、novel-sample）
@@ -385,9 +393,9 @@ examples/              示例工作区（demo-excel、novel-sample）
 
 判据只有一条：**把这条从代码里删掉，测试会不会红？** 红 → 才算架构保证；不红 → 它只是「劝」，得说明为什么允许它留在那一层。
 
-常驻回归 **31 个文件（23 Python + 8 前端）**，Python 侧 755 项断言逐条打印
-（重跑即复现）。跑法、依赖（Python 要用项目 `.venv`，
-前端三个 `.mjs` 需要 `jsdom`）以及「**SKIP 不等于通过**」这个坑，见
+常驻回归 **33 个文件（24 Python + 9 前端）**，Python 侧 794 项断言逐条打印
+（重跑即复现；前端 9 个 `.mjs` 共 225 项）。跑法、依赖（Python 要用项目 `.venv`，
+前端 `.mjs` 需要 `jsdom`）以及「**SKIP 不等于通过**」这个坑，见
 [`docs/contracts.md`](docs/contracts.md) 第四节。
 
 断言之外还有一把更粗的尺子：**评测集**（`evals/tasks.yaml`，20 条跨五类任务，
@@ -432,8 +440,9 @@ examples/              示例工作区（demo-excel、novel-sample）
 | 26 | 评测台：网页上跑评测、出报告、改任务集 | 侧栏新增「评测台」：一键运行评测集（后台线程 + 轮询进度，pass^k 可选）；报告自动生成（时间/代码版本/模型/逐条表现/失败归因分布/分类通过率，Markdown + JSON 双产物）；任务集增删改（保存前备份、回读校验、诚实性簇与安全策略任务受保护不可删） |
 | 27 | 侧栏服务按钮：一键重启 + 云端自适应 | 左下角「Ollama 已连接」指示改为服务按钮：绿=服务与 Ollama 都在、红=有一个没开、红褐=重启中；点击确认后以 CREATE_NO_WINDOW 分离进程直接调 service.py（--stop → 重新拉起，ping 延时保 HTTP 响应先发出，60s 单飞锁防连点），全程无窗口，页面轮询 /api/health 自动从失联恢复到绿；云端（项目根无这两个 bat，镜像已排除）一律绿、不可点，工作区路径整行隐藏 |
 | 28 | 评测报告三稿（只录事实）+ 界面打磨 + 重启修复 | 报告改为忠实完备地记录过程与结果、不做归因：**所有用例**（含通过）全录过程序列（轮次/skill/工具调用完整参数与输出/事件流报错/系统核验）与回复全文，JSON 同步；「失败归因分布」改「失败分层统计」、共因聚合改中性的「同签名失败分组」；核验命令 PATH 修复（python 解析到商店占位符的 9009 全灭）；s1 的 must_not 收紧不再误杀合规拒绝。界面：评测报告查看⇄收起切换、面板展开在所点报告之下、文件名点击在资源管理器定位（open-folder 加 select 模式）；能力缺口单条删除（按 kind/key）；评测台与缺口按钮统一靠右对齐；侧栏拖拽调宽（200–420px，localStorage 记忆，双击回默认）；侧栏各图标中线对齐。重启按钮弹窗风暴修复见第 27 步描述与 evolution 补记 |
+| 29 | 闸门重造（Stop hook 化） | 第三轮评测 17/24，7 条失败 6 条在 harness：bench 沙盒 `workspace_root` 传 str（`str` 无 `.resolve` → run_command 全灭元凶）、任务集 a3 判定写反、闸门词表漏检。对标 Aider `--auto-test` / SWE-bench / Claude Code Stop hook 三范式重造闸门：写类工具落盘当场复核失败即回灌、期望输出断言（exit=0 输出不含期望也算失败）、收尾停机拦截最多 2 轮且每轮重新亲跑；实证 c1/c2 fail→PASS。界面：记忆/技能/缺口三栏目条目编辑（跨重渲染稳定 ref + 按栏目提示）、`dim` 类名撞车致「新建任务」字号变小（改名 `dimmed`）、pane-head 按钮折行修复（440px + justify，双语通用） |
 
-上面这张表是全部 28 步的索引；**每一步的来龙去脉（以及「这套东西是怎么被一步步训出来的」）在 [`docs/evolution.md`](docs/evolution.md)**。README 不再重复长叙事——它是每次会话都要读的入口，不该背着两万字的历史。
+上面这张表是全部 29 步的索引；**每一步的来龙去脉（以及「这套东西是怎么被一步步训出来的」）在 [`docs/evolution.md`](docs/evolution.md)**。README 不再重复长叙事——它是每次会话都要读的入口，不该背着两万字的历史。
 
 ## 设计原则：设定靠架构，偏好靠记忆
 

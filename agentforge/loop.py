@@ -11,6 +11,7 @@ from typing import Any, Iterator
 from .config import Config
 from . import gaps
 from . import preflight
+from . import verify as verify_gate
 from .artifact import FILE_TOOLS, classify_tool_write
 from .context import Compressor, measure
 from .llm import OllamaClient, parse_text_tool_calls
@@ -366,6 +367,9 @@ class Agent:
                 user_text, self.registry.names(), self.cfg)
         except Exception:  # noqa: BLE001  预检坏了不能挡任务
             self._preflight_note = ""
+        # 任务内即时验证的失败回灌计数（0-3）：每次 run 归零，跨轮次保留，
+        # 防「改挂→提醒→再改挂」死循环；到顶后不再回灌，终审交给收尾闸门。
+        self.iv_fails = 0
         # 完全访问 = 本次调用显式传入 auto_approve=True，或 Guard 的全局自动批准
         # 已打开（CLI 的 --yes / /yes 走这条路）。两条通道必须给同一个答案，
         # 否则会出现「命令不用确认了、路径还是被拦」的分裂状态。
@@ -606,6 +610,16 @@ class Agent:
                 else:
                     if not denied:
                         self.fail_streak = 0
+                    # 任务内即时验证（Aider --auto-test 同款）：写类工具成功落盘后，
+                    # 若任务书声明了验证命令（含「运行 X 确认输出 N」式），程序亲自
+                    # 复跑并比对期望输出；失败把真实输出回灌给模型当场修——错不拖到
+                    # 收尾才暴露。最多回灌 3 次（防死循环），终审仍归收尾闸门。
+                    if tc.name in FILE_TOOLS and self.iv_fails < 3:
+                        note, _ = verify_gate.inline_verify_note(
+                            user_text, self.cfg.workspace_root)
+                        if note:
+                            self.iv_fails += 1
+                            out = out + "\n\n" + note
                 yield {"type": "tool_result", "name": tc.name, "output": out,
                        **({"failed": True} if (failed or denied) else {})}
                 _push({"role": "tool", "content": out})

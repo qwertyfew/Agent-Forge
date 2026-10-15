@@ -134,6 +134,45 @@ class Skill:
         )
 
 
+def write_meta(skill_dir: Path, description: str,
+               when_to_use: str = "", when_not_to_use: str = "") -> str:
+    """改写 SKILL.md frontmatter 的 作用 / 触发边界 字段，正文与其余字段原样保留。
+
+    管理页「编辑」走这里：description 是自动匹配的主要依据，触发边界决定
+    「命中但该让位」的退让行为，所以只开放这三个字段。先写临时文件再替换，
+    写坏不会留下半截 SKILL.md。返回空串表示成功，否则返回失败原因。
+    """
+    md = Path(skill_dir) / "SKILL.md"
+    try:
+        text = md.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return f"读不到 SKILL.md：{e}"
+    meta, body = split_frontmatter(text)
+    if not meta:
+        return "SKILL.md 缺少 frontmatter，不能在这里改"
+    desc = " ".join(str(description or "").split())
+    if not desc:
+        return "作用（description）不能为空"
+    meta["description"] = desc
+    for fld, val in (("when_to_use", when_to_use), ("when_not_to_use", when_not_to_use)):
+        v = " ".join(str(val or "").split())
+        if v:
+            meta[fld] = v
+        else:
+            meta.pop(fld, None)
+    try:
+        front = ("---\n"
+                 + yaml.safe_dump(meta, allow_unicode=True, sort_keys=False,
+                                  width=4096).rstrip("\n")
+                 + "\n---\n\n")
+        tmp = md.with_name("SKILL.md.tmp")
+        tmp.write_text(front + body.lstrip("\n"), encoding="utf-8")
+        tmp.replace(md)
+    except OSError as e:
+        return f"写入失败：{e}"
+    return ""
+
+
 def _cut_at_section(body: str, limit: int) -> int:
     """在 limit 附近找一个标题边界切，避免把某个小节拦腰截断。
 

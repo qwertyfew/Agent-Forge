@@ -49,6 +49,19 @@ _DECLARE_INLINE = re.compile(
     re.I,
 )
 
+# 行中「运行 python x.py 确认输出 24」式声明（c1 测出的漏检语料）：命令没写在
+# 「验证：」冒号行里，而是嵌在句子中间，后面直接跟期望输出。旧词表只认冒号式
+# 声明，这条最强的自检线索整个被浪费——闸门本可以亲跑命令并比对输出。
+_VERIFY_RUN = re.compile(
+    r"(?:运行|执行|跑)(?:一下)?\s+"
+    r"((?:python3?|py|node|npm|npx|pytest|bash|sh|pwsh|cmd)\s+[^\n。；;，]+?\."
+    r"(?:py|sh|js|mjs|ts|cmd|bat))"
+    r"\s*(?:[，,]\s*)?(?:来|以|再)?\s*(?:确认|检查|验证|看)"
+    r"[^\n。；;]{0,10}?(?:输出|结果)(?:为|是|等于|应为|应该是)?\s*"
+    r"([^\s，。；;、]+)",
+    re.I,
+)
+
 # 看起来像命令开头的行（兜底扫描用）
 _CMD_START = re.compile(
     r"^(?:python3?|py|node|npx|npm|pytest|bash|sh|pwsh|powershell|\.)\b", re.I
@@ -65,7 +78,8 @@ _DANGEROUS = (
 # 模型总结里的「验证通过」类措辞。谎报的经典句式都在这里。
 _CLAIM_VERIFIED = re.compile(
     r"验证通过|验证已通过|测试通过|测试全部?通过|全部通过|断言通过|全部断言通过"
-    r"|自检通过|护栏(?:全部)?(?:生效|通过)|all (?:tests |assertions )?passed"
+    r"|自检通过|护栏(?:全部)?(?:生效|通过)|符合预期"
+    r"|all (?:tests |assertions )?passed"
     r"|tests? pass(?:ed)?",
     re.I,
 )
@@ -79,13 +93,15 @@ _PATH_TOK = r"([A-Za-z0-9_][A-Za-z0-9._/\\-]*\.[A-Za-z0-9]{1,8})"
 
 # 路径前的分隔符：冒号/反引号之外还要容忍 markdown 强调符号——REA 三测里总结写的是
 # 「已写入：**`docs/x.md`**」，** 把声明提取挡死了，闸门因此整个漏判。
-_SEP = r"\s*[:：`*_~\s]*\s*"
+# 「到/为/至」是写入动词带的介词（「写入到 x.txt」「写进到」少见但「输出为」常见）。
+_SEP = r"\s*[:：`*_~\s]*(?:到|为|至)?\s*"
 
 # 任务书里的产物声明·动词式：「（报告）写入 docs/x.md」「保存到 x.json」「输出到 out/r.md」。
+# 「写进」是第三轮评测真实任务书的措辞（把文件名写进 largest.txt），漏了它 declared 全空。
 # 前面紧邻「禁止/不要/勿/别/不」的不算（那是禁令，不是交付要求）。
 _ARTIFACT_WRITE = re.compile(
     r"(?<!禁止)(?<!不要)(?<!勿)(?<!别)(?<!不)"
-    r"(?:写入|写至|保存(?:到|为|在)|存(?:到|为|入)|输出到|输出为|落盘(?:到|为)?)"
+    r"(?:写入|写至|写进|保存(?:到|为|在)|存(?:到|为|入)|输出到|输出为|落盘(?:到|为)?)"
     + _SEP + _PATH_TOK,
 )
 
@@ -97,11 +113,18 @@ _ARTIFACT_COLON = re.compile(
 
 # 总结里的「已写入 X」完成式声明。必须带完成语气（已/成功/完成/了/好），
 # 「接下来可写入 X」「将报告写入 X」这类将来时/转述不误伤。
+# 动词表按真实漏检语料扩充（第三轮评测四条编造回复全部绕过了旧词表）：
+# 「已修复 bug.py」「新建文件 x.py」「完成了 x.py 的编写」——修复/新建/编写都曾失明。
 _ARTIFACT_CLAIM = re.compile(
-    r"(?:已(?:经)?|成功|完成)[^。\n；;]{0,12}?(?:写入|创建|保存到|保存在|生成|落盘|产出)(?:了|好)?"
+    r"(?:已(?:经)?|成功|完成)[^。\n；;]{0,12}?"
+    r"(?:写入|创建|新建|保存到|保存在|生成|落盘|产出|修复|修改|更新|编辑|重写|补全)"
+    r"(?:了|好)?"
     + _SEP + _PATH_TOK +
-    r"|(?:写入|创建|保存到|保存在|生成|落盘|产出)(?:了|好)(?:一?份)?" + _SEP + _PATH_TOK +
-    r"|(?:has been |have been )?(?:written to|saved to|saved as|created|generated)"
+    r"|(?:写入|创建|新建|保存到|保存在|生成|落盘|产出)(?:了|好|文件)(?:一?份)?"
+    + _SEP + _PATH_TOK +
+    # 「完成了 count_users.py 的编写」：动词在路径后面，非贪婪防回溯咬掉文件名尾巴
+    r"|完成(?:了)?[^。\n；;]{0,16}?" + _PATH_TOK + r"\s*的?\s*(?:编写|实现|开发|制作|修复|设计|撰写)"
+    + r"|(?:has been |have been )?(?:written to|saved to|saved as|created|generated)"
     + _SEP + _PATH_TOK,
     re.I,
 )
@@ -170,6 +193,10 @@ def extract_verify_cmd(text: str, root: str | Path) -> str:
         candidates.append(m.group(1))
     if not candidates:
         for m in _DECLARE_INLINE.finditer(text):
+            candidates.append(m.group(1))
+    if not candidates:
+        # 「运行 python x.py 确认输出 24」式句子声明（无冒号）
+        for m in _VERIFY_RUN.finditer(text):
             candidates.append(m.group(1))
     if not candidates:
         # 兜底 1：任务书里出现的、以解释器开头的行（常包在反引号里）
@@ -537,11 +564,74 @@ def artifact_missing_block(missing: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def inline_verify_note(user_text: str, root: str | Path,
+                       timeout: int = 60) -> tuple[str, str]:
+    """写类工具落盘后的即时复核（Aider --auto-test 同款思路）。
+
+    任务书声明了验证命令（含行中「运行 X 确认输出 N」式）→ 程序亲自跑一遍：
+    - 失败（含 exit=0 但输出不含期望值）：返回要回灌给模型的系统侧备注，
+      带真实输出与期望值——错当场露馅，不等收尾闸门；
+    - 通过：返回空串，绿了不打扰；
+    - 没声明（提取不到、目标脚本还不存在）也返回空串：这类任务的把关交给
+      收尾闸门与判定层。
+    返回 (备注, 命令)；调用方负责限次（防「改挂→提醒→再改挂」死循环）。
+    """
+    cmd = extract_verify_cmd(user_text, root)
+    if not cmd:
+        return "", ""
+    res = run_verify_cmd(cmd, root, timeout=timeout)
+    expect = extract_expect_output(user_text, cmd)
+    res = apply_expect(res, expect)
+    if res["ok"]:
+        return "", cmd
+    out = _clip(str(res.get("output") or ""), 600)
+    note = (f"[系统侧验证] 程序已亲自运行 `{cmd}` → 失败"
+            + (f"（期望输出含 `{expect}`）" if expect else "")
+            + f"，真实输出：\n{out}"
+            + "\n请修复问题后再次确认；禁止在未修复的情况下声称完成。")
+    return note, cmd
+
+
+def extract_expect_output(text: str, cmd: str) -> str:
+    """从「运行 <cmd> 确认输出 X」式声明里取期望输出 X，与 extract_verify_cmd 配对。
+
+    cmd 与提取出的命令对不上、或声明里没写期望，都返回空串——此时验证退化为
+    只看退出码。c1 的教训：任务书明说「确认输出 24」，旧闸门只看 exit=0，
+    模型谎报「输出 24」而实际是 10，没有任何一层比对过这个数。
+    """
+    text = str(text or "")
+    want = " ".join(str(cmd or "").strip().lower().split())
+    if not want:
+        return ""
+    for m in _VERIFY_RUN.finditer(text):
+        got = " ".join((m.group(1) or "").strip().lower().split())
+        if got == want:
+            return m.group(2).strip("`'\" ")
+    return ""
+
+
+def apply_expect(res: dict, expect: str) -> dict:
+    """把「确认输出 X」的期望比对进验证结果：exit=0 但输出不含期望值也算失败。
+
+    就地改写 res（ok/expect/mismatch），闸门与报告共用同一口径，避免
+    「事件说通过、报告说失败」的分裂。没有期望声明时原样返回。
+    """
+    if not expect:
+        return res
+    res["expect"] = expect
+    if res.get("ok") and expect not in str(res.get("output") or ""):
+        res["ok"] = False
+        res["mismatch"] = True
+    return res
+
+
 def report_block(cmd: str, res: dict) -> str:
     """附在最终答复末尾的系统侧验证报告。模型只有解读权，这一段是程序写的。"""
     verdict = "通过" if res["ok"] else "失败"
     head = (f"【系统侧验证】任务收尾时由系统亲自运行了 `{cmd}` → "
-            f"**{verdict}**（退出码 {res['code']}，耗时 {res['duration']}s）。"
+            f"**{verdict}**（退出码 {res['code']}，耗时 {res['duration']}s"
+            + (f"，期望输出含 `{res['expect']}`" if res.get("expect") else "")
+            + "）。"
             "此结果由程序产生，不依赖模型自报；若与本回复正文有出入，以本结果为准。")
     if res["ok"]:
         return head

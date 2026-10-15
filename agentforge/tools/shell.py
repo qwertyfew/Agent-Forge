@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 
 from .base import EXEC, make_tool
 
@@ -12,7 +13,9 @@ def build_shell_tools(guard, cfg):
     def run_command(command: str, cwd: str = "", timeout: int = 120) -> str:
         guard.check_command(command)
 
-        work_dir = guard.resolve(cwd) if cwd else guard.cfg.workspace_root.resolve()
+        # workspace_root 强转 Path：调用方（如 bench）若赋了 str，这里直接
+        # AttributeError 会把整条 run_command 炸掉，宁在此处兜住。
+        work_dir = guard.resolve(cwd) if cwd else Path(guard.cfg.workspace_root).resolve()
         if not work_dir.is_dir():
             return f"[错误] 工作目录不存在: {work_dir}"
 

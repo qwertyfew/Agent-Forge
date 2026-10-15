@@ -166,6 +166,30 @@ try:
     check("spec 为 None 时 capture_model 直接返回空",
           autonote.capture_model(store, hub=None, spec=None, messages=[], task_id="t3") == [])
 
+    # ---------- 用例 H2：update 改写单条——正文可改，出处（时间/任务）保留 ----------
+    up = MemoryStore(tmp / "update.md")
+    up.append("用户偏好：回复先给结论", "t9")
+    up.append("用户偏好：代码注释用中文", "t10")
+    ent = up.entries()
+    r = up.update(ent[0]["index"], "  用户偏好：回复永远先给结论，再展开细节  ")
+    check("update 返回更新后的条目", r and r["text"] == "用户偏好：回复永远先给结论，再展开细节", repr(r))
+    after = up.entries()
+    check("update 后仍是两条、其他条目原样",
+          len(after) == 2 and after[1]["text"] == "用户偏好：代码注释用中文", repr(after))
+    check("update 保留原时间戳与任务标记（出处不因改写失真）",
+          after[0]["ts"] == ent[0]["ts"] and after[0]["task"] == "t9", repr(after[0]))
+    check("update 后文件表头仍在（表头不许被带走）",
+          (tmp / "update.md").read_text(encoding="utf-8").startswith("# AgentForge 工作区记忆"), "")
+    check("update 不存在的行号返回空", up.update(999, "x") == {}, "")
+    check("update 空文本拒绝", up.update(ent[0]["index"], "   ") == {}, "")
+    # 旧格式 raw 行（解析不出标记）也能改：改后按标准格式落盘
+    legacy2 = MemoryStore(tmp / "legacy2.md")
+    legacy2.path.write_text("- 一条老格式的记忆\n", encoding="utf-8")
+    r2 = legacy2.update(legacy2.entries()[0]["index"], "改成新格式")
+    got = legacy2.entries()
+    check("raw 行可编辑且改后带默认出处标记",
+          r2 and got and got[0]["text"] == "改成新格式" and got[0]["task"] == "手动", repr(got))
+
     # ---------- 用例 I：源码级——分层不许被悄悄加回界面/工具 ----------
     check("webui 侧不再引用 layer_counts / LAYER_LABEL",
           "layer_counts" not in read("webui.py") and "LAYER_LABEL" not in read("webui.py"))

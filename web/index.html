@@ -106,11 +106,13 @@
     justify-content:center;color:var(--ink2);background:transparent;transition:color .15s ease}
   .new-chat .plus svg{width:15px;height:15px}
   .new-chat:hover .plus{color:var(--ink)}
-  /* 切到别的栏目（记忆管理等）时，「新建任务」跟着变淡，不再像当前项 */
-  .new-chat.dim{color:var(--ink3)}
-  .new-chat.dim .plus{color:var(--ink3)}
-  .new-chat.dim:hover{color:var(--ink)}
-  .new-chat.dim:hover .plus{color:var(--ink)}
+  /* 切到别的栏目（记忆管理等）时，「新建任务」跟着变淡，不再像当前项。
+     注意类名必须叫 dimmed 而不是 dim：模型评分卡里有条通用 .dim 规则
+     （维度评分行，font-size:11.5px），撞名会把按钮字号也改掉 */
+  .new-chat.dimmed{color:var(--ink3)}
+  .new-chat.dimmed .plus{color:var(--ink3)}
+  .new-chat.dimmed:hover{color:var(--ink)}
+  .new-chat.dimmed:hover .plus{color:var(--ink)}
   .side-body{flex:1;overflow-y:auto;padding:4px 12px 12px;scrollbar-width:thin}
   /* 侧栏右缘的拖拽把手：悬停/拖动时亮起一条分隔线，按住左右拖调整宽度 */
   #sideResize{position:absolute;top:0;right:-3px;width:7px;height:100%;cursor:col-resize;z-index:45}
@@ -377,6 +379,11 @@
   .sk-item .sk-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
     margin-top:8px;font-size:11px;color:var(--ink3)}
   .sk-item .sk-actions{margin-left:auto}
+  /* 行内全选清理：条目前的勾选框（样式对齐清空弹窗的 mopt 勾选框），
+     「全选」进入 → 可单独取消 → 红底白字「确认清理(N项)」/ 取消 */
+  .sel-cb{width:15px;height:15px;margin:2px 2px 0 0;flex:none;accent-color:var(--send-bg);cursor:pointer}
+  .sk-item.selrow{border-color:var(--accent)}
+  .selbar{display:inline-flex;align-items:center;gap:8px}
   /* 报告文件名可点：悬停下划线提示，点了去资源管理器里定位文件 */
   .sk-item .sk-name.link{cursor:pointer}
   .sk-item .sk-name.link:hover{text-decoration:underline}
@@ -642,8 +649,13 @@
   .set-pane{flex:1;overflow-y:auto;padding:20px 26px 60px;min-width:0}
   .pane-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:16px}
   .pane-head h3{margin:0 0 4px;font-size:17px;font-weight:650}
-  .pane-head p{margin:0;font-size:12.5px;color:var(--ink3);max-width:520px}
-  .pane-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  /* 说明文案统一最大宽度：一行塞不下自动换行，同时给右侧按钮组留足同行空间；
+     两端对齐——中文靠字符间距撑满（末行保持左对齐），英文自动按词间距对齐 */
+  .pane-head p{margin:0;font-size:12.5px;color:var(--ink3);max-width:440px;text-align:justify}
+  /* 按钮组内部绝不折行：放不下时整块落到文案下方（pane-head 的 wrap 兜底），
+     避免「取消/确认清理」被单独挤到下一行 */
+  .pane-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:nowrap}
+  .pane-actions>*{flex:none;white-space:nowrap}
   .btn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 14px;border-radius:9px;
     border:1px solid var(--line2);font-size:12.5px;color:var(--ink);background:var(--panel)}
   .btn:hover{border-color:var(--ink3)}
@@ -1209,8 +1221,8 @@
               </p>
             </div>
             <div class="pane-actions">
-              <button class="btn" id="btnMemRefresh">刷新</button>
-              <button class="btn" id="btnMemClear">全部清空</button>
+              <button class="btn" id="btnMemSel">全选</button>
+              <span class="selbar hide" id="selbarMem"></span>
             </div>
           </div>
           <div class="mem-add">
@@ -1241,8 +1253,8 @@
               </p>
             </div>
             <div class="pane-actions">
-              <button class="btn" id="btnSkillRefresh">刷新</button>
-              <button class="btn" id="btnSkillClear">全部清空</button>
+              <button class="btn" id="btnSkillSel">全选</button>
+              <span class="selbar hide" id="selbarSkill"></span>
             </div>
           </div>
 
@@ -1285,8 +1297,8 @@
               </p>
             </div>
             <div class="pane-actions">
-              <button class="btn" id="btnGapRefresh">刷新</button>
-              <button class="btn" id="btnGapClear">清空</button>
+              <button class="btn" id="btnGapSel">全选</button>
+              <span class="selbar hide" id="selbarGap"></span>
             </div>
           </div>
 
@@ -1319,7 +1331,8 @@
             <div class="pane-actions">
               <button class="btn" id="btnEvalRun">开始评测</button>
               <button class="btn hide" id="btnEvalStop">停止</button>
-              <button class="btn" id="btnEvalRefresh">刷新</button>
+              <button class="btn" id="btnEvalSel">全选</button>
+              <span class="selbar hide" id="selbarEval"></span>
             </div>
           </div>
 
@@ -1634,7 +1647,7 @@ function showView(v){
   $('navGaps').classList.toggle('on', isGaps);
   $('navEval').classList.toggle('on', isEval);
   // 栏目互斥高亮：进设置/记忆管理/技能管理/能力缺口/评测台时，「新建任务」也跟着变淡
-  $('btnNew').classList.toggle('dim', isMem || isSkill || isSet || isGaps || isEval);
+  $('btnNew').classList.toggle('dimmed', isMem || isSkill || isSet || isGaps || isEval);
   updateCompactBtn();
   closeSidebar();
 }
@@ -1662,6 +1675,127 @@ $('btnModelConfig').onclick = () => openSettings('models');
 })();
 $('btnBack').onclick = () => showView('chat');
 
+/* ================= 行内全选清理（记忆/技能/缺口/评测任务共用） =================
+   原来的「全部清空/清空」一键全删太糙，换成「全选」：
+   点击后条目前出现勾选框并默认全选，可单独取消勾选；同时出现
+   「取消」与红底白字「确认清理(N项)」。确认后走各栏既有删除接口
+   逐条清理；取消则勾选框消失退回本栏。各栏删除走既有接口，不新开后端。 */
+const selState = {
+  mem: {on:false, checked:new Set()}, skill:{on:false, checked:new Set()},
+  gap:{on:false, checked:new Set()}, eval:{on:false, checked:new Set()},
+};
+const selRaw = {};    // 各栏最后一次渲染的数据快照，进出全选模式原地重渲不重新拉取
+const selKeyOf = {
+  mem: e => String(e.index),
+  skill: s => s.name,
+  gap: g => (g.kind || '') + '|' + (g.key || ''),
+  eval: c => c.id,
+};
+const selRerender = {
+  mem: () => renderMemory(selRaw.mem),
+  skill: () => renderSkills(selRaw.skill),
+  gap: () => renderGaps(selRaw.gap),
+  eval: renderEvalTasks,
+};
+const selCap = v => v[0].toUpperCase() + v.slice(1);
+
+function selCheckbox(view, key, disabled){
+  const st = selState[view];
+  const cb = document.createElement('input');
+  cb.type = 'checkbox'; cb.className = 'sel-cb';
+  cb.checked = st.checked.has(key);
+  if(disabled){ cb.disabled = true; cb.title = '该条目被钉死，不能清理'; }
+  cb.onclick = e => e.stopPropagation();
+  cb.onchange = ()=>{
+    if(cb.checked) st.checked.add(key); else st.checked.delete(key);
+    renderSelBar(view);
+  };
+  return cb;
+}
+function renderSelBar(view){
+  const st = selState[view];
+  const bar = $('selbar' + selCap(view));
+  if(!bar) return;
+  bar.innerHTML = '';
+  const cancel = el('button', 'btn ghost', '取消');
+  cancel.onclick = ()=> exitSel(view);
+  const ok = el('button', 'btn danger', `确认清理(${st.checked.size} 项)`);
+  ok.onclick = ()=> confirmSel(view);
+  bar.appendChild(cancel); bar.appendChild(ok);
+}
+function enterSel(view){
+  const st = selState[view];
+  if(st.on) return;
+  const keys = (view === 'eval')
+    ? evalData.cases.filter(c => !evalData.protected.includes(c.id)).map(selKeyOf.eval)
+    : (selRaw[view] ? (selRaw[view].items || selRaw[view].entries
+        || (selRaw[view].extracted || []).concat(selRaw[view].installed || [])
+        ).map(selKeyOf[view]) : []);
+  if(!keys.length){ toast(null, '这一栏还没有条目', 'mute'); return; }
+  st.on = true;
+  st.checked = new Set(keys);
+  $('btn' + selCap(view) + 'Sel').classList.add('hide');
+  renderSelBar(view);
+  $('selbar' + selCap(view)).classList.remove('hide');
+  selRerender[view]();
+}
+function exitSel(view, reload){
+  const st = selState[view];
+  st.on = false;
+  st.checked.clear();
+  $('btn' + selCap(view) + 'Sel').classList.remove('hide');
+  $('selbar' + selCap(view)).classList.add('hide');
+  if(reload === undefined || reload === true)
+    ({mem: loadMemory, skill: loadSkills, gap: loadGaps, eval: loadEvals})[view]();
+  else selRerender[view]();
+}
+async function confirmSel(view){
+  const st = selState[view];
+  if(!st.checked.size){ toast(null, '没有勾选任何条目', 'mute'); return; }
+  const n = st.checked.size;
+  if(view === 'mem'){
+    // 记忆按 index 删除：倒序逐条删，避免前面的删除让后面的索引位移
+    let okN = 0;
+    for(const i of [...st.checked].map(Number).sort((a,b)=>b-a)){
+      const r = await memPost({action:'delete', index:i});
+      if(r && r.ok) okN++;
+    }
+    toast(null, `已清理 ${okN}/${n} 条记忆`, okN === n ? 'ok' : 'bad');
+    exitSel(view);
+  } else if(view === 'skill'){
+    let okN = 0;
+    for(const name of st.checked){
+      const r = await skillPost({action:'delete', name});
+      if(r && r.ok) okN++;
+    }
+    toast(null, `已清理 ${okN}/${n} 个技能`, okN === n ? 'ok' : 'bad');
+    exitSel(view);
+  } else if(view === 'gap'){
+    let okN = 0;
+    for(const k of st.checked){
+      const i = k.indexOf('|');
+      const r = await fetch('/api/gaps',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({kind: k.slice(0, i), key: k.slice(i+1)})
+      }).then(x=>x.json()).catch(()=>null);
+      if(r && r.removed) okN++;
+      // 清掉的同步出「新增提示」基线，免得下次核对把它当新登记误报
+      gapsKnownKeys = gapsKnownKeys.filter(x => x !== k);
+    }
+    toast(null, `已清理 ${okN}/${n} 条缺口记录`, okN === n ? 'ok' : 'bad');
+    exitSel(view);
+  } else if(view === 'eval'){
+    evalData.cases = evalData.cases.filter(
+      c => evalData.protected.includes(c.id) || !st.checked.has(c.id));
+    exitSel(view, false);            // 退出全选但不重拉：保存后 loadEvals 统一刷
+    await saveEvalTasks(null);
+  }
+}
+$('btnMemSel').onclick = ()=> enterSel('mem');
+$('btnSkillSel').onclick = ()=> enterSel('skill');
+$('btnGapSel').onclick = ()=> enterSel('gap');
+$('btnEvalSel').onclick = ()=> enterSel('eval');
+
 /* ================= 记忆管理 =================
    任务跑完会自动往工作区记忆里沉淀「用户偏好」（规则 + 本地模型提炼），
    这个页面负责查看、手动补充、逐条删除与整体清空。记忆不分层。 */
@@ -1679,24 +1813,38 @@ async function memPost(body){
     return await r.json();
   }catch(e){ return null; }
 }
+/* 行内编辑：记住正在编辑的行号（entries() 的 index，跨重渲染稳定） */
+let memEditIdx = null;
 function renderMemory(d){
   const box = $('memList');
   if(!box) return;
+  selRaw.mem = d;
   box.innerHTML = '';
   const items = (d && d.entries) || [];
+  if(memEditIdx !== null && !items.some(e => e.index === memEditIdx)) memEditIdx = null;
   memBadge(items.length);
   if(d && d.path) $('memPath').textContent = d.path;
   if(!items.length){
+    if(selState.mem.on) exitSel('mem', false);   // 清空了还停在空列表：自动退出全选
     box.appendChild(el('div','task-empty',
       '还没有记忆。任务跑完会自动沉淀偏好（你明说「记住 / 以后 / 每次」的内容一定会被收到）；也可以在上面手动添加。'));
     return;
   }
   for(const e of items){
     const row = el('div','mem-item');
+    if(selState.mem.on) row.appendChild(selCheckbox('mem', String(e.index)));
     row.appendChild(el('div','mtxt', e.text || ''));
     const meta = el('div','mmeta');
     if(e.ts) meta.appendChild(el('span','', e.ts));
     if(e.task) meta.appendChild(el('span','mtag', '任务 ' + e.task));
+    const edt = el('button','mini-btn','编辑');
+    edt.onclick = ()=>{
+      if(selState.mem.on){ toast(null, '先退出全选模式再编辑', 'mute'); return; }
+      if(memEditIdx !== null && memEditIdx !== e.index){ toast(null, '已有条目在编辑中，先保存或取消', 'mute'); return; }
+      memEditIdx = memEditIdx === e.index ? null : e.index;
+      renderMemory(selRaw.mem);
+    };
+    meta.appendChild(edt);
     const del = el('button','mini-btn','删除');
     del.title = '只删这一条';
     del.onclick = async ()=>{
@@ -1706,8 +1854,35 @@ function renderMemory(d){
     };
     meta.appendChild(del);
     row.appendChild(meta);
+    if(memEditIdx === e.index) row.appendChild(memEditor(e));
     box.appendChild(row);
   }
+}
+/* 记忆编辑器：只改正文，时间与任务标记原样保留（出处不因改写而失真） */
+function memEditor(e){
+  const box = el('div','eval-edit');
+  const ta = document.createElement('textarea');
+  ta.rows = 2;
+  ta.placeholder = '记忆内容（最长 600 字，换行会压平）';
+  ta.value = e.text || '';
+  const foot = el('div','ee-foot');
+  const cancel = el('button','mini-btn','取消');
+  cancel.onclick = ()=>{ memEditIdx = null; renderMemory(selRaw.mem); };
+  const save = el('button','mini-btn','保存');
+  save.onclick = async ()=>{
+    const text = ta.value.trim();
+    if(!text){ toast(save, '内容不能为空', 'bad'); return; }
+    const r = await memPost({action:'update', index:e.index, text});
+    if(r && r.ok){
+      memEditIdx = null;
+      renderMemory(r);
+      toast(null, '已更新这条记忆，新任务开始时会按更新后的内容生效', 'ok');
+    }
+    else toast(save, (r && r.error) || '保存失败', 'bad');
+  };
+  foot.appendChild(cancel); foot.appendChild(save);
+  box.appendChild(ta); box.appendChild(foot);
+  return box;
 }
 async function loadMemory(){
   try{
@@ -1738,7 +1913,6 @@ function checkMemoryGrew(){
   }).catch(()=>{});
 }
 $('navMemory').onclick = ()=>{ showView('memory'); loadMemory(); };
-$('btnMemRefresh').onclick = ()=> loadMemory();
 $('btnMemAdd').onclick = async ()=>{
   const inp = $('memAddInput');
   const text = (inp.value || '').trim();
@@ -1748,21 +1922,14 @@ $('btnMemAdd').onclick = async ()=>{
   else toast($('btnMemAdd'), (r && r.error) || '添加失败', 'bad');
 };
 $('memAddInput').onkeydown = e => { if(e.key === 'Enter'){ e.preventDefault(); $('btnMemAdd').click(); } };
-$('btnMemClear').onclick = async ()=>{
-  const ok = await confirmModal({
-    title: '清空全部记忆？',
-    sub: '后续任务将不再读到这些结论与偏好，此操作不可撤销。',
-    danger: true, okText: '全部清空'
-  });
-  if(!ok) return;
-  const r = await memPost({action:'clear'});
-  if(r && r.ok){ renderMemory(r); toast($('btnMemClear'), '记忆已清空', 'mute'); }
-};
+/* 「全部清空」已由行内全选清理取代（见 selState / confirmSel） */
 
 /* ================= 技能管理 =================
    两块：「提取得到的技能」（Agent 自检机制沉淀，frontmatter 带 auto_learned）
    和「安装得到的技能」（放进 skills/ 目录的）。每条给出 名字 / 作用 / 时间 / 路径。 */
 let skillKnownCount = 0;
+/* 行内编辑：正在编辑的技能名（跨重渲染稳定；null = 没有在编辑的） */
+let skillEditName = null;
 async function skillPost(body){
   try{
     const r = await fetch('/api/skills',{
@@ -1776,6 +1943,7 @@ async function skillPost(body){
 /* 单条技能卡片：纵向排布，名称一行、作用一行、边界/时间/路径一行 */
 function skillItem(s){
   const it = el('div','sk-item');
+  if(selState.skill.on) it.appendChild(selCheckbox('skill', s.name));
   const head = el('div','sk-head');
   head.appendChild(el('span','sk-name', s.name));
   head.appendChild(el('span','sk-tag' + (s.source === 'extracted' ? ' extracted' : ''),
@@ -1810,6 +1978,14 @@ function skillItem(s){
   meta.appendChild(el('span','', `${whenLabel}：${s.when_text || '未知'}`));
   if(s.note) meta.appendChild(el('span','', s.note));
   if(s.managed){
+    const edt = el('button','mini-btn','编辑');
+    edt.title = '修改作用与触发边界（description 是自动匹配的依据）';
+    edt.onclick = ()=>{
+      if(selState.skill.on){ toast(null, '先退出全选模式再编辑', 'mute'); return; }
+      if(skillEditName && skillEditName !== s.name){ toast(null, '已有技能在编辑中，先保存或取消', 'mute'); return; }
+      skillEditName = skillEditName === s.name ? null : s.name;
+      renderSkills(selRaw.skill);
+    };
     const del = el('button','mini-btn','删除');
     del.title = '删除该技能（删除前会自动备份到 .run/）';
     del.onclick = async ()=>{
@@ -1824,12 +2000,51 @@ function skillItem(s){
       else toast(del, (r && r.error) || '删除失败', 'bad');
     };
     const box = el('span','sk-actions');
+    box.appendChild(edt);
     box.appendChild(del);
     meta.appendChild(box);
   }
   it.appendChild(meta);
   if(s.path) it.appendChild(el('div','sk-path', s.path));
+  if(skillEditName === s.name) it.appendChild(skillEditor(s));
   return it;
+}
+/* 技能编辑器：只改 作用 / 适用 / 不适用 三个 frontmatter 字段，
+   名称、版本与正文不动；改完服务端重扫注册表，自动匹配立即生效 */
+function skillEditor(s){
+  const box = el('div','eval-edit');
+  const descTa = document.createElement('textarea');
+  descTa.rows = 2;
+  descTa.placeholder = '作用（description：自动匹配的主要依据，不能为空）';
+  descTa.value = s.description || '';
+  const useTa = document.createElement('textarea');
+  useTa.rows = 2;
+  useTa.placeholder = '适用场景（可空）：什么任务该命中它';
+  useTa.value = s.when_to_use || '';
+  const notTa = document.createElement('textarea');
+  notTa.rows = 2;
+  notTa.placeholder = '不适用场景（可空）：命中时技能会主动让位';
+  notTa.value = s.when_not_to_use || '';
+  const foot = el('div','ee-foot');
+  const cancel = el('button','mini-btn','取消');
+  cancel.onclick = ()=>{ skillEditName = null; renderSkills(selRaw.skill); };
+  const save = el('button','mini-btn','保存');
+  save.onclick = async ()=>{
+    if(!descTa.value.trim()){ toast(save, '作用（description）不能为空', 'bad'); return; }
+    const r = await skillPost({action:'update', name:s.name,
+      description: descTa.value, when_to_use: useTa.value,
+      when_not_to_use: notTa.value});
+    if(r && r.ok){
+      skillEditName = null;
+      renderSkills(r);
+      toast(null, `技能 ${s.name} 已保存，自动匹配立即按新描述生效`, 'ok');
+    }
+    else toast(save, (r && r.error) || '保存失败', 'bad');
+  };
+  foot.appendChild(cancel); foot.appendChild(save);
+  box.appendChild(descTa); box.appendChild(useTa); box.appendChild(notTa);
+  box.appendChild(foot);
+  return box;
 }
 
 function fillSkillSection(listEl, items, emptyText){
@@ -1844,8 +2059,10 @@ function fillSkillSection(listEl, items, emptyText){
 function renderSkills(d){
   const exBox = $('skillExtractedList'), inBox = $('skillInstalledList');
   if(!exBox || !inBox) return;
+  selRaw.skill = d;
   const extracted = (d && d.extracted) || [];
   const installed = (d && d.installed) || [];
+  if(selState.skill.on && !extracted.length && !installed.length) exitSel('skill', false);
   skillKnownCount = (d && d.extracted_count) || 0;
   $('skExtractedCount').textContent = extracted.length + ' 个';
   $('skInstalledCount').textContent = installed.length + ' 个';
@@ -1869,13 +2086,25 @@ async function loadSkills(){
    - capability_missing 工具预检：任务意图需要的能力，环境一个工具都没有
    - eval_fail          评测任务失败（失败层归因写在 samples 里）
    同类缺口合并计数，用来回答「该补什么工具 / 该沉淀什么技能」。 */
+/* 行内编辑：正在编辑的记录（kind|key，跨重渲染稳定；null = 没有在编辑的） */
+let gapEditKey = null;
 function gapItem(g){
   const it = el('div','sk-item');
+  if(selState.gap.on) it.appendChild(selCheckbox('gap', selKeyOf.gap(g)));
   const head = el('div','sk-head');
   head.appendChild(el('span','sk-name', g.key || '(未知)'));
   head.appendChild(el('span','sk-tag', g.kind_label || g.kind || ''));
   if(g.count) head.appendChild(el('span','sk-ver', '×' + g.count));
-  // 删除按钮：参考技能管理的 .sk-actions（margin-left:auto），靠右对齐不跟文案
+  const gkey = (g.kind || '') + '|' + (g.key || '');
+  // 编辑/删除按钮：参考技能管理的 .sk-actions（margin-left:auto），靠右对齐不跟文案
+  const edt = el('button','mini-btn','编辑');
+  edt.title = '修订名称与样例描述（次数与时间是架构记录，不可改）';
+  edt.onclick = ()=>{
+    if(selState.gap.on){ toast(null, '先退出全选模式再编辑', 'mute'); return; }
+    if(gapEditKey && gapEditKey !== gkey){ toast(null, '已有记录在编辑中，先保存或取消', 'mute'); return; }
+    gapEditKey = gapEditKey === gkey ? null : gkey;
+    renderGaps(selRaw.gap);
+  };
   const del = el('button','mini-btn','删除');
   del.title = '删除该条记录';
   del.onclick = async ()=>{
@@ -1898,20 +2127,63 @@ function gapItem(g){
     else toast(del, '删除失败', 'bad');
   };
   const box = el('span','sk-actions');
+  box.appendChild(edt);
   box.appendChild(del);
   head.appendChild(box);
   it.appendChild(head);
   if((g.samples||[]).length) it.appendChild(el('div','sk-desc', g.samples.join('；')));
   it.appendChild(el('div','sk-path', `首次：${g.first || '—'}　最近：${g.last || '—'}`));
+  if(gapEditKey === gkey) it.appendChild(gapEditor(g));
   return it;
+}
+/* 缺口编辑器：只改 名称(key) 与 样例描述；次数/首末时间是架构记的事实，不开放。
+   改名会迁移台账键（同名已存在会被服务端拒绝），保存后同步已知基线防误报 */
+function gapEditor(g){
+  const box = el('div','eval-edit');
+  const keyIn = document.createElement('input');
+  keyIn.placeholder = '名称（同类缺口按名称合并计数）';
+  keyIn.value = g.key || '';
+  const ta = document.createElement('textarea');
+  ta.rows = 3;
+  ta.placeholder = '样例描述（每行一条，最多 5 条；留空即清空样例）';
+  ta.value = (g.samples || []).join('\n');
+  const foot = el('div','ee-foot');
+  const cancel = el('button','mini-btn','取消');
+  cancel.onclick = ()=>{ gapEditKey = null; renderGaps(selRaw.gap); };
+  const save = el('button','mini-btn','保存');
+  save.onclick = async ()=>{
+    const nk = keyIn.value.trim();
+    if(!nk){ toast(save, '名称不能为空', 'bad'); return; }
+    const samples = ta.value.split('\n').map(x => x.trim()).filter(Boolean);
+    const r = await fetch('/api/gaps',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'update', kind:g.kind || '', key:g.key || '',
+                            new_key:nk, samples})
+    }).then(x=>x.json()).catch(()=>null);
+    if(r && r.ok){
+      gapEditKey = null;
+      renderGaps(r);
+      // 名称可能改了：基线里换掉旧键，免得下次核对把改名当成「新增缺口」误报
+      const oldKey = (g.kind||'') + ':' + (g.key||''), newKey = (g.kind||'') + ':' + nk;
+      gapsKnownKeys = gapsKnownKeys.filter(k => k !== oldKey);
+      if(!gapsKnownKeys.includes(newKey)) gapsKnownKeys.push(newKey);
+      toast(null, `记录已保存${nk !== g.key ? `：${g.key} → ${nk}` : ''}，同类缺口再出现会按新名称合并`, 'ok');
+    }
+    else toast(save, (r && r.error) || '保存失败', 'bad');
+  };
+  foot.appendChild(cancel); foot.appendChild(save);
+  box.appendChild(keyIn); box.appendChild(ta); box.appendChild(foot);
+  return box;
 }
 function renderGaps(d){
   const box = $('gapList');
   if(!box) return;
+  selRaw.gap = d;
   const items = (d && d.items) || [];
   $('gapCount').textContent = items.length + ' 条';
   box.innerHTML = '';
   if(!items.length){
+    if(selState.gap.on) exitSel('gap', false);   // 清空了还停在空列表：自动退出全选
     box.appendChild(el('div','task-empty',
       '还没有记录。模型调用不存在的工具、任务需要环境没有的能力、或评测任务失败时，会由架构自动记在这里。'));
     return;
@@ -1925,18 +2197,6 @@ async function loadGaps(){
     renderListError($('gapList'), e, loadGaps);
   }
 }
-$('btnGapClear').onclick = async ()=>{
-  const r = await fetch('/api/gaps',{
-    method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
-  }).then(r=>r.json()).catch(()=>null);
-  if(r){
-    renderGaps(r);
-    // 基线跟着清零：清空后的新登记才不会被旧基线误判成「没有新增」
-    gapsKnownTotal = 0; gapsKnownKeys = [];
-    toast(null, '已清空能力缺口记录', 'mute');
-  }
-  else toast($('btnGapClear'), '清空失败', 'bad');
-};
 /* 后台模型抽取可能晚于 done 才把 skill 落盘：收尾后核对一次，有新增就提示 */
 function checkSkillGrew(){
   fetch('/api/skills').then(r=>r.json()).then(d=>{
@@ -1969,8 +2229,6 @@ function checkGapsGrew(){
 }
 $('navSkill').onclick = ()=>{ showView('skills'); loadSkills(); };
 $('navGaps').onclick = ()=>{ showView('gaps'); loadGaps(); };
-$('btnSkillRefresh').onclick = ()=>{ loadSkills(); };
-$('btnGapRefresh').onclick = ()=>{ loadGaps(); };
 /* ================= 评测台 =================
    评测集是 harness 的标尺。这个栏目负责三件事：
    1. 一键运行（后台线程，前端轮询进度，跑完弹提示并打开报告）；
@@ -2008,6 +2266,7 @@ function renderEvalTasks(){
   box.innerHTML = '';
   $('evalTaskCount').textContent = evalData.cases.length + ' 条';
   if(!evalData.cases.length){
+    if(selState.eval.on) exitSel('eval', false);   // 清空了还停在空列表：自动退出全选
     box.appendChild(el('div','task-empty','任务集是空的。点「新增任务」加一条（旧文件每次保存前都备份在 evals/.run/）。'));
     return;
   }
@@ -2024,6 +2283,7 @@ function renderEvalTasks(){
 function evalTaskItem(c){
   const prot = evalData.protected.includes(c.id);
   const it = el('div','sk-item');
+  if(selState.eval.on) it.appendChild(selCheckbox('eval', c.id, prot));
   const head = el('div','sk-head');
   head.appendChild(el('span','sk-name', (prot ? '🔒 ' : '') + (c.id || '(无 id)')));
   head.appendChild(el('span','sk-tag', c.category || 'general'));
@@ -2123,6 +2383,22 @@ async function delEvalTask(c){
   evalData.cases = evalData.cases.filter(x => x !== c);
   await saveEvalTasks(null);
 }
+/* 新增任务：插入一条空白草稿并展开行内编辑器（含 id/分类/指令/判定/seed） */
+$('btnEvalAdd').onclick = ()=>{
+  if(selState.eval.on){ toast(null, '先退出全选模式再新增任务', 'mute'); return; }
+  if(evalEditRef){ toast(null, '已有任务在编辑中，先保存或取消', 'mute'); return; }
+  const c = {id: '', category: 'coding', prompt: '', expect: {}, seed: {},
+             notes: '', _isNew: true};
+  evalData.cases.push(c);
+  evalEditRef = c;
+  renderEvalTasks();
+  const editor = $('evalTaskList').querySelector('.eval-edit');
+  if(editor){
+    editor.scrollIntoView && editor.scrollIntoView({behavior:'smooth', block:'nearest'});
+    const first = editor.querySelector('input');
+    if(first) first.focus();
+  }
+};
 /* ---- 运行与进度 ---- */
 function applyEvalState(st){
   if(st.running){ showEvalRunning(st); startEvalPoll(); }
@@ -2187,7 +2463,7 @@ $('btnEvalStop').onclick = async ()=>{
   }).then(x=>x.json()).catch(()=>null);
   toast(null, r && r.ok ? '已请求停止：当前任务跑完后收工' : (r && r.error) || '停止失败', 'mute');
 };
-$('btnEvalRefresh').onclick = ()=> loadEvals();
+/* 刷新按钮已移除：清理完前端立即重拉显示，服务重启后用 Ctrl+F5 强刷 */
 /* ---- 报告 ---- */
 let evalOpenReport = null;   // 当前展开的报告文件名；null = 全部收起
 function renderEvalReports(reports){
@@ -2251,20 +2527,6 @@ async function openEvalReport(name, force){
   }catch(e){ toast(null, '报告打开失败：' + e.message, 'bad'); }
 }
 $('navEval').onclick = ()=>{ showView('evals'); loadEvals(); };
-$('btnSkillClear').onclick = async ()=>{
-  const ok = await confirmModal({
-    title: '清空全部技能？',
-    sub: '「提取得到的」和「安装得到的」都会删掉（含 webapp-testing 这类内置技能）。删除前会自动整目录备份到 .run/skills-backup-时间戳/，但网页上一键不可撤销。',
-    danger: true, okText: '全部清空'
-  });
-  if(!ok) return;
-  const r = await skillPost({action:'clear_all'});
-  if(r && r.ok){
-    renderSkills(r);
-    toast($('btnSkillClear'),
-      `已清空 ${r.removed||0} 个技能` + (r.backup ? '，备份在 ' + r.backup : ''), 'mute');
-  } else toast($('btnSkillClear'), (r && r.error) || '清空失败', 'bad');
-};
 function refreshSkillCount(){
   fetch('/api/skills').then(r=>r.json()).then(d=>{
     skillKnownCount = d.extracted_count || 0;

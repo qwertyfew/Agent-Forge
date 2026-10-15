@@ -125,4 +125,51 @@ def clear(cfg, kind: str = "", key: str = "") -> int:
         return 0
 
 
-__all__ = ["record", "snapshot", "clear", "KIND_LABEL"]
+def update(cfg, kind: str, key: str, new_key: str = "",
+           samples=None) -> str:
+    """手工修订一条记录，只开放 名称(key) 与 样例描述(samples) 两个字段——
+    count / first / last 是架构记下的事实，不该由人手改。
+
+    samples 传 None 表示不动，传 list 表示整体替换（逐条压平、截断、去空，
+    上限 _MAX_SAMPLES 条）。改名时迁移台账键；目标名已存在则拒绝（不自动合并，
+    让前端提示改名）。返回空串表示成功，否则返回给前端展示的失败原因。
+    """
+    try:
+        with _LOCK:
+            p = _path(cfg)
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return "台账文件读取失败"
+            items = data.get("items") or {}
+            if not isinstance(items, dict):
+                return "台账文件损坏"
+            slot = f"{kind}|{key}"
+            it = items.get(slot)
+            if it is None:
+                return "记录不存在（可能已被删除），刷新后重试"
+            nk = str(new_key or "").strip() or key
+            nslot = f"{kind}|{nk}"
+            if nslot != slot and nslot in items:
+                return f"同名记录已存在：{nk}"
+            if samples is not None:
+                cleaned: list[str] = []
+                for s in (samples if isinstance(samples, list) else []):
+                    s = re.sub(r"\s+", " ", str(s or "")).strip()[:_MAX_DETAIL]
+                    if s:
+                        cleaned.append(s)
+                it["samples"] = cleaned[:_MAX_SAMPLES]
+            it["key"] = nk
+            if nslot != slot:
+                del items[slot]
+                items[nslot] = it
+            tmp = p.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                           encoding="utf-8")
+            tmp.replace(p)
+            return ""
+    except Exception:  # noqa: BLE001  台账操作绝不拖垮页面
+        return "写入失败"
+
+
+__all__ = ["record", "snapshot", "clear", "update", "KIND_LABEL"]

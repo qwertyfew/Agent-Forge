@@ -74,7 +74,10 @@ def run_case_once(case, label: str, model: str, timeout: int,
     _prep_sandbox(sandbox, case)
 
     cfg = Config.load(ROOT / "config.yaml")
-    cfg.workspace_root = str(sandbox)
+    # 必须是 Path 不是 str：shell 工具收尾会调 workspace_root.resolve()，
+    # 传 str 会让 run_command（不传 cwd 时）全灭——第三轮评测 17/24 的元凶，
+    # c2/c5 的代码其实是对的，死在工具层 AttributeError 上。
+    cfg.workspace_root = Path(sandbox)
     try:
         cli = CLI(cfg, auto_approve=True, model_key=model or None)
     except Exception as e:  # noqa: BLE001
