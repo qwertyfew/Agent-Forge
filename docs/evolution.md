@@ -1474,7 +1474,8 @@ AgentForge 这种自研 harness。
 **落地**（零代码改动，纯技能层）：
 
 - 全局安装 `rea-agents`（npm，147 包，`rea` v6.5.0）；源码已部署
-  `D:/AI_develop/project/rea`（133MB / 3964 文件，经 ghproxy 克隆）。
+  `D:/AI_develop/project/rea`（133MB / 3964 文件，经 ghproxy 克隆；
+  第 36 步迁入仓库内 `external/rea`）。
 - 新增 `skills/rea-analysis/SKILL.md`（v1.0）：按目标类型选路的命令速查——
   JS/Electron（`analyze-javascript-application` → 全量 Evidence 落盘 →
   `inspect-analysis-view` 投影摘要/分页，绝不把几百 MB 灌进上下文）、.NET
@@ -1558,3 +1559,24 @@ error 路径）；finally 归还执行位。前端放开发送：执行中不再
 新增 `test_ambiguity_gate.py` 36 项（含 stub hub 驱动真实 Agent.run 的端到端：
 空目录→文本追问→弹窗→脚本答复→继续任务、记忆命中不弹窗、确认存入/跳过两路）；
 `test_evalsdesk` 扩 E26/E26b 并修脆断言。全套 28 个测试文件 GREEN。
+
+## 第 36 步：external/ 第三方接入目录（2026-10-16）
+
+**问题**：REA 源码原来放在项目父文件夹（`D:/AI_develop/project/rea`），游离在仓库外；
+用户计划持续接入更多第三方项目到 harness，需要一个固定、有序的落位约定。
+
+**落地**：新建仓库内 `external/` 目录作为第三方接入项目的统一存放地，
+REA 源码迁入 `external/rea`（同盘移动，git 历史完整核验 3964 文件/HEAD 不变）。
+三个关键点：
+
+- **运行时零依赖**：`rea` CLI 来自全局 npm 安装，与源码位置无关，迁移后 CLI
+  照常工作（v6.5.0 验证通过）——源码克隆只作参考，不是运行时依赖；
+- **嵌套仓库不入库**：`external/` 各项目自带 `.git`，加入 `.gitignore` 防止
+  `git add -A` 把它们吞成本仓库的嵌入式仓库；
+- **文档路径同步**：README 第 34 行、`skills/rea-analysis/SKILL.md`、
+  evolution 第 34 步的旧路径全部更新或加注。
+
+**约定（后续接入新项目照此办理）**：每个第三方项目放 `external/<name>/`（保留
+其自身 git 仓库与历史）；要接入 harness 能力时为其新增对应 skill（如
+`skills/rea-analysis/`）或经未来的 MCP 客户端挂载工具；源码位置本身不产生
+任何自动接入——接入点是 skill，不是目录。

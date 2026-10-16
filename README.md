@@ -450,10 +450,11 @@ examples/              示例工作区（demo-excel、novel-sample）
 | 31 | 复制任务的验证前置 | 第四轮唯一失败 f4（模型 write_file 肉眼复制，丢掉 draft.md 尾部 CRLF，正路 copy/cp 不走）的处置：harness 自动给复制/备份类任务书补逐字节比对声明（`declare_copy_check`，保守判据：恰好两个文件名、无改内容诉求、无现成声明才补）；闸门放行 `python -c` 内联比对命令（原先只认指向真实脚本的命令，声明整条被弃）；执行模型系统提示与调度器提示词立规矩「复制走命令、禁止读取后重写」。真实栈 e2e 实证：模型改用 `copy /y` 并自跑比对，闸门通过附报告 |
 | 32 | 评测台一键出题 + 新增任务转跳修复 | 「新增任务」只填任务指令，id/分类/seed/expect 由决策模型一键生成，产出过程序收口（分类白名单、id 规范化、危险核验命令黑名单、悬空 check_contains 拆除——判定器只在 check 层内读它；生成不可用退回手动全字段编辑器）；新草稿从清单末尾改为**置顶渲染**，修掉「点新增整页转跳到底部」 |
 | 33 | 通用诚实守卫 + 提示词保证收口 + 缺口台账小步骤 | 删 preflight 能力枚举，换轨迹证据比对（honesty_guard）：只问「产物是否真实、没做成有没有坦白」，h3 甩锅型失败被逼供；汇总层读产出文件内容（方案 B）+ 前端文件卡片可展开预览；三条提示词软保证按「程序比对 + 一轮修正」收口——goal 保真（拆分丢交付物→重拆/补进）、项目现状须查证（零读取断言现状→修正轮）、关键结果必须进答复（要求句硬 token 归一比对）；缺口台账记录自动带「小步骤」（任务→子任务→实现方案的当前位置书签）；评测台：f5 判定改看回复内容、核验命令永久禁交互凭据（GIT_TERMINAL_PROMPT=0）、报告按修改时间倒序、新增/编辑误拦修复、单条/批量评测与全选模式增强 |
-| 34 | REA 逆向能力接入（路径 A：CLI 桥接） | 全局安装 `rea-agents`（rea CLI v6.5.0，源码已部署 `D:\AI_develop\project\rea`），agent 经 `run_command` 直接调 `rea <子命令> --json` 获得逆向分析能力：JS/Electron 应用静态重建（全量 Evidence 先落盘再投影摘要，绝不灌上下文）、.NET 程序集元数据/CIL、SQLite 快照、Go/Rust 二进制、原生分析（需 Hopper/Ghidra/IDA provider）与运行时捕获；新增 `skills/rea-analysis/SKILL.md` 收录按目标类型选路的命令速查与 Evidence 引用纪律（结论必须带出处、观察与推断分开）。零代码改动——纯技能层扩展，`rea doctor` 预检环境 |
+| 34 | REA 逆向能力接入（路径 A：CLI 桥接） | 全局安装 `rea-agents`（rea CLI v6.5.0，源码克隆在仓库内 `external/rea`），agent 经 `run_command` 直接调 `rea <子命令> --json` 获得逆向分析能力：JS/Electron 应用静态重建（全量 Evidence 先落盘再投影摘要，绝不灌上下文）、.NET 程序集元数据/CIL、SQLite 快照、Go/Rust 二进制、原生分析（需 Hopper/Ghidra/IDA provider）与运行时捕获；新增 `skills/rea-analysis/SKILL.md` 收录按目标类型选路的命令速查与 Evidence 引用纪律（结论必须带出处、观察与推断分开）。零代码改动——纯技能层扩展，`rea doctor` 预检环境 |
 | 35 | 澄清弹窗全链路 + 确定性触发 + 算力闸门 | `ask_user` 工具三模式（评测脚本答案/交互挂起等 `/api/ask-answer`/CLI 静态提示）+ 前端弹窗卡片 + 系统提示第 9 条「信息不足先问再猜」；判定层加 `must_ask` 与 `tool_called`（f5 改过程判定，不再被回复措辞随机误判）；**确定性触发不指望模型自觉**：loop 层按工具固定输出格式识别 8 个检索类工具的「未命中/多候选」信号，模型收尾追问时 harness 亲自弹窗（多候选项直接用命中 repo 名）；弹窗前先翻记忆条目（命中喂模型不弹窗），信息补充后第二问「是否存入记忆」+ `notify` 绿色提示并刷记忆面板；评测台：上次评测常驻（重启从 JSON 恢复）、重跑按完整计划批次、查看跳转修复；前端页面独立渲染（composer 钉底、落地页纯显隐、「任务执行中」角标挂当前对话）；算力闸门 `compute.max_running`：超出登记 queued 排队、有空位自动开跑、前端放开发送 |
+| 36 | external/ 第三方接入目录 | 新建仓库内 `external/` 作为第三方项目统一存放地，REA 源码迁入 `external/rea`（git 历史完整）；`rea` CLI 来自全局 npm 安装、与源码位置无关，运行时零依赖；`external/` 加入 .gitignore 防嵌套仓库误入库；README/SKILL/evolution 旧路径同步更新。约定：接入点是 skill 而非目录——新项目放 `external/<name>/` 并为其新增对应 skill |
 
-上面这张表是全部 35 步的索引；**每一步的来龙去脉（以及「这套东西是怎么被一步步训出来的」）在 [`docs/evolution.md`](docs/evolution.md)**。README 不再重复长叙事——它是每次会话都要读的入口，不该背着两万字的历史。
+上面这张表是全部 36 步的索引；**每一步的来龙去脉（以及「这套东西是怎么被一步步训出来的」）在 [`docs/evolution.md`](docs/evolution.md)**。README 不再重复长叙事——它是每次会话都要读的入口，不该背着两万字的历史。
 
 ## 设计原则：设定靠架构，偏好靠记忆
 
