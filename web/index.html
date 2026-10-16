@@ -259,6 +259,13 @@
   .offline-bar .ob-retry{flex:none;font-size:11px;color:var(--err);background:transparent;
     border:1px solid var(--err);border-radius:7px;padding:1px 8px;cursor:pointer}
   .offline-bar .ob-retry:hover{background:var(--err);color:#fff}
+  /* 断点续跑：回看页里的「恢复执行」入口与说明行（在聊天画面底部追加） */
+  .resume-row{display:flex;justify-content:center;padding:10px 0 2px}
+  .resume-btn{font-size:12px;color:var(--accent);background:var(--accent-soft);
+    border:1px solid var(--accent);border-radius:9px;padding:5px 16px;cursor:pointer}
+  .resume-btn:hover{background:var(--accent);color:#fff}
+  .resume-note{font-size:11.5px;color:var(--ink3);text-align:center;
+    padding:4px 0 8px;border-bottom:1px dashed var(--line2);margin-bottom:8px}
   /* 任务条目平时不加框，仅悬停微亮、点击选中时描边高亮 */
   .task-item{display:flex;align-items:flex-start;gap:9px;padding:9px 11px;border-radius:12px;
     cursor:pointer;border:1px solid transparent;background:transparent;
@@ -3959,8 +3966,48 @@ function enterTaskView(task, opts = {}){
     }
     if((task.files || []).length) addFilesCard(task.files);
     if(task.error) addError(task.error);
+    // 断点续跑入口：被中断 / 出错的任务且留有执行记录，给一个「恢复执行」按钮。
+    // 点了以后服务端从台账取回历史、修复中断缝隙，从断点继续，而不是从零重跑。
+    if((task.status === 'stopped' || task.status === 'error') && (task.history || []).length > 1){
+      addResumeCard(task.id);
+    }
   }
   updateContextMeter(history, threshold);   // 实时入口的 history 是空的 → 计量归零，等事件流回填
+  scrollBottom();
+}
+
+/* 断点续跑：被中断任务回看页里的「恢复执行」入口 */
+function addResumeCard(tid){
+  const row = el('div','resume-row');
+  const b = el('button','resume-btn','⟲ 恢复执行');
+  b.onclick = () => resumeTask(tid);
+  row.appendChild(b);
+  log.appendChild(row);
+  scrollBottom();
+}
+
+async function resumeTask(tid){
+  if(busy) return;
+  setBusy(true);
+  try{
+    const d = await fetch('/api/tasks?id=' + encodeURIComponent(tid)).then(r=>r.json());
+    const t = d && d.task;
+    if(!t){ setBusy(false); addError('没有找到该任务，无法恢复'); return; }
+    // 恢复走 live 视图的统一路径（提问气泡 + 执行中状态条），
+    // 上次的完整过程仍在旧任务的回看页里；这里只播「从断点继续」的新内容
+    liveTask = liveTaskFrom(t);
+    enterTaskView(t, { live: true });
+    addResumeNote();
+    await streamChat('', [], { resume_of: tid });
+  }catch(e){
+    setBusy(false);
+    addError('恢复失败：' + e);
+  }
+}
+
+function addResumeNote(){
+  const n = el('div','resume-note','已从上次中断处继续执行——之前已完成的部分不会重做。');
+  log.appendChild(n);
   scrollBottom();
 }
 
@@ -6187,16 +6234,16 @@ function handleTaskEvent(ev, data){
     ensurePromptBubble();
 }
 
-async function streamChat(text, hist){
+async function streamChat(text, hist, extra){
   // 记下这次发出去的对话部分有多大、并把计数器归零，供第一条 stats 校准固定开销
-  sentMsgs = (hist || []).concat([{ role: 'user', content: text }]);
+  sentMsgs = (hist || []).concat(text ? [{ role: 'user', content: text }] : []);
   sentTokens = ctxTokens(sentMsgs);
   statsSeen = 0;
   lanes = null;   // 清掉上一轮的并行分栏（异常中断时可能残留）
   try{
     const res = await fetch('/api/chat',{
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
+      body: JSON.stringify(Object.assign({
         message: text,
         history: hist,
         // 显式带上本次任务的权限；服务端在没有这个字段时才回落到持久化的默认值
@@ -6204,7 +6251,7 @@ async function streamChat(text, hist){
         allow_write: allowWrite,
         auto_plan: autoPlan,
         multi_path: multiPath
-      })
+      }, extra || {}))
     });
     const reader = res.body.getReader();
     const dec = new TextDecoder();

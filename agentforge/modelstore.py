@@ -541,8 +541,12 @@ class ModelStore:
 
         这样选出来的组合既覆盖了强项维度，又不会塞进一堆能力重叠的模型。
         local_only=True 时只在本地模型（kind == "local"）里挑，付费模型一律不参与。
+        池子一律排除 available=False 的模型——「最佳配置」不该启用本机跑不了的
+        模型（没 pull 的本地模型、没密钥的付费模型）。注意付费模型的 available
+        只代表「密钥在」，余额耗尽 / 接口报错要等运行期才暴露（那是另一层问题）。
         """
-        pool = [e for e in self._catalog if (not local_only or e.kind == "local")]
+        pool = [e for e in self._catalog
+                if e.available and (not local_only or e.kind == "local")]
         limit = budget or self.budget or 3
         selected: list[ModelEntry] = []
         rest = list(pool)

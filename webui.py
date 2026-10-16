@@ -27,6 +27,7 @@ from agentforge.modelstore import ModelStore
 from agentforge.orchestrator import run_task
 from agentforge.planner import short_title
 from agentforge.prefs import PERMISSION_LABEL, PrefsStore
+from agentforge.resume import repair_history, resume_brief
 from agentforge.skills import write_meta
 from agentforge.taskstore import TaskStore
 
@@ -1424,11 +1425,35 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         message = (req.get("message") or "").strip()
-        if not message:
+        history = req.get("history") or []
+
+        # 会话恢复（断点续跑）：带 resume_of=<旧任务 id> 且不带正文时，从台账
+        # 取回旧任务的对话历史，修复中断缝隙（悬空 tool_calls 补合成应答、
+        # 孤儿 tool 消息丢弃）后作为初始上下文，正文换成「从中断处继续」的
+        # 续跑指令。新任务单独登记一条台账，旧任务记录原样保留。
+        display_prompt = ""       # 台账/界面展示用的任务原文（恢复时 = 原任务指令）
+        resume_of = str(req.get("resume_of") or "").strip()
+        if resume_of:
+            old = self.tasks.get(resume_of)
+            if not old:
+                self._json({"error": "没有找到该任务，无法恢复"}, 404)
+                return
+            if old.get("status") in ("running", "queued"):
+                self._json({"error": "该任务仍在执行中，不能恢复"}, 409)
+                return
+            old_hist = old.get("history") or []
+            if len(old_hist) < 2:
+                self._json({"error": "该任务没有可恢复的执行记录"}, 400)
+                return
+            history = repair_history(old_hist)
+            old_prompt = str(old.get("prompt") or old.get("title") or "").strip()
+            message = resume_brief(old_prompt)
+            display_prompt = (old_prompt + "\n\n（恢复执行：上一次运行被中断，"
+                              "本次从中断处继续。）")
+        elif not message:
             self._json({"error": "message 为空"}, 400)
             return
 
-        history = req.get("history") or []
         auto_plan = bool(req.get("auto_plan", True))
         multi_path = bool(req.get("multi_path", False))
         model_key = (req.get("model_key") or "auto").strip()
@@ -1450,8 +1475,10 @@ class _Handler(BaseHTTPRequestHandler):
         # 任务台账：这次对话先登记成 running，跑完再落最终状态。
         # 前端侧栏的「任务管理」靠它显示正在执行的任务，所以 SSE 第一帧就推 task。
         # 模型名交给后面的 assign 事件补（那里给的是给人看的展示名）。
+        # 台账/界面展示用 display_prompt（恢复任务时 = 原任务指令 + 恢复标记），
+        # 模型实际收到的是 message——两者在恢复场景下刻意不同。
         started_at = time.time()
-        task_id = self.tasks.begin(message, permission=permission)
+        task_id = self.tasks.begin(display_prompt or message, permission=permission)
         # 任务事件广播：发起连接直写自己，同时所有事件进总线——网页接管
         # （/api/tasks/<id>/stream）靠它重放+续播，不再只有干巴巴的进度条
         bus = TaskBus()
@@ -1530,7 +1557,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "task",
                 {
                     "id": task_id,
-                    "title": short_title(message, 90),
+                    "title": short_title(display_prompt or message, 90),
                     "status": "running" if got_slot else "queued",
                     "created_at": started_at,
                     "permission": permission,
@@ -1552,7 +1579,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.tasks.set_status(task_id, "running")
                 emit("task", {                   # 状态翻转再播一次：侧栏翻「执行中」
                     "id": task_id,
-                    "title": short_title(message, 90),
+                    "title": short_title(display_prompt or message, 90),
                     "status": "running",
                     "created_at": started_at,
                     "permission": permission,

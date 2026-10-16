@@ -1689,3 +1689,50 @@ ProxyHandler({}) 绕过；Edge 需 --remote-allow-origins=*。
 **验证**：真机全流程——点击条目→弹窗含 textarea→改内容→保存→关闭→列表落盘
 更新（随后还原）；四栏目按钮坐标一致；问号 content="?"；ws.title 已空；全程
 零运行时错误。前端语法 node --check 通过。
+
+## 第 41 步：会话恢复（断点续跑）+ 最佳配置排除不可用模型（2026-10-16）
+
+对照审查报告（`evals/harness-tutorial-comparison-20261016.md`，对标 mini-swe-agent、
+build-your-own-harness 17 层清单、learn-claude-code）点名的两个缺口在本步补上。
+
+### 1. 会话恢复
+
+**问题**：任务被打断（服务重启 / 用户停止 / 出错）后只能从头重跑——实测有过 28
+分钟的长任务，中断即白跑。台账里明明留着对话历史，却没有恢复的通道。
+
+**为什么不能直接回灌**：中断可能恰好落在「assistant 已发出 tool_calls、工具还没
+执行完」的检查点缝隙里，历史里就有一个**悬空调用**（没有对应的 tool 应答）——
+协议要求 assistant 的每个调用都有应答，直接灌回去下一轮请求直接 400。
+
+**实现**（新模块 `agentforge/resume.py`）：
+- `repair_history()`：悬空调用补合成应答（如实写「该调用未执行完成，结果未知」，
+  引导模型现场重查，不假装成功）；孤儿 tool 消息（前面没有挂调用的 assistant）
+  丢弃；坏数据过滤；完好的历史逐字段原样通过。
+- `/api/chat` 新增 `resume_of` 参数：服务端从台账取旧任务历史 → 修复 → 作为初始
+  上下文，正文换成续跑指令（`resume_brief`：带原始指令 + 「先核实已完成的、
+  不要重做」）。新任务单独登记台账（展示用原任务指令 + 恢复标记），旧记录不动。
+- 前端：被中断/出错且留有执行记录的任务回看页，追加「⟲ 恢复执行」按钮；
+  点击走 live 视图统一路径，流式播报续跑内容。
+- 回归：`tools/test_resume.py` 17 项断言（含「真实应答原样保留」——首版实现
+  在收集应答时忘了把真实 tool 消息追加进输出，测试当场抓出）。
+
+### 2. 最佳配置排除跑不了的模型
+
+**核验结论**：付费模型的 `available` 只看「有没有 api_key」，`best_combo` 又不按
+available 过滤——连接失败的付费模型（实测 SiliconFlow GLM-5.3 HTTP 402 余额不足）
+点「自动配置最佳模型」**仍会被启用**，运行时撞 402 任务直接失败、无 failover。
+此前安全纯靠手动取消勾选。修复：`best_combo` 池子一律排除 `available=False`
+（没 pull 的本地模型、没密钥的付费模型不再入选）。**运行期 failover（调用失败
+自动换模型重试）仍缺**，已记入对照报告作为后续项。
+
+### 3. 其他
+
+- `external/` 收编 mini-swe-agent（2.9MB）与 learn-claude-code（6.4MB，实际 17 个
+  session）；hermes-agent 留二阶段。
+- README 记入待办：沙箱隔离上云部署时实施（教程共识：bash-only ≠ 隔离）。
+- REA 逐项差距清单任务书已写好（`.run/task-external-gap.md`，硬性要求四列
+  「对比点/对方做法附证据/AgentForge 现状附证据/借鉴建议」）；首轮提交后被
+  连带停止未产出，待服务重启后重跑。
+
+**验证**：`tools/test_resume.py` 17/17 PASS；`py_compile` 三文件通过；前端内联
+JS `node --check` 通过；best_combo 冒烟（有密钥入选/不可用排除）双向正确。
