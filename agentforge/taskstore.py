@@ -105,7 +105,7 @@ class Task:
     # 要到任务结束才写，中间这段时间别的端（网页、CLI、脚本）想画这条任务的
     # 提问，除了它没有别的真相可用。
     prompt: str = ""
-    status: str = "running"            # running | done | error | stopped
+    status: str = "running"            # queued | running | done | error | stopped
     created_at: float = field(default_factory=_now)
     ended_at: float | None = None
     models: list[str] = field(default_factory=list)
@@ -232,6 +232,18 @@ class TaskStore:
                 task.cost = round(task.cost + float(cost), 6)
             if free is False:
                 task.local_only = False
+            if progress:
+                task.progress = progress[:120]
+            self._save()
+
+    def set_status(self, tid: str, status: str, progress: str = "") -> None:
+        """只翻状态不动结局：排队（queued）↔ 开跑（running）之间的迁移用它。
+        结局（done/error/stopped）仍走 finish()，别混用。"""
+        with self._lock:
+            task = self._find(tid)
+            if task is None:
+                return
+            task.status = status
             if progress:
                 task.progress = progress[:120]
             self._save()

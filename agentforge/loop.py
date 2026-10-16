@@ -59,6 +59,12 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
    登记（kind=tool 缺工具/能力；kind=skill 缺技能/方法论，spec 写清它需要做什么）。
    登记后按返回指令走：缺工具→如实告知用户无法完成，绝不编造；
    缺技能→用 github_search / web_search 检索通用做法，在最终回复里总结出可操作的流程。
+9. **信息不足先问再猜**：任务需要的关键信息检索不到（用户提到的项目/文件/概念
+   在工作区和已查来源里都没有）时，用 ask_user 发起澄清弹窗——question 一句话
+   点明要澄清什么，options 给 2-4 个简明选项（每个不超过 12 字，覆盖最可能的
+   情况，用户也可以自行补充文字）。用户的答复作为工具结果返回，拿到后**按答复
+   继续**（如答复指向 git 项目就走检索、指向本地项目就读工作区）。确实拿不到
+   答复才按最常见的情况假设并注明。禁止在关键信息缺失时编造。
 
 ## 输出要求
 - 用中文回复，简洁直接，不复述工具返回的原文。
@@ -149,6 +155,102 @@ find_tools("关键词") 取它的用法，然后再调用它；也可以直接�
 """
 
 COMPACT_THRESHOLD = 60_000
+
+# ---------------------------------------------------------------------------
+# 确定性澄清触发：检索「未命中 / 多候选」不靠提示词祈祷，程序亲自识别。
+#
+# 背景（2026-10-15 评测 r1 两轮同因失败）：gemma4:12b 检索不到时会把澄清
+# 问题写在回复文本里，而不是调用 ask_user——意图对、通道错。提示词第 9 条
+# 已在位但管不住小模型，所以把触发下沉到架构层：
+#   1. 每次工具返回后，按工具层**固定渲染格式**识别「未命中 / 多候选」信号
+#      （纯正则，不依赖模型任何自觉；工具改格式这里同步改）；
+#   2. 模型给出最终回复时，若本场 run 存在未消化的信号且回复带追问语气
+#      （同样是正则判定），harness 亲自发起 ask_user 弹窗——问题取模型
+#      追问的原话（拿不到就按信号合成），多候选时选项直接用命中项目名；
+#   3. 拿到答复（真实用户 / 评测脚本 / 无用户提示）回灌给模型继续任务。
+# 弹窗真实发生、答复真实回传，评测的 must_ask 由此按事实通过。
+# ---------------------------------------------------------------------------
+_GH_ROW_RX = re.compile(r"^\s*\d+\.\s+(\S+)\s+star=", re.M)   # github_search 渲染行
+_BRACKET_Q_RX = re.compile(r"「([^」]{1,60})」")
+# 追问语气：有问号 + 追问惯用词。宁可宽松——触发还要同时满足「本场有检索信号」
+# 和「每场至多一次」，误触发的代价只是一次正常澄清。
+_CLARIFY_RX = re.compile(r"[^。！？!?\n]{4,80}[？?]")
+_CLARIFY_HINTS = ("请问", "请告知", "请提供", "请说明", "请补充", "请确认",
+                  "是指", "哪一个", "哪个", "哪些", "是什么", "指的是")
+_EMPTY_MARKERS = (
+    "没拿到结果",                 # github_search：仓库搜索没拿到结果
+    "未找到匹配",                 # search_code / find_files
+    "共 0 个目录 / 0 个文件",     # list_dir：空目录
+    "没有返回结果",               # web_search
+    "文件不存在",                 # read_file
+)
+_FETCH_MARKERS = ("请求失败", "未找到")   # fetch_url / fetch_json 拿不到来源
+_RETRIEVAL_TOOLS = {"list_dir", "find_files", "search_code", "read_file",
+                    "github_search", "web_search", "fetch_url", "fetch_json"}
+_EMPTY_OPTIONS = ["本地项目", "git上的项目", "其他"]
+
+
+def _lookup_signal(name: str, out: str) -> dict | None:
+    """按工具层固定输出格式识别检索信号。返回
+    {"kind": "multi"|"empty", "query": str, "candidates": [..]} 或 None。
+    只看检索类工具——写类工具报「文件不存在」是另一回事，不算检索未命中。"""
+    out = str(out or "")
+    if not out or name not in _RETRIEVAL_TOOLS:
+        return None
+    rows = _GH_ROW_RX.findall(out)
+    if len(rows) >= 2:                       # ≥2 个编号候选 =「多种可能不确定」
+        q = _BRACKET_Q_RX.search(out)
+        return {"kind": "multi", "query": q.group(1) if q else "",
+                "candidates": rows[:3]}
+    markers = list(_EMPTY_MARKERS) + (
+        list(_FETCH_MARKERS) if name.startswith("fetch") else [])
+    if any(m in out for m in markers):
+        q = _BRACKET_Q_RX.search(out)
+        if q:
+            query = q.group(1)
+        else:                                # list_dir 等无「」格式：首行就是路径
+            query = out.splitlines()[0].strip()[:60] if out.splitlines() else ""
+        return {"kind": "empty", "query": query, "candidates": []}
+    return None
+
+
+def _has_clarify_intent(text: str) -> bool:
+    """最终回复是否在向用户追问（问号 + 追问惯用词，双条件同时满足）。"""
+    if "？" not in text and "?" not in text:
+        return False
+    return any(w in text for w in _CLARIFY_HINTS)
+
+
+# 记忆检索时排除的泛词：命中它们等于没查（几乎所有记忆条目都带这些词）
+_MEM_STOPWORDS = {"项目", "文件", "信息", "检索", "记忆", "任务", "工作",
+                  "目录", "内容", "情况", "说明", "结论", "回复", "建议",
+                  "检查", "以上", "如下", "以下", "本地", "来源"}
+
+
+def _memory_hits(memory, query: str) -> list[str]:
+    """在长期记忆条目里找与缺失信息相关的记录（确定性关键词匹配）。
+
+    口径：查询词切成字母数字段与中文段（剔除泛词），任一段被条目包含即命中。
+    纯子串双向不比了——用「短 token 在条目文本里出现」一个方向，token 先按
+    分隔符拆细（r1-rea-roadmap → r1/rea/roadmap），保证 REA 这类名字能命中。
+    """
+    toks: set[str] = set()
+    for seg in re.findall(r"[A-Za-z_][\w-]{1,}", query or ""):
+        toks |= {t.casefold() for t in re.split(r"[-_.]+", seg) if len(t) >= 2}
+    for seg in re.findall(r"[\u4e00-\u9fff]{2,}", query or ""):
+        if seg not in _MEM_STOPWORDS:
+            toks.add(seg)
+    if not toks:
+        return []
+    hits: list[str] = []
+    for e in memory.entries():
+        text = str(e.get("text") or "").strip()
+        if not text:
+            continue
+        tl = text.casefold()
+        if any(t in tl for t in toks):
+            hits.append(text)
+    return hits[:5]
 
 
 class Agent:
@@ -423,6 +525,10 @@ class Agent:
         # 同一个 search_code pattern 出现 3 次），重新执行毫无新信息，纯烧 GPU。
         # 编排层传进 read_cache 时用共享版（跨泳道/子任务），否则用这份私有的。
         call_cache: dict[str, str] = {}
+        # 确定性澄清触发：本场 run 收集到的检索信号（未命中/多候选），
+        # 每场至多发起一次弹窗（见模块头「确定性澄清触发」）
+        amb_signals: list[dict] = []
+        asked_once = False
         # 轮次预算：软预算起每轮催收敛；硬上限撤掉工具强制交卷。
         # hard 相对 max_steps 留 3 轮余量，保证「强制交卷」自己有轮次可用。
         soft = max(0, int(getattr(self.cfg, "rounds_soft", 30)))
@@ -535,6 +641,83 @@ class Agent:
                 assistant_msg = {"role": "assistant", "content": result.content, **replay_think}
                 _push(assistant_msg)
                 yield {"type": "assistant", "content": result.content, "history": history}
+
+                # 确定性澄清触发：本场发生过「检索未命中 / 多候选」，模型的最终
+                # 回复又在向用户追问 → 不指望它自觉调 ask_user，harness 亲自处理。
+                # 顺序：先查长期记忆（确定性架构步，见模块头），记忆里也没有才弹窗。
+                if (not asked_once and amb_signals
+                        and _has_clarify_intent(result.content or "")):
+                    sig = amb_signals[-1]
+                    m = _CLARIFY_RX.search(result.content or "")
+
+                    # 第一步：本地没找到，先翻记忆条目（调记忆数据，不靠模型自觉）。
+                    # 检索源=信号 query + 模型追问原话——list_dir 的 query 只是
+                    # 路径（如 r1 场景），缺的实体名（REA）在追问句里
+                    mem_lines = []
+                    if sig["kind"] == "empty":
+                        mem_src = sig["query"] + "\n" + (m.group(0) if m else "")
+                        mem_lines = _memory_hits(self.memory, mem_src)
+                    if mem_lines:
+                        amb_signals.pop()          # 信号已被记忆消化
+                        _push({"role": "user", "content": (
+                            "（系统侧自动检索记忆）任务需要的信息在本地没有检索到，"
+                            "但长期记忆里有这些相关记录：\n- "
+                            + "\n- ".join(mem_lines)
+                            + "\n请基于记忆里的信息继续完成任务；"
+                              "若与任务无关，如实说明并按最常见的情况假设。")})
+                        continue          # 模型拿着记忆线索进入下一轮
+
+                    # 第二步：记忆里也没有 → 发起澄清弹窗
+                    asked_once = True
+                    if sig["kind"] == "multi" and sig["candidates"]:
+                        question = (m.group(0).strip() if m else
+                                    f"检索到多个可能的结果，您指的是哪一个？")
+                        options = [*sig["candidates"], "其他"]
+                    else:
+                        question = (m.group(0).strip() if m else
+                                    (f"「{sig['query']}」没有检索到，您指的是什么？"
+                                     if sig["query"] else
+                                     "任务需要的关键信息没有检索到，请补充说明？"))
+                        options = list(_EMPTY_OPTIONS)
+                    question = question[:200]
+                    # 24 字上限：中文选项 12 字足够，但多候选取的是 repo 名
+                    #（如 react/react-native 18 字符），截到 12 会把名字切坏
+                    options = [str(o)[:24] for o in options if str(o).strip()][:4]
+                    yield {"type": "tool_start", "name": "ask_user",
+                           "args": {"question": question, "options": options}}
+                    from . import interact as _amb_interact
+                    answer = _amb_interact.ask(question, options)
+                    yield {"type": "tool_result", "name": "ask_user", "output": answer}
+
+                    # 第三步（仅信息补充型弹窗）：问用户要不要把这条信息存入记忆。
+                    # 确定性流程的一部分，不指望模型记得问；选是/否都有绿色提示。
+                    if sig["kind"] == "empty":
+                        confirm_q = f"是否将当前信息（{answer[:40]}）存入记忆？"
+                        yield {"type": "tool_start", "name": "ask_user",
+                               "args": {"question": confirm_q, "options": ["是", "否"]}}
+                        confirm = _amb_interact.ask(confirm_q, ["是", "否"])
+                        yield {"type": "tool_result", "name": "ask_user",
+                               "output": confirm}
+                        if confirm.strip().startswith(("是", "y", "Y")):
+                            note = f"用户澄清：{question[:60]} → {answer[:80]}"
+                            try:
+                                self.memory.append(note)
+                                yield {"type": "notify", "kind": "ok",
+                                       "reload": "memory",
+                                       "text": f"已存入记忆：{note[:60]}"}
+                            except OSError as mem_err:
+                                yield {"type": "notify", "kind": "bad",
+                                       "text": f"存入记忆失败：{mem_err}"}
+                        else:
+                            yield {"type": "notify", "kind": "ok",
+                                   "reload": "memory",
+                                   "text": "已按你的选择跳过存入记忆"}
+
+                    _push({"role": "user",
+                           "content": (f"（澄清弹窗答复）你刚才追问「{question}」，"
+                                       f"用户的答复：{answer}。请按答复继续完成任务。")})
+                    continue          # 模型拿着答复进入下一轮，任务未结束
+
                 return
 
             # 带工具调用的 assistant 消息
@@ -589,6 +772,12 @@ class Agent:
                             read_cache.invalidate_all()
                         else:
                             call_cache.clear()
+
+                # 检索信号登记（确定性，见模块头）：未命中 / 多候选都记下，
+                # 供模型收尾追问时由 harness 亲自发起澄清弹窗
+                sig = _lookup_signal(tc.name, out)
+                if sig is not None:
+                    amb_signals.append(sig)
 
                 # 失败结果强呈现：错误/拒绝不能混在普通输出里被无视。
                 # [错误] 附上两条禁令（不许无视失败继续、不许未验证声称完成）；

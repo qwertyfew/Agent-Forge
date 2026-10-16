@@ -44,6 +44,7 @@ class EvalCase:
     expect: dict = field(default_factory=dict)
     seed: dict[str, str] = field(default_factory=dict)   # 相对路径 -> 内容
     notes: str = ""
+    ask_answers: list[str] = field(default_factory=list)  # 澄清弹窗脚本答案（评测模式按序弹出）
 
 
 def load_cases(path: str | Path) -> list[EvalCase]:
@@ -70,6 +71,7 @@ def load_cases(path: str | Path) -> list[EvalCase]:
             expect=expect,
             seed={str(k): str(v) for k, v in (item.get("seed") or {}).items()},
             notes=str(item.get("notes") or ""),
+            ask_answers=[str(x) for x in (item.get("ask_answers") or [])],
         ))
     return cases
 

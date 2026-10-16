@@ -44,6 +44,7 @@ DEFAULT_CORE: tuple[str, ...] = (
     "use_skill",
     "read_skill_resource",
     "report_gap",
+    "ask_user",
 )
 
 # 能力族：**命中族里任何一个成员，整族一起下发**。

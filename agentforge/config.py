@@ -91,6 +91,10 @@ class Config:
     # 本地模型串行执行：同一时刻只跑一个本地模型，避免两个并发任务同时压 Ollama
     # 抢 GPU/显存互相拖累。付费/在线模型不受此限制，可并行。
     local_serial: bool = True
+    # 算力闸门（任务级）：同时「执行中」的任务上限。本地显存一次只稳得住一个
+    # 大模型就填 1；超出的任务登记为「排队中」，有空位自动开跑。填 2 表示
+    # 跑着 A 的同时还能立刻开 B（显存够才行）。
+    compute_max_running: int = 1
     # Ollama 没起来时自动拉起（见 agentforge/ollamaguard.py）。
     # 本机长期不关机，Ollama 可能被手动退出或升级时重启，本地模型会静默失效。
     ollama_auto_start: bool = True
@@ -342,6 +346,9 @@ class Config:
         cfg.session_dir = Path(_expand(s.get("dir", str(ROOT / ".sessions"))))
         if not cfg.session_dir.is_absolute():
             cfg.session_dir = ROOT / cfg.session_dir
+
+        cp = raw.get("compute", {}) or {}
+        cfg.compute_max_running = max(1, int(cp.get("max_running", cfg.compute_max_running)))
 
         return cfg
 

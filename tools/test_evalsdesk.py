@@ -45,9 +45,10 @@ with tempfile.TemporaryDirectory() as td:
 
     # ---- 任务集管理 ----
     lt = desk.list_tasks()
-    check("E1 任务清单可读（24 条 + 保护清单）",
-          len(lt["cases"]) == 24 and "h1-send-email" in lt["protected"],
-          f"{len(lt['cases'])} 条")
+    N_TASKS = len(lt["cases"])   # 任务数随 tasks.yaml 增长，断言不再硬编码
+    check("E1 任务清单可读（非空 + 保护清单）",
+          N_TASKS > 0 and "h1-send-email" in lt["protected"],
+          f"{N_TASKS} 条")
 
     # E2 正常保存：改一条非保护任务的 prompt → 成功、备份存在、回读生效
     cases = [dict(c) for c in lt["cases"]]
@@ -55,7 +56,7 @@ with tempfile.TemporaryDirectory() as td:
         if c["id"] == "w1-summary":
             c["prompt"] = "改过的任务指令"
     r = desk.save_tasks(cases)
-    check("E2 整体保存成功", r.get("ok") and r.get("count") == 24, str(r))
+    check("E2 整体保存成功", r.get("ok") and r.get("count") == N_TASKS, str(r))
     check("E3 旧文件已备份", (evalsdesk.BACKUP_DIR / Path(r["backup"]).name).is_file(), "")
     check("E4 保存后回读生效",
           any(c["prompt"] == "改过的任务指令" for c in desk.list_tasks()["cases"]), "")
@@ -223,13 +224,28 @@ with tempfile.TemporaryDirectory() as td:
             break
         time.sleep(0.05)
     st2 = desk2.snapshot()
+    n_tasks2 = len(desk2.list_tasks()["cases"])
     check("E22 停止后剩余任务跳过",
-          not st2["running"] and st2.get("skipped", 0) == 23
+          not st2["running"] and st2.get("skipped", 0) == n_tasks2 - 1
           and len(st2["results"]) == 1, str({k: st2.get(k) for k in ("skipped", "done")}))
 
     # E23 空清单 / 全部跳过时的保护
     r = desk.start_run(cases="no-such-case")
     check("E23 无匹配任务拒绝启动", "没有匹配" in r.get("error", ""), str(r))
+
+    # E26 上次评测常驻：新实例（≈服务重启）从最近一份标准 JSON 恢复展示态，
+    # 并带上 last_cases 供前端「重跑」按钮原样再跑同一批
+    desk3 = EvalsDesk(cfg=None)
+    st3 = desk3.snapshot()
+    check("E26 重启后「上次评测」常驻（从最近 JSON 恢复）",
+          not st3["running"] and len(st3["results"]) == 1
+          and bool(st3.get("finished_at")) and bool(st3.get("report"))
+          and (evalsdesk.RESULTS_DIR / st3["report"]).is_file(),
+          str({k: st3.get(k) for k in ("finished_at", "report")}))
+    check("E26b last_cases 记录上次批次（供重跑）",
+          isinstance(st3.get("last_cases"), list)
+          and len(st3["last_cases"]) == N_TASKS,
+          f"{len(st3.get('last_cases') or [])} 条")
 
 # E24 git_version 如实降级
 v = git_version()

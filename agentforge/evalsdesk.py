@@ -86,8 +86,49 @@ class EvalsDesk:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._state: dict = {"running": False}
+        # 启动即从最近一份结果恢复「上次评测」行：内存态随进程消失，
+        # 但磁盘上的 JSON 是上一轮的真实成绩——重启不该让历史蒸发。
+        self._hydrate_last()
         # 可注入的执行核心（tests 用替身替换，不碰真模型）
         self._runner = None
+
+    _STD_JSON = re.compile(r"^[A-Za-z0-9_-]+-\d{8}-\d{6}\.json$")
+
+    def _hydrate_last(self) -> None:
+        """从 evals/results/ 最近一份标准命名 JSON 恢复上次评测的展示态。
+        只填展示字段（results/finished_at/report/last_cases），
+        running 恒为 False——重启前的运行早随旧进程结束了。"""
+        if not RESULTS_DIR.is_dir():
+            return
+        try:
+            jsons = [p for p in RESULTS_DIR.glob("*.json")
+                     if self._STD_JSON.fullmatch(p.name)]
+            jsons.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
+            return
+        for p in jsons:
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001  坏文件跳过，看更早的一份
+                continue
+            cases = data.get("cases") or []
+            if not cases:
+                continue
+            meta = data.get("meta") or {}
+            # 优先 meta.last_cases（完整计划批次，含中途停止未跑的）；
+            # 旧 JSON 没有该字段，退回从 results 反推（跑完的子集）
+            ids = [str(i) for i in (meta.get("last_cases")
+                                    or [c.get("id") for c in cases])]
+            self._state = {
+                "running": False,
+                "results": cases,
+                "finished_at": meta.get("finished_at"),
+                "report": p.stem + ".md",
+                "json": p.name,
+                "last_cases": [i for i in ids if i],
+                "error": None,
+            }
+            return
 
     # ---------- 任务集 ----------
     def list_tasks(self) -> dict:
@@ -217,6 +258,7 @@ class EvalsDesk:
                 "current": run_cases[0].id, "results": [],
                 "error": None, "report": None, "json": None,
                 "stop_requested": False, "skipped": 0,
+                "last_cases": [c.id for c in run_cases],
             }
         threading.Thread(target=self._run, daemon=True, kwargs={
             "run_cases": run_cases, "reps": reps, "model": model,
@@ -280,6 +322,9 @@ class EvalsDesk:
             "config": str(ROOT / "config.yaml"), "tasks": str(TASKS_PATH),
             "repeat": reps, "cases_planned": len(run_cases),
             "skipped": skipped,
+            # 完整计划批次：中途停止的运行，results 只是子集，
+            # 「重跑上一次」要还原的是计划批次而不是跑完的残部
+            "last_cases": [c.id for c in run_cases],
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S",
                                         time.localtime(st["started_at"])),
             "finished_at": time.strftime("%Y-%m-%d %H:%M:%S",
@@ -483,6 +528,8 @@ def build_report(meta: dict, results: list[dict]) -> str:
             "exact": "关键字符串没出现", "norm": "归一后仍对不上（格式/写法偏差）",
             "numeric": "数值不符", "fuzzy": "关键点缺失（拆解/要点不全）",
             "must_not": "出现了禁止内容（编造/越界）", "check": "产物核验未过（代码/文件坏了）",
+            "ask": "信息不足未发起澄清弹窗",
+            "tool": "未调用任务书指定的工具",
             "crash": "执行崩溃", "stopped": "任务被停止", "empty": "没有产出回复",
             "setup": "环境初始化失败",
         }

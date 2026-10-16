@@ -1490,3 +1490,71 @@ node 22.22.2 健康、原生 provider 未配（静态分析不受影响）。
 
 **遗留**：路径 B（`tools/mcp_client.py` 通用 MCP 客户端）待做——REA 的完整工具目录
 和任何 MCP server 都能挂进 harness；原生分析需用户自装 Hopper/Ghidra/IDA。
+
+## 第 35 步：澄清弹窗全链路、确定性触发与算力闸门（2026-10-15/16）
+
+### 澄清弹窗 ask_user（三模式）
+
+新增 `agentforge/interact.py`（弹窗桥接）+ `agentforge/tools/ask_user.py`（SAFE 工具，
+question + options[2-4]），工具常驻可见（DEFAULT_CORE）。三种模式按调用方自动切换：
+**评测**=脚本答案按序弹出（`ask_answers`）；**webui**=挂起等待前端
+`POST /api/ask-answer` 唤醒（`begin(interactive=True)`，finally 收口防线程复用串场）；
+**CLI**=静态提示。前端加弹窗卡片（选项按钮点选即回传 + 自由补充输入框，答复后
+禁用并显示已回答）。系统提示新增第 9 条「信息不足先问再猜」。
+
+### 判定层升级
+
+评测支持 `expect.must_ask`（全程未调 ask_user 判 fail，层=ask）与
+`expect.tool_called`（**过程判定**：指定工具出现在 process 即过——f5 不再因回复
+文本没带 "git" 字样被随机误判，真证据在工具调用里不在回复措辞里）。
+
+### 确定性澄清触发（不指望模型自觉）
+
+`loop.py` 新增信号识别 `_lookup_signal`：每次工具返回后按**工具层固定渲染格式**
+纯正则识别「未命中」（github_search 没拿到结果 / list_dir 空目录 /
+search_code/find_files 未找到 / read_file 文件不存在 / fetch 请求失败）与「多候选」
+（github_search ≥2 个编号候选，候选名直接提取），只认 8 个检索类工具。模型最终
+回复带追问语气（问号+追问词双条件）且本场有未消化信号时，harness **亲自**发起
+ask_user——问题取模型追问原话，多候选项直接用命中 repo 名（[:24]，修过
+react/react-native 被截断的 bug），空命中用「本地项目/git上的项目/其他」；答复
+回灌 user 消息继续任务；每场至多一次。
+
+### 弹窗前先查记忆、答复后问是否存档
+
+触发顺序变为：本地检索未命中 → **翻记忆条目**（`_memory_hits` 确定性关键词检索，
+字母数字段按分隔符拆细、CJK 剔泛词；检索源=信号 query+模型追问原话——list_dir 的
+query 只是路径，实体名在追问句里）→ 命中则喂给模型继续、不弹窗 → 没有才弹窗。
+信息补充型弹窗答复后追加第二问「是否将当前信息存入记忆？」：是→`memory.append`
+真实落盘；否→跳过；两路都发 `notify` 事件（webui SSE 白名单放行，前端绿色 toast
++自动刷新记忆面板）。模型自觉走工具通道的弹窗暂不经过此确认（遗留：宜把确认挪到
+`interact.user_reply` 收口处覆盖所有弹窗）。
+
+### 评测台三处增强
+
+「上次评测」行**常驻**（`_hydrate_last` 启动时从 results 目录最近一份标准命名 JSON
+恢复展示态，重启不丢）；「重跑」按钮按上次**完整计划批次**重跑（`last_cases` 写进
+状态与 JSON meta——中途停止的运行 results 只是子集，重跑要还原计划批次）；
+「查看」跳转修复（页面滚动发生在 `.set-pane` 内部容器，window.scrollTo 无效），
+[重跑][查看] 包进右对齐容器。测试硬编码 24/23 改动态对齐任务集条数。
+
+### 前端页面独立渲染 + 发送框钉底
+
+composer 永久钉在对话页底部，删掉 hero↔main 搬节点与量高定位 hack（跳动类 bug
+从根上消灭）；落地页改纯显隐（只看「是不是全新空对话」）；「任务执行中」角标从
+全局广播改挂**当前打开的对话**（回看已完成任务/其他栏目一律隐藏，新增
+`syncTopRun`）；执行中点「新建任务」与空闲时效果完全一致。
+
+### 算力闸门（任务级排队）
+
+`config.yaml` 新增 `compute.max_running`（默认 1）；webui 启动时按配置定容全局
+信号量（改上限需重启）。任务开跑前占位，占不到登记 `queued`（taskstore 新状态），
+0.5s 轮询等位、有空位自动开跑；排队中可取消（`_QueuedCancelled` 专享 except 不误入
+error 路径）；finally 归还执行位。前端放开发送：执行中不再拦发送（有空位立即执行、
+没有则排队）、回看时发消息=开新对话；排队态有专属 placeholder/侧栏灰点/提示语；
+满载时点「新建任务」toast 提示可排队。
+
+### 回归现状
+
+新增 `test_ambiguity_gate.py` 36 项（含 stub hub 驱动真实 Agent.run 的端到端：
+空目录→文本追问→弹窗→脚本答复→继续任务、记忆命中不弹窗、确认存入/跳过两路）；
+`test_evalsdesk` 扩 E26/E26b 并修脆断言。全套 28 个测试文件 GREEN。

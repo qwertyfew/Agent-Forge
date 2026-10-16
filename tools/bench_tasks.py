@@ -72,6 +72,9 @@ def run_case_once(case, label: str, model: str, timeout: int,
     """
     sandbox = RUN_DIR / label / case.id
     _prep_sandbox(sandbox, case)
+    # 澄清弹窗脚本答案：评测模式 ask_user 按序弹任务书给的 ask_answers
+    from agentforge import interact as _interact
+    _interact.begin(answers=getattr(case, "ask_answers", None))
 
     cfg = Config.load(ROOT / "config.yaml")
     # 必须是 Path 不是 str：shell 工具收尾会调 workspace_root.resolve()，
@@ -147,6 +150,18 @@ def run_case_once(case, label: str, model: str, timeout: int,
         rec = judge(case, final_text, sandbox, check_timeout=check_timeout)
         if error:
             rec["detail"] += f"（事件流另有报错：{error}）"
+        # must_ask：任务书要求信息不足时发起澄清弹窗——过程里没有 ask_user 就判失败
+        if case.expect.get("must_ask") and \
+                not any(p.get("name") == "ask_user" for p in process):
+            rec = {"verdict": "fail", "layer": "ask", "data": rec.get("data", {}),
+                   "detail": "信息不足时应发起澄清弹窗（ask_user），但全程未调用"}
+        # tool_called：任务书指定的关键工具至少要用过一个（任一命中即过）。
+        # 检索类任务的真证据在过程里（调了什么工具），不在回复措辞里——
+        # 回复里有没有 "git" 字样纯属格式运气，不能当判据
+        want_tools = [str(x) for x in (case.expect.get("tool_called") or [])]
+        if want_tools and not any(p.get("name") in want_tools for p in process):
+            rec = {"verdict": "fail", "layer": "tool", "data": rec.get("data", {}),
+                   "detail": f"应调用指定工具之一（{'、'.join(want_tools)}），但全程未调用"}
     rec.update({"id": case.id, "category": case.category, "duration": dur,
                 "verify_rounds": verify_n, "steps": cur_step,
                 # 结果证据：最终回复全文（不截断）、沙盒落点（可亲自去查）
@@ -158,6 +173,7 @@ def run_case_once(case, label: str, model: str, timeout: int,
         rec["error"] = error
     if stats:
         rec["stats"] = stats
+    _interact.end()          # 清线程本地模式，防串到同线程的下一次运行
     return rec
 
 

@@ -271,6 +271,7 @@
   .t-dot.error{background:var(--err)}
   .t-dot.stopped{background:#b9b7b0}
   .t-dot.running{background:#d9930a;animation:tpulse 1.1s ease-in-out infinite}
+  .t-dot.queued{background:#8a97a8;animation:tpulse 1.6s ease-in-out infinite}
   @keyframes tpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.72)}}
   .t-main{min-width:0;flex:1}
   .t-title{font-size:12.5px;color:var(--ink);line-height:1.4;overflow:hidden;text-overflow:ellipsis;
@@ -395,10 +396,10 @@
   .icon-btn:hover{background:var(--hover);color:var(--ink)}
   #btnMenu{display:none}
 
-  /* 首页 Hero：空态时输入框就停在这里（见 .hero .composer-wrap） */
-  .hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 24px 8px;gap:22px}
+  /* 首页 Hero：落地态大标题。输入框不再搬进 hero——它永久钉在对话页底部，
+     落地态只是把这块标题亮出来（各页面独立渲染，互不挪动对方的节点）。 */
+  .hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 24px 8px}
   .hero h1{margin:0;font-size:30px;font-weight:650;letter-spacing:.2px}
-  .hero .composer-wrap{width:100%;max-width:760px;padding:0}
   .hero .hint{margin-top:9px}
 
   /* 对话流 */
@@ -553,6 +554,20 @@
     box-shadow:0 2px 4px rgba(0,0,0,0.1);
   }
   .file-btn:active{transform:translateY(0)}
+  /* ask_user 澄清弹窗（聊天内嵌，WorkBuddy 式确认弹窗） */
+  .ask-card{max-width:540px;margin:8px 0;padding:12px 14px;border:1px solid var(--line2);
+    border-radius:12px;background:var(--panel);display:flex;flex-direction:column;gap:10px}
+  .ask-q{font-size:13px;color:var(--ink);font-weight:600}
+  .ask-opts{display:flex;flex-wrap:wrap;gap:8px}
+  .ask-opt{padding:6px 14px;border:1px solid var(--line2);border-radius:999px;
+    background:var(--panel2,var(--panel));color:var(--ink);font-size:12.5px;cursor:pointer}
+  .ask-opt:hover{border-color:var(--ink3)}
+  .ask-other{display:flex;gap:6px}
+  .ask-input{flex:1;min-width:0;padding:6px 10px;border:1px solid var(--line2);
+    border-radius:9px;background:var(--panel);color:var(--ink);font:inherit;font-size:12.5px}
+  .ask-card.answered{opacity:.72}
+  .ask-card.answered .ask-opt,.ask-card.answered .ask-other{display:none}
+  .ask-ans{font-size:12px;color:var(--ink3)}
 
   /* 产出文件卡片：每张卡片可点击展开内联预览（方案 B：汇总 ↔ 文件对得上） */
   .file-item{display:flex;flex-direction:column;gap:0;max-width:440px}
@@ -669,8 +684,10 @@
   .pane-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:nowrap}
   .pane-actions>*{flex:none;white-space:nowrap}
   /* 评测台按钮竖排：全选在上，全部评测在下（进全选后变批量评测） */
-  .pane-col{display:flex;flex-direction:column;gap:6px;align-items:stretch}
+  .pane-col{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
   .pane-col>*{flex:none;white-space:nowrap}
+  .pane-row{display:flex;gap:6px;justify-content:flex-end}
+  .pane-row>*{flex:none;white-space:nowrap}
   .btn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 14px;border-radius:9px;
     border:1px solid var(--line2);font-size:12.5px;color:var(--ink);background:var(--panel)}
   .btn:hover{border-color:var(--ink3)}
@@ -1345,8 +1362,12 @@
             </div>
             <div class="pane-actions">
               <div class="pane-col">
-                <button class="btn" id="btnEvalSel">全选</button>
-                <button class="btn hide" id="btnEvalUnsel">取消全选</button>
+                <button class="btn" id="btnEvalSel">一键全选</button>
+                <div class="pane-row hide" id="evalSelBtns">
+                  <button class="btn danger" id="btnEvalClear">确认清理</button>
+                  <button class="btn ghost" id="btnEvalExit">退出</button>
+                  <button class="btn" id="btnEvalUnsel">取消全选</button>
+                </div>
                 <button class="btn" id="btnEvalRun">全部评测</button>
                 <button class="btn hide" id="btnEvalStop">停止</button>
               </div>
@@ -1357,6 +1378,11 @@
           <div class="eval-status hide" id="evalStatus">
             <span class="eval-spin"></span>
             <span id="evalStatusText"></span>
+            <!-- 按钮组整体右对齐：重跑隐藏（评测进行中）时查看也不会左移 -->
+            <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+              <button class="mini-btn hide" id="btnEvalRerunLast">重跑</button>
+              <button class="mini-btn" id="btnEvalViewLast">查看</button>
+            </span>
           </div>
 
           <div class="sk-sec">
@@ -1390,8 +1416,7 @@
 /* ================= 元素 ================= */
 const $ = id => document.getElementById(id);
 const log = $('log'), thread = $('thread'), hero = $('hero'), input = $('input'),
-      sendBtn = $('send'), permTxt = $('permTxt'), permBtn = $('permBtn'),
-      composerWrapEl = $('composerWrap');
+      sendBtn = $('send'), permTxt = $('permTxt'), permBtn = $('permBtn');
 
 let history = [];
 let busy = false;
@@ -1546,46 +1571,20 @@ function renderListError(box, err, onRetry){
 if($('offlineRetry')) $('offlineRetry').onclick = ()=> location.reload();
 
 /* ================= 空态（落地页）=================
-   新建任务且还没输入时，输入框浮在页面中部（原来放默认问题的地方）；
-   一旦开始输入/有附件/有对话/任务在执行，就落回底部。 */
-const mainEl = document.querySelector('main');
+   输入框永久钉在对话页底部，绝不挪动（页面独立渲染，互不搬节点）。
+   落地态只是「全新空对话」时把 hero 大标题亮出来：
+   执行中点「新建任务」与空闲时点，效果完全一致。 */
 let attachments = [];          // 已上传附件：[{name, path}]
 function isLanding(){
-  // 落地态只看「有没有开始对话」：输入中仍停在页面中部，
-  // 点发送（busy / 有历史）后才落到底部。
-  // 打开过某个任务（openTaskId 非空）时绝不视为落地页——否则刷新后
-  // 第一次点任务，history 还没拉回来，输入栏会被误搬进 hero 再被隐藏。
-  return view === 'chat' && !busy && !taskActive() && history.length === 0
-    && !openTaskId;
+  // 全新的空对话：没打开任何任务、没有真实消息（系统提示便签不算）。
+  return view === 'chat' && !openTaskId && history.length === 0
+    && ![...log.children].some(n => !n.classList.contains('pillnote'));
 }
 function renderLanding(){
   const on = isLanding();
-  const inHero = composerWrapEl.parentElement === hero;
-  if(on && !inHero) hero.appendChild(composerWrapEl);
-  else if(!on && inHero) mainEl.appendChild(composerWrapEl);
-  // 落地页才显示大标题；发送后随输入框一起落到底部
   if(view === 'chat') hero.classList.toggle('hide', !on);
-  // 判断要按「搬完之后」的位置算：用搬之前那个 inHero，会漏掉
-  // 「从设置页回来、输入框刚被搬回 hero」这一趟，落地页就停在旧的内边距上。
-  if(on && composerWrapEl.parentElement === hero) positionLanding();
+  return on;      // showView 用同一个返回值决定 hero 显隐，别再单独算一遍判定
 }
-/* 落地页整体上移：让输入框里的「+」按钮正好压在页面的竖直中线上。
-   关键：必须先把上一次自己加的 paddingTop 归零再量。
-   否则「读自己刚写的位置 → 再写回去」会变成 x ← K - x 的两点迭代，
-   每敲一个键就上下翻一次（表现就是输入时对话框在中/下之间反复跳）。 */
-function positionLanding(){
-  if(composerWrapEl.parentElement !== hero) return;
-  hero.style.justifyContent = 'flex-start';
-  const plus = $('btnAttach');
-  hero.style.paddingTop = '0px';          // 用自然布局测量，结果与上一次调用无关
-  const hr = hero.getBoundingClientRect();
-  const pr = plus.getBoundingClientRect();
-  const off = pr.top - hr.top;   // 自然布局下加号相对 hero 顶部的偏移
-  // 目标：加号中心 = 视口竖直中线（hr.top 是 hero 在视口里的起点，别漏了顶栏高度）
-  hero.style.paddingTop = Math.max(6,
-    window.innerHeight / 2 - hr.top - off - pr.height / 2) + 'px';
-}
-window.addEventListener('resize', ()=>{ if(isLanding()) positionLanding(); });
 
 function renderAttach(){
   const row = $('attachRow');
@@ -1635,8 +1634,9 @@ function showView(v){
   $('viewEvals').classList.toggle('hide', !isEval);
   $('composerWrap').classList.toggle('hide', isSet || isMem || isSkill || isGaps || isEval);
   // 空态时输入框挂在 hero 里（页面中部），否则挂在底部常驻位置
-  renderLanding();
-  const land = isLanding();
+  // land 用 renderLanding() 的返回值（含上锁判定），别再裸算 isLanding——
+  // 否则输入框在底部而 hero（大标题区）却被点亮，出现一块空落地页。
+  const land = renderLanding();
   hero.classList.toggle('hide', isSet || isMem || isSkill || isGaps || isEval || !land);
   setThreadHidden(isSet || isMem || isSkill || isGaps || isEval || history.length === 0);
   if(!isSet && !isMem && !isSkill && !isGaps && !isEval) rebuildRail();   // 离开对话视图时收起右侧回溯导航
@@ -1652,6 +1652,7 @@ function showView(v){
   $('navSkill').classList.toggle('on', isSkill);
   $('navGaps').classList.toggle('on', isGaps);
   $('navEval').classList.toggle('on', isEval);
+  syncTopRun();   // 角标跟着视图走：离开在跑的那条对话就收起来，切回去再亮
   // 栏目互斥高亮：进设置/记忆管理/技能管理/能力缺口/评测台时，「新建任务」也跟着变淡
   $('btnNew').classList.toggle('dimmed', isMem || isSkill || isSet || isGaps || isEval);
   updateCompactBtn();
@@ -1720,14 +1721,23 @@ function selCheckbox(view, key, disabled){
 }
 function renderSelBar(view){
   const st = selState[view];
+  if(view === 'eval'){
+    // 评测台：按钮固定在 pane-head 行内（取消全选/退出/确认清理），不渲染浮动 selbar，
+    // 只把勾选数刷进「确认清理」文案
+    const clear = $('btnEvalClear');
+    if(clear) clear.textContent = st.checked.size
+      ? `确认清理(${st.checked.size} 项)` : '确认清理';
+    return;
+  }
   const bar = $('selbar' + selCap(view));
   if(!bar) return;
   bar.innerHTML = '';
-  const cancel = el('button', 'btn ghost', '取消');
-  cancel.onclick = ()=> exitSel(view);
+  // 顺序与评测台一致：确认清理在最左、退出在最右，危险按钮与高频点击隔开
   const ok = el('button', 'btn danger', `确认清理(${st.checked.size} 项)`);
   ok.onclick = ()=> confirmSel(view);
-  bar.appendChild(cancel); bar.appendChild(ok);
+  const cancel = el('button', 'btn ghost', '退出');
+  cancel.onclick = ()=> exitSel(view);
+  bar.appendChild(ok); bar.appendChild(cancel);
 }
 function enterSel(view){
   const st = selState[view];
@@ -1742,7 +1752,8 @@ function enterSel(view){
   st.checked = new Set(keys);
   $('btn' + selCap(view) + 'Sel').classList.add('hide');
   renderSelBar(view);
-  $('selbar' + selCap(view)).classList.remove('hide');
+  if(view === 'eval') $('evalSelBtns').classList.remove('hide');
+  else $('selbar' + selCap(view)).classList.remove('hide');
   if(view === 'eval') syncEvalRunBtn();
   selRerender[view]();
 }
@@ -1751,20 +1762,23 @@ function exitSel(view, reload){
   st.on = false;
   st.checked.clear();
   $('btn' + selCap(view) + 'Sel').classList.remove('hide');
-  $('selbar' + selCap(view)).classList.add('hide');
+  if(view === 'eval'){
+    const row = $('evalSelBtns');
+    if(row) row.classList.add('hide');
+  } else {
+    $('selbar' + selCap(view)).classList.add('hide');
+  }
   if(view === 'eval') syncEvalRunBtn();
   if(reload === undefined || reload === true)
     ({mem: loadMemory, skill: loadSkills, gap: loadGaps, eval: loadEvals})[view]();
   else selRerender[view]();
 }
-/* 评测台专属：进全选后「全部评测」变「批量评测」（只跑勾选条目），
-   同时冒出「取消全选」——只清空勾选不退出全选模式，方便快速重勾几条 */
+/* 评测台专属：进全选后「全部评测」变「批量评测」（只跑勾选条目）；
+   行内三按钮（取消全选/退出/确认清理）的显隐由 enterSel/exitSel 切换 */
 function syncEvalRunBtn(){
-  const on = selState.eval.on;
-  const run = $('btnEvalRun'), unsel = $('btnEvalUnsel');
+  const run = $('btnEvalRun');
   if(!run) return;
-  run.textContent = on ? '批量评测' : '全部评测';
-  if(unsel) unsel.classList.toggle('hide', !on);
+  run.textContent = selState.eval.on ? '批量评测' : '全部评测';
 }
 async function confirmSel(view){
   const st = selState[view];
@@ -1818,6 +1832,8 @@ $('btnEvalUnsel').onclick = ()=>{
   selRerender.eval();
   toast(null, '已取消全部勾选（仍在全选模式），可重新勾选需要的条目', 'mute');
 };
+$('btnEvalExit').onclick = ()=> exitSel('eval');   // 与其他栏「取消」一致：退出全选模式
+$('btnEvalClear').onclick = ()=> confirmSel('eval');
 
 /* ================= 记忆管理 =================
    任务跑完会自动往工作区记忆里沉淀「用户偏好」（规则 + 本地模型提炼），
@@ -2263,6 +2279,7 @@ $('navGaps').onclick = ()=>{ showView('gaps'); loadGaps(); };
 let evalData = {cases: [], protected: [], categories: {}, reports: []};
 let evalEditRef = null;    // 正在展开编辑的任务对象（null = 无）
 let evalTimer = null;      // 轮询评测进度的定时器
+let evalLastCases = [];    // 上次评测跑的条目 id（重跑按钮用，后端随 status 下发）
 
 async function loadEvals(){
   try{
@@ -2489,11 +2506,13 @@ $('btnEvalAdd').onclick = ()=>{
 function applyEvalState(st){
   if(st.running){ showEvalRunning(st); startEvalPoll(); }
   else if((st.results || []).length){
+    evalLastCases = st.last_cases || [];
     const passed = st.results.filter(r => r.verdict === 'pass').length;
     $('evalStatus').classList.remove('hide');
     $('evalStatus').querySelector('.eval-spin').style.display = 'none';
     $('evalStatusText').textContent = `上次评测（${st.finished_at || '—'}）：${passed}/${st.results.length} 通过`
       + (st.report ? ` · 报告 ${st.report}` : '');
+    $('btnEvalRerunLast').classList.remove('hide');
   }
 }
 function showEvalRunning(st){
@@ -2504,6 +2523,7 @@ function showEvalRunning(st){
     + (st.stop_requested ? ' ·（已请求停止，跑完当前任务收工）' : '');
   $('btnEvalRun').classList.add('hide');
   $('btnEvalStop').classList.remove('hide');
+  $('btnEvalRerunLast').classList.add('hide');   // 正在跑的评测不能再重跑
 }
 function hideEvalRunning(){
   $('evalStatus').classList.add('hide');
@@ -2629,6 +2649,32 @@ async function openEvalReport(name, force){
     pre.scrollIntoView && pre.scrollIntoView({behavior:'smooth', block:'nearest'});
   }catch(e){ toast(null, '报告打开失败：' + e.message, 'bad'); }
 }
+/* 「上次评测」行的重跑按钮：按上次同一批条目原样再跑一遍 */
+$('btnEvalRerunLast').onclick = ()=>{
+  if(!evalLastCases.length){ toast(null, '没有可重跑的评测记录', 'mute'); return; }
+  evalRunStart({cases: evalLastCases.join(','), repeat:1, label:'web'},
+               $('btnEvalRerunLast'), n => `重跑已启动：${n} 条（与上次同一批）`);
+};
+/* 「上次评测」行的查看按钮：跳到评测报告区、打开最新一份，
+   并让「评测报告」标题停在滚动视口垂直中线上方约 5 个汉字高度处。
+   注意：页面滚动发生在 .set-pane 内部容器（.app 是 overflow:hidden），
+   window.scrollTo 对它无效——必须滚 head.closest('.set-pane')。 */
+$('btnEvalViewLast').onclick = async ()=>{
+  const latest = (evalData.reports || [])[0];
+  if(!latest){ toast(null, '还没有评测报告，先跑一轮评测', 'mute'); return; }
+  if(evalOpenReport !== latest.name) await openEvalReport(latest.name, true);
+  const head = [...document.querySelectorAll('.sk-sec-head h4')]
+    .find(h => h.textContent.trim() === '评测报告');
+  const pane = head && head.closest('.set-pane');
+  if(!head || !pane) return;
+  setTimeout(()=>{                       // 等报告面板插入文档流后再定位
+    const em = parseFloat(getComputedStyle(head).fontSize) || 16;
+    const rel = head.getBoundingClientRect().top
+              - pane.getBoundingClientRect().top
+              - (pane.clientHeight / 2 - 5 * em);
+    pane.scrollTo({ top: Math.max(0, pane.scrollTop + rel), behavior: 'smooth' });
+  }, 80);
+};
 $('navEval').onclick = ()=>{ showView('evals'); loadEvals(); };
 function refreshSkillCount(){
   fetch('/api/skills').then(r=>r.json()).then(d=>{
@@ -3446,16 +3492,32 @@ function fmtMoney(v){
 }
 function statusLabel(t){
   if(t.status === 'running') return '执行中';
+  if(t.status === 'queued') return '排队中';
   if(t.status === 'error') return '失败';
   if(t.status === 'stopped') return '已停止';
   return '完成';
 }
 
+/* 算力闸门容量：/api/tasks 每次带回（compute.max_running，重启服务才变）。 */
+let maxRunning = 1;
+function runningTaskCount(){
+  return (taskData || []).filter(t => t.status === 'running').length;
+}
+/* 「任务执行中」角标只挂在正在执行的那条对话上：
+   回看别的已完成任务、停在新建任务空态、或在记忆/技能等栏目里都不显示——
+   哪条任务在跑，侧栏任务项自己的「运行中 · 计时」已经交代了。 */
+function syncTopRun(){
+  const running = (taskData || []).filter(t => t.status === 'running').length;
+  const curRunning = view === 'chat' && openTaskId && running > 0
+    && taskData.some(t => t.id === openTaskId && t.status === 'running');
+  $('topRun').classList.toggle('hide', !curRunning);
+  if(curRunning) $('topRunTxt').textContent = running > 1 ? `${running} 个任务执行中` : '任务执行中';
+}
+
 function renderTasks(){
-  const running = taskData.filter(t => t.status === 'running').length;
   $('taskSecTitle').textContent = '任务(' + taskData.length + ')';
-  $('topRun').classList.toggle('hide', !running);
-  if(running) $('topRunTxt').textContent = running > 1 ? `${running} 个任务执行中` : '任务执行中';
+  syncTopRun();
+  renderLanding();   // 任务状态变化后落地态判定可能变（空对话标题亮/暗），及时刷新
 
   const box = $('taskList');
   box.innerHTML = '';
@@ -3474,6 +3536,8 @@ function renderTasks(){
       const run = el('span','tm-run','运行中 · ' + fmtClockDur(t.duration));
       run.dataset.since = String(t.created_at);
       meta.appendChild(run);
+    }else if(t.status === 'queued'){
+      meta.appendChild(el('span','tm-run','排队中 · 等待算力'));
     }else{
       meta.appendChild(el('span','', fmtClock(t.created_at)));
       if(t.duration) meta.appendChild(el('span','tm-tag', fmtDur(t.duration)));
@@ -3512,6 +3576,7 @@ async function loadTasks(){
     const d = await apiGet('/api/tasks');
     if(!Array.isArray(d.tasks)) return;
     taskData = d.tasks;
+    if(typeof d.max_running === 'number') maxRunning = Math.max(1, d.max_running);
     renderTasks();
     adoptRunning();
   }catch(e){
@@ -3615,8 +3680,10 @@ function rebaseAIHeadTime(sec){
 function beginLiveTask(info){
   liveTask = {
     id: info.id || '', startedAt: info.created_at || (Date.now()/1000),
-    status: 'running', tools: 0, cost: 0, localOnly: true,
-    progress: '准备中…', models: [], stopping: false,
+    status: info.status === 'queued' ? 'queued' : 'running',
+    tools: 0, cost: 0, localOnly: true,
+    progress: info.status === 'queued' ? '排队等待算力…' : '准备中…',
+    models: [], stopping: false,
     round: 0, stepIndex: 0, stepTotal: 0, filesRendered: false
   };
   rebaseAIHeadTime(info.created_at);
@@ -3883,6 +3950,43 @@ function fmtSize(n){
 const FC_COLOR = {md:'#0f9d8f', markdown:'#0f9d8f', py:'#3572A5', js:'#e8c547', ts:'#3178c6',
   html:'#e34c26', css:'#563d7c', json:'#8bc34a', yaml:'#cb171e', yml:'#cb171e',
   sh:'#89e051', bat:'#a6a6a6', txt:'#9e9e9e'};
+/* ---- ask_user 澄清弹窗：问题一句话 + 简明选项 + 自由补充，点选即回传 ---- */
+function addAskCard(args){
+  const wrap = el('div','ask-card');
+  wrap.appendChild(el('div','ask-q','❓ ' + (args.question || '需要补充信息')));
+  const opts = el('div','ask-opts');
+  (Array.isArray(args.options) ? args.options : []).forEach(o=>{
+    if(!o) return;
+    const b = el('button','ask-opt', o);
+    b.onclick = ()=> answerAsk(wrap, o);
+    opts.appendChild(b);
+  });
+  wrap.appendChild(opts);
+  const other = el('div','ask-other');
+  const inp = el('input','ask-input');
+  inp.placeholder = '其他：输入文字补充…';
+  const sub = el('button','mini-btn','补充');
+  const submit = ()=>{ const v = inp.value.trim(); if(v) answerAsk(wrap, v); };
+  sub.onclick = submit;
+  inp.onkeydown = e=>{ if(e.key === 'Enter'){ e.preventDefault(); submit(); } };
+  other.appendChild(inp); other.appendChild(sub);
+  wrap.appendChild(other);
+  log.appendChild(wrap); scrollBottom();
+}
+async function answerAsk(card, text){
+  if(card.dataset.done) return;
+  card.dataset.done = '1';
+  card.classList.add('answered');
+  card.querySelectorAll('button').forEach(b=>{ b.disabled = true; });
+  try{
+    await fetch('/api/ask-answer',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({answer: text})
+    });
+  }catch(e){ /* 工具侧有超时兜底 */ }
+  card.appendChild(el('div','ask-ans','已回答：' + text));
+  scrollBottom();
+}
 function addFilesCard(files){
   const list = (files || []).filter(f=>!f.outside && (f.path||f.rel));
   if(!list.length) return;
@@ -4314,9 +4418,16 @@ function resetChat(){
   renderTasks();
   resetRenderState();      // 清场就得把指向旧 DOM 的渲染状态一起复位（否则接着写进空气里）
   $('topTitle').textContent = '';
-  showView('chat');
+  showView('chat');        // 执行中点「新建任务」与空闲时完全同一效果（需求②）
 }
-$('btnNew').onclick = resetChat;
+$('btnNew').onclick = ()=>{
+  resetChat();
+  // 算力满载时如实相告（需求③）：新任务照样能发，会排队，有空位自动执行。
+  // 判断以服务端台账为准：执行中任务数 ≥ compute.max_running 即满载。
+  if((taskData || []).filter(t => t.status === 'running').length >= (maxRunning || 1)){
+    toast(null, '当前算力不足，无法立即执行新任务；可直接点击发送，任务会排队，算力足够时自动执行', 'mute');
+  }
+};
 
 /* 自己发的那条也能复制。按钮常驻在气泡左下角外侧、底对齐、隔一个汉字宽（样式在 .msg-user），
    图标与回复工具条上的复制是同一个（FOOT_ICON.copy）。 */
@@ -5068,10 +5179,12 @@ function attachMsgFoot(seg){
   scrollBottom();
 }
 
-/* 重新回答：丢掉最后一条回复（含工具卡/思考框），用原话再执行一次 */
+/* 重新回答：丢掉最后一条回复（含工具卡/思考框），用原话再执行一次。
+   别的任务在跑也放行——重新回答本身就是一条新任务，算力不足自动排队；
+   只拦「本条回复还在生成中」，那时连节点都还没画完。 */
 async function regenerate(){
-  if(taskActive()){
-    addPillNote('已有任务正在执行中，等它跑完或停止后再重新回答。');
+  if(busy && liveTask && liveTask.id === openTaskId){
+    addPillNote('这条回复还在生成中，等它完成或停止后再重新回答。');
     return;
   }
   let i = history.length - 1;
@@ -5425,8 +5538,7 @@ $('fileInput').onchange = async e => {
 input.addEventListener('keydown', e=>{
   if(e.key === 'Enter' && !e.shiftKey){
     e.preventDefault();
-    if(taskActive()){ addPillNote('任务执行中，先停止或等它跑完再发新指令。'); return; }
-    send();
+    send();   // 执行中也可发送：算力空闲立即跑，满载则排队（不再拦截）
   }
 });
 sendBtn.onclick = ()=>{ if(taskActive()) stopTask(); else send(); };
@@ -5567,28 +5679,27 @@ function taskActive(){
 
 /* 发送键在「执行中」会变成停止键，避免用户以为能再发一条 */
 function syncComposer(){
+  const queued = !!(liveTask && liveTask.status === 'queued');
   const act = taskActive();
   sendBtn.disabled = false;
   sendBtn.classList.toggle('stopping', act);
-  sendBtn.title = act ? '停止当前任务' : '发送';
+  sendBtn.title = act ? (queued ? '取消排队中的任务' : '停止当前任务') : '发送';
   $('sendIcon').innerHTML = act
     ? '<rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/>'
     : '<path d="M12 19V5M5 12l7-7 7 7"/>';
   $('sendIcon').classList.toggle('spin', false);
-  input.placeholder = act
-    ? '任务执行中 · 点右侧方块可停止；想发新指令请先停止或等它跑完'
+  input.placeholder = queued
+    ? '算力不足，任务已排队 · 空闲后自动执行；点右侧方块可取消'
+    : act
+    ? '任务执行中 · 点右侧方块可停止；直接输入即可发起新任务，算力不足会排队'
     : '向 AgentForge 描述任何事，回车发送，Shift+回车换行';
 }
 
-function setBusy(b){ busy = b; syncComposer(); }
+function setBusy(b){ busy = b; syncComposer(); renderLanding(); }
 
 async function send(){
-  // 执行中不许再发：以前这里不拦，会导致任务并发 + 上下文串档
-  if(taskActive()){
-    showView('chat');
-    addPillNote('已有任务正在执行中。点右侧方块可停止它，或等它跑完再发新指令。');
-    return;
-  }
+  // 不再因「有任务在跑」拦截发送（需求③）：算力有空位就立即执行，
+  // 没空位服务端会登记「排队中」，算力空闲后自动开跑。排队也能随时停止。
   const typed = input.value.trim();
   if(!typed && !attachments.length) return;
   // 有附件就把路径附在消息末尾，Agent 直接按路径读取
@@ -5599,15 +5710,17 @@ async function send(){
     openSettings('models');
     return;
   }
-  // 回看历史任务时发消息 = 开一条全新对话，绝不把上一条任务的上下文带进来
-  if(viewingHistory){ resetChat(); }
+  // 正在看某个任务（在跑或回看）时发消息 = 开一条全新对话，
+  // 绝不把旧任务的上下文带进来；旧任务继续在后台跑，不受影响
+  if(viewingHistory || openTaskId){ resetChat(); }
   input.value = ''; autoGrow();
   attachments = []; renderAttach();
-  // 先标记执行中再切视图：否则空态判定会把输入框重新浮回页面中部
+  // 先标记执行中再切视图：发送键立刻变停止键（可取消排队中的任务）
   setBusy(true);
   showView('chat');
   enterChat(text);
   addUser(text);
+  renderLanding();   // 有了真实消息，落地页标题立刻收起
   // 本地先临时拼上这条提问刷一次计量（不动 history 本身，后端会自己 append）
   updateContextMeter(history.concat([{ role: 'user', content: text }]), threshold);
   await streamChat(text, history);
@@ -5797,6 +5910,9 @@ function handleTaskEvent(ev, data){
     }
     else if(ev === 'tool_start'){
       unsettleReply();                          // 还在调工具：这轮没结束
+      if(data.name === 'ask_user'){             // 澄清弹窗：问题+选项内嵌渲染
+        addAskCard((data.args && typeof data.args === 'object') ? data.args : {});
+      }
       const ln = laneOf(data.task_id);
       if(ln){
         closeLaneThinking(ln, '决定调用工具 ' + data.name);
@@ -5878,8 +5994,14 @@ function handleTaskEvent(ev, data){
       renderRunBar();
     }
     else if(ev === 'task'){
-      // 服务端第一帧就把任务落了台账：侧栏立刻出现「执行中」，
-      // 同时把状态条点亮开始计时
+      // 服务端第一帧就把任务落了台账：侧栏立刻出现「执行中/排队中」，
+      // 同时把状态条点亮。算力满载时第一帧 status=queued（排队），
+      // 拿到空位后再推一帧 status=running（开跑）。
+      if(data.status === 'queued' && (!liveTask || liveTask.status !== 'queued')){
+        addPillNote('当前算力不足，任务已排队；算力空闲后自动执行。');
+      }else if(data.status === 'running' && liveTask && liveTask.status === 'queued'){
+        addPillNote('算力空闲，任务开始执行。');
+      }
       openTaskId = data.id || '';
       beginLiveTask(data);
       loadTasks();
@@ -5908,6 +6030,16 @@ function handleTaskEvent(ev, data){
       const ln = laneOf(data.task_id);
       if(ln && ln.think) ln.think = null;      // 这一路不再有下文，思考块封口
       addPillNote(`子任务失败：${esc(data.message || '')}（其它任务不受影响，继续执行）`, true);
+    }
+    else if(ev === 'notify'){
+      // 系统侧提示（确定性架构动作的结果，如「已存入记忆」）：绿色 toast；
+      // reload 标明哪个面板的数据变了，立即重拉（记忆管理页不用手动刷）
+      toast(null, data.text || '', data.kind || 'ok');
+      if(data.reload === 'memory'){
+        refreshMemCount();
+        const sec = document.querySelector('#viewMemory:not(.hide)');
+        if(sec) loadMemory();
+      }
     }
     else if(ev === 'error'){
       // 到这里才是**整条回复**的失败：连接层 / 编排层的致命错误

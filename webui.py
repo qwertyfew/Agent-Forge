@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from agentforge import artifact, autonote, autoskill, gaps, ollamaguard, reveal, runcontrol
+from agentforge import artifact, autonote, autoskill, gaps, interact, ollamaguard, reveal, runcontrol
 from agentforge.cli import CLI
 from agentforge.config import Config
 from agentforge.evalsdesk import EvalsDesk
@@ -32,6 +32,15 @@ from agentforge.taskstore import TaskStore
 
 HERE = Path(__file__).resolve().parent
 INDEX = HERE / "web" / "index.html"
+
+# 算力闸门（任务级）：同时「执行中」的任务上限，配置 compute.max_running（默认 1）。
+# serve() 启动时按配置重建；超出上限的任务登记为「排队中」，有空位自动开跑。
+# 注意：调大上限需要重启服务（信号量在启动时定容）。
+_COMPUTE_GATE = threading.Semaphore(1)
+
+
+class _QueuedCancelled(Exception):
+    """排队等待算力期间被用户取消：事件已发、台账由 finally 落「已停止」。"""
 
 
 def _is_local_deployment(base: Path | None = None) -> bool:
@@ -773,6 +782,8 @@ class _Handler(BaseHTTPRequestHandler):
         payload = {
             "tasks": self.tasks.list(),
             "running": self.tasks.running_count(),
+            # 算力闸门容量：前端据此判断「还有没有空闲算力」
+            "max_running": self.max_running,
         }
         if cleanup:
             payload["cleanup"] = self._cleanup_snapshot()
@@ -1385,6 +1396,16 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/open-folder":
             self._handle_open_folder()
             return
+        if path == "/api/ask-answer":
+            # 前端澄清弹窗回传：唤醒挂起中的 ask_user 工具调用
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                req = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                req = {}
+            n = interact.user_reply(str((req or {}).get("answer", "")))
+            self._json({"ok": n > 0, "resolved": n})
+            return
         if path == "/api/file-content":
             self._handle_file_content()
             return
@@ -1449,6 +1470,11 @@ class _Handler(BaseHTTPRequestHandler):
 
         runcontrol.set_current_task(task_id)   # 让 remember 工具知道记忆归属哪个任务
         stop_ev = runcontrol.register(task_id)
+        # 算力闸门：先试占一个执行位；占不到就登记「排队中」，等有空位再开跑。
+        # 位藏在 finally 里归还——无论跑完、报错还是排队中取消，都不漏还。
+        got_slot = _COMPUTE_GATE.acquire(blocking=False)
+        if not got_slot:
+            self.tasks.set_status(task_id, "queued", progress="排队等待算力…")
         file_log: list[dict] = []              # 写类工具动过的文件
         # 开工前拍一张工作区索引，收工时再拍一张相减，兜住 run_command 的副作用
         try:
@@ -1496,17 +1522,41 @@ class _Handler(BaseHTTPRequestHandler):
                 cap_route = None
 
         self._sse_headers()
+        # ask_user 澄清弹窗：本线程进入交互模式——工具挂起等前端回传答复
+        # （POST /api/ask-answer）；收尾 finally 里退出，防串到评测线程同线程复用
+        interact.begin(interactive=True)
         try:
             emit(
                 "task",
                 {
                     "id": task_id,
                     "title": short_title(message, 90),
-                    "status": "running",
+                    "status": "running" if got_slot else "queued",
                     "created_at": started_at,
                     "permission": permission,
                 },
             )
+            if not got_slot:
+                # 排队等位：每 0.5 秒醒一次看停止标志，有空位立刻占上开跑。
+                emit("queued", {"note": "当前算力不足，任务已排队；算力足够时自动执行"})
+                while True:
+                    if stop_ev.wait(0.5):        # 排队中被用户取消
+                        was_stopped = True
+                        break
+                    if _COMPUTE_GATE.acquire(blocking=False):
+                        got_slot = True
+                        break
+                if was_stopped:
+                    emit("stopped", {"steps": 0, "total": 0, "reason": "排队中取消"})
+                    raise _QueuedCancelled()
+                self.tasks.set_status(task_id, "running")
+                emit("task", {                   # 状态翻转再播一次：侧栏翻「执行中」
+                    "id": task_id,
+                    "title": short_title(message, 90),
+                    "status": "running",
+                    "created_at": started_at,
+                    "permission": permission,
+                })
             if cap_route:
                 emit("route", {
                     "kind": cap_route.get("kind"),
@@ -1551,6 +1601,12 @@ class _Handler(BaseHTTPRequestHandler):
                     if ev.get("failed"):
                         payload["failed"] = True
                     emit("tool_result", payload)
+                elif kind == "notify":
+                    # 系统侧提示（确定性架构动作的结果，如「已存入记忆」）：
+                    # 前端渲染成绿色 toast，reload 指明要刷新哪个面板
+                    emit("notify", {"text": ev.get("text") or "",
+                                    "kind": ev.get("kind") or "ok",
+                                    "reload": ev.get("reload") or ""})
                 elif kind == "multipath":
                     # 多路径尝试：先播「正在拟路径」，再逐条播每条路径的尝试。
                     # 用 thinking 通道播报，界面渲染成思考行，不打断正常回答流。
@@ -1671,6 +1727,8 @@ class _Handler(BaseHTTPRequestHandler):
                 elif kind == "complete":
                     steps = ev["steps"]
                     emit("complete", {"steps": ev["steps"], "multi": ev["multi"]})
+        except _QueuedCancelled:
+            pass    # 排队中取消：stopped 事件已发，台账由下方 finally 落「已停止」
         except Exception as e:  # noqa: BLE001
             # 常见情形：浏览器关页/刷新把 SSE 连接断了，继续生成只是白烧 token。
             # 但如果已有接管者挂在总线上（别人还在看），就别停，让它接着跑。
@@ -1682,6 +1740,9 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         finally:
+            interact.end()
+            if got_slot:
+                _COMPUTE_GATE.release()   # 归还执行位，让排队的下一个任务开跑
             # 产出文件 = 工具明确写的 + 工作区索引两次相减（兜住命令副作用）
             #
             # 相减那一半是**推测**，必须先过 may_have_written：本任务一次工具都没调
@@ -2112,8 +2173,11 @@ def serve(cfg: Config, auto_approve: bool, port: int, host: str = "127.0.0.1"):
         (_Handler,),
         {"cli": cli, "cfg": cfg, "store": cli.store, "tasks": tasks,
          "prefs": prefs, "mem": mem,
-         "evals": EvalsDesk(cfg, hub=cli.agent.hub)},
+         "evals": EvalsDesk(cfg, hub=cli.agent.hub),
+         "max_running": max(1, int(getattr(cfg, "compute_max_running", 1)))},
     )
+    global _COMPUTE_GATE
+    _COMPUTE_GATE = threading.Semaphore(handler.max_running)
     httpd = ThreadingHTTPServer((host, port), handler)
     url = f"http://{host}:{port}"
     print(f"AgentForge Web UI: {url}")

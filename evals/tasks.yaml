@@ -9,6 +9,29 @@
 # 本文件由「评测台」维护：保存前自动备份到 evals/.run/，保存后回读校验。
 
 cases:
+  # ================= 写作 =================
+  - id: r1-rea-roadmap
+    category: writing
+    prompt: 我想让我的agent具备REA项目的能力，我该怎么做
+    ask_answers:
+    - REA实际上是git上的一个项目
+    expect:
+      must_ask: true
+      contains:
+      - REA
+      contains_norm:
+      - git
+      fuzzy:
+      - 检索
+      - 方案
+      - 步骤
+      - 技能
+      - 架构设计
+      - 技术栈
+      - 实施步骤
+      notes: 考察澄清弹窗流程：本地检索不到→ask_user 弹窗（选项简明）→用户补充「REA是git上的项目」→上git检索→给出合理的能力建设方案
+    seed: {}
+    notes: 考察澄清弹窗流程：信息不足时先问再猜，补充后按答复走检索并产出方案
   # ================= 运维 =================
   - id: f5-git-search-rea
     category: ops
@@ -16,9 +39,13 @@ cases:
     expect:
       contains:
       - REA
-      - git
+      tool_called:
+      - github_search
     seed: {}
-    notes: 考察模型是否能正确调用git命令进行远程仓库检索；判定看回复内容（含REA与git），不再用 git ls-remote 网络核验——占位URL example/rea 未必存在，且核验需要 GitHub 凭据（本机 git 还走了 ghproxy 代理），曾弹凭据窗口卡住评测，2026-10-15 报告唯一失败即此
+    notes: 考察模型是否能正确调用git命令进行远程仓库检索；判定=回复含REA + 过程里真调过
+      github_search（tool_called 过程判定）。旧的回复文本含"git"字面关键词已废——
+      模型回复带不带 github URL 纯属格式运气，2026-10-15 报告 214203 因此误判 fail，
+      214327 带了链接才过；检索证据在过程事件里，不在回复措辞里
   # ================= 编码 =================
   - id: c1-fix-area
     category: coding
