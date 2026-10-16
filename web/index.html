@@ -355,6 +355,51 @@
   .sk-count{font-size:11px;color:var(--ink3);border:1px solid var(--line2);
     border-radius:999px;padding:1px 7px;white-space:nowrap}
   .sk-hint{font-size:11px;color:var(--ink3);margin-left:auto;text-align:right}
+
+  /* ============ 栏目统一规则（第 38 步）============ */
+  /* 集合头：名字 + 计数(N) + 小问号 + 右端加号 */
+  .sec-count{font-size:11px;color:var(--ink3);white-space:nowrap}
+  .sk-sec-head .sp{flex:1}
+  /* 圆形小问号：悬停弹富卡片（文字 + 可点击文件路径） */
+  .sec-help{width:16px;height:16px;border-radius:50%;border:1px solid var(--line2);
+    color:var(--ink3);font-size:10.5px;font-weight:600;display:inline-flex;
+    align-items:center;justify-content:center;cursor:help;flex:none;user-select:none;align-self:center}
+  .sec-help:hover{border-color:var(--ink2);color:var(--ink)}
+  .sec-pop{position:fixed;z-index:70;max-width:360px;background:var(--card);
+    border:1px solid var(--line2);border-radius:10px;padding:10px 13px;
+    font-size:12.5px;color:var(--ink);line-height:1.65;
+    box-shadow:0 8px 24px rgba(0,0,0,.14)}
+  .sec-pop .sp-cap{display:block;color:var(--ink3);font-size:11px;margin-top:6px}
+  .sec-pop .sp-path{color:var(--ink);text-decoration:underline dotted;cursor:pointer;white-space:nowrap}
+  .sec-pop .sp-path:hover{color:var(--ink2)}
+
+  /* 普通条目：悬停滑出交互（零按钮常驻）。
+     it-body 整体刚性平移——内容不重排不挤压；按钮块/勾选框绝对定位在两端。
+     --acts-w 按按钮数给档位（每个按钮块 = 条目宽 10%）；勾选框区 18%（与条目留 16px 缝）。 */
+  .it-row{position:relative;overflow:hidden}
+  .it-row .it-body{transition:transform .16s ease;will-change:transform}
+  .it-row.acts-1{--acts-w:10%}.it-row.acts-2{--acts-w:20%}.it-row.acts-3{--acts-w:30%}
+  .it-row{--cbw:18%}
+  .it-row.sl-l .it-body{transform:translateX(calc(-1 * var(--acts-w)))}
+  .it-row.sl-r .it-body{transform:translateX(var(--cbw))}
+  .it-row.sel .it-body{transform:translateX(var(--cbw))}
+  .it-row.sel.sl-l .it-body{transform:translateX(var(--cbw))}   /* 全选模式不滑出按钮 */
+  .it-acts{position:absolute;top:0;right:0;bottom:0;width:var(--acts-w);
+    display:flex;gap:4px;padding:2px;opacity:0;pointer-events:none;transition:opacity .16s ease}
+  .it-row.sl-l .it-acts{opacity:1;pointer-events:auto}
+  .it-acts .abtn{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:3px;font-size:11px;color:var(--ink2);
+    background:var(--hover);border:0;border-radius:9px;cursor:pointer;padding:2px}
+  .it-acts .abtn:hover{color:var(--ink);background:var(--line)}
+  .it-acts .abtn.danger{color:#c0392b}
+  .it-acts .abtn.danger:hover{background:#c0392b1a}
+  .it-acts .abtn:disabled{opacity:.35;cursor:not-allowed}
+  .it-acts .abtn svg{width:14px;height:14px;flex:none}
+  .it-check{position:absolute;top:0;bottom:0;left:0;width:var(--cbw);
+    display:flex;align-items:center;justify-content:flex-end;padding-right:16px;
+    opacity:0;pointer-events:none;transition:opacity .16s ease}
+  .it-row.sl-r .it-check,.it-row.sel .it-check{opacity:1;pointer-events:auto}
+
   .sk-item{border:1px solid var(--line);border-radius:12px;background:var(--card);
     padding:11px 13px}
   .sk-item .sk-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -381,7 +426,7 @@
      「全选」进入 → 可单独取消 → 红底白字「确认清理(N项)」/ 取消 */
   .sel-cb{width:15px;height:15px;margin:2px 2px 0 0;flex:none;accent-color:var(--send-bg);cursor:pointer}
   .sk-item.selrow{border-color:var(--accent)}
-  .selbar{display:inline-flex;align-items:center;gap:8px}
+  /* selbar 浮动条已由右上角常驻按钮组取代（第 38 步） */
   /* 报告文件名可点：悬停下划线提示，点了去资源管理器里定位文件 */
   .sk-item .sk-name.link{cursor:pointer}
   .sk-item .sk-name.link:hover{text-decoration:underline}
@@ -678,7 +723,13 @@
     font-size:13px;color:var(--ink2);text-align:left}
   .set-nav button:hover{background:var(--hover);color:var(--ink)}
   .set-nav button.on{background:var(--hover);color:var(--ink);font-weight:550}
-  .set-pane{flex:1;overflow-y:auto;padding:20px 26px 60px;min-width:0}
+  /* 滚动条 overlay：常态不占布局宽（-9px 外挂），栏目切换时全选按钮纹丝不动；
+     滚动时细条半透明「贴」在内容上。Firefox 降级为细滚动条。 */
+  .set-pane{flex:1;overflow-y:auto;padding:20px 26px 60px;min-width:0;margin-right:-9px;padding-right:35px}
+  .set-pane::-webkit-scrollbar{width:9px;background:transparent}
+  .set-pane::-webkit-scrollbar-thumb{background:var(--line2);border-radius:5px;border:2px solid transparent;background-clip:padding-box}
+  .set-pane::-webkit-scrollbar-thumb:hover{background:var(--ink3);border:2px solid transparent;background-clip:padding-box}
+  @supports (-moz-appearance:none){ .set-pane{margin-right:0;padding-right:26px;scrollbar-width:thin;scrollbar-color:var(--line2) transparent} }
   .pane-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:16px}
   .pane-head h3{margin:0 0 4px;font-size:17px;font-weight:650}
   /* 说明文案统一最大宽度：一行塞不下自动换行，同时给右侧按钮组留足同行空间；
@@ -1258,17 +1309,19 @@
               </p>
             </div>
             <div class="pane-actions">
+              <button class="btn danger hide" id="btnMemClear">确认清理</button>
               <button class="btn" id="btnMemSel">全选</button>
-              <span class="selbar hide" id="selbarMem"></span>
             </div>
           </div>
-          <div class="mem-add">
-            <input id="memAddInput" placeholder="手动添加一条偏好，例如：用户偏好：回复先给结论" />
-            <button class="btn" id="btnMemAdd">添加</button>
-          </div>
-          <div class="alist" id="memList"></div>
-          <div class="kv" style="margin-top:18px;border-bottom:0">
-            <span class="k">记忆文件</span><span class="v mono" id="memPath"></span>
+          <div class="sk-sec">
+            <div class="sk-sec-head">
+              <h4>记忆</h4>
+              <span class="sec-count" id="memCount">(0)</span>
+              <span class="sec-help" data-help="只存放用户的长期偏好：对话里明说「记住 / 以后 / 每次都…」的由规则直接收录，任务收尾时本地模型再提炼。环境事实与项目约定不进这里——写下来只是「劝」，不如让架构强制。" data-helppath=".agentforge/memory.md" data-helplabel="记忆文件"></span>
+              <span class="sp"></span>
+              <button class="mini-btn" id="btnMemAdd" title="新增一条记忆">＋</button>
+            </div>
+            <div class="alist" id="memList"></div>
           </div>
         </div>
       </div>
@@ -1283,38 +1336,25 @@
               <h3>技能管理</h3>
               <p>
                 Agent Skills 开放标准：技能是一份带 frontmatter 的 SKILL.md，任务命中它的
-                触发词时正文会被自动注入上下文。下面按来源分两块——<b>提取得到的技能</b>是
-                Agent 跑完任务后自己提炼沉淀的；<b>安装得到的技能</b>是放进 skills/ 目录的。
+                触发词时正文会被自动注入上下文。技能有两个来源——<b>提取得到</b>的是 Agent
+                跑完任务后自己提炼沉淀的，<b>安装得到</b>的来自 skills/ 目录（来源标在每张卡片上）。
                 每张卡片展示技能的<b>版本</b>、<b>触发边界</b>（什么场景该用 / 不该用）与附带资源；
                 声明的「不适用」场景命中时会主动让位，避免关键词撞车导致的误加载。
               </p>
             </div>
             <div class="pane-actions">
+              <button class="btn danger hide" id="btnSkillClear">确认清理</button>
               <button class="btn" id="btnSkillSel">全选</button>
-              <span class="selbar hide" id="selbarSkill"></span>
             </div>
           </div>
 
           <div class="sk-sec">
             <div class="sk-sec-head">
-              <h4>提取得到的技能</h4>
-              <span class="sk-count" id="skExtractedCount">0 个</span>
-              <span class="sk-hint">任务收尾时由自检机制自动提炼，可单条删除</span>
+              <h4>技能</h4>
+              <span class="sec-count" id="skCount">(0)</span>
+              <span class="sec-help" data-help="「提取得到」：任务收尾时由自检机制自动提炼；「安装得到」：把含 SKILL.md 的目录放进技能目录即可。删除会连同技能目录一起备份到 .run/。" data-helppath="skills" data-helplabel="技能目录"></span>
             </div>
-            <div class="alist" id="skillExtractedList"></div>
-          </div>
-
-          <div class="sk-sec">
-            <div class="sk-sec-head">
-              <h4>安装得到的技能</h4>
-              <span class="sk-count" id="skInstalledCount">0 个</span>
-              <span class="sk-hint">来自项目 skills/ 目录</span>
-            </div>
-            <div class="alist" id="skillInstalledList"></div>
-          </div>
-
-          <div class="kv" style="margin-top:18px;border-bottom:0">
-            <span class="k">检索目录</span><span class="v mono" id="skillDirs2"></span>
+            <div class="alist" id="skillList"></div>
           </div>
         </div>
       </div>
@@ -1334,16 +1374,16 @@
               </p>
             </div>
             <div class="pane-actions">
+              <button class="btn danger hide" id="btnGapClear">确认清理</button>
               <button class="btn" id="btnGapSel">全选</button>
-              <span class="selbar hide" id="selbarGap"></span>
             </div>
           </div>
 
           <div class="sk-sec">
             <div class="sk-sec-head">
-              <h4>缺失记录</h4>
-              <span class="sk-count" id="gapCount">0 条</span>
-              <span class="sk-hint">任务触发缺口时由架构自动登记，一键清空后可重新积累</span>
+              <h4>记录</h4>
+              <span class="sec-count" id="gapCount">(0)</span>
+              <span class="sec-help" data-help="任务触发缺口时由架构自动登记，一键清空后可重新积累。同类缺口按名称合并计数；来源：模型调用不存在的工具、工具预检发现能力缺失、模型主动 report_gap、评测任务失败。"></span>
             </div>
             <div class="alist" id="gapList"></div>
           </div>
@@ -1367,16 +1407,12 @@
             </div>
             <div class="pane-actions">
               <div class="pane-col">
-                <button class="btn" id="btnEvalSel">一键全选</button>
-                <div class="pane-row hide" id="evalSelBtns">
-                  <button class="btn danger" id="btnEvalClear">确认清理</button>
-                  <button class="btn ghost" id="btnEvalExit">退出</button>
-                  <button class="btn" id="btnEvalUnsel">取消全选</button>
+                <div class="pane-row">
+                  <button class="btn danger hide" id="btnEvalClear">确认清理</button>
+                  <button class="btn" id="btnEvalSel">全选</button>
                 </div>
-                <button class="btn" id="btnEvalRun">全部评测</button>
-                <button class="btn hide" id="btnEvalStop">停止</button>
+                <button class="btn hide" id="btnEvalGo">评测</button>
               </div>
-              <span class="selbar hide" id="selbarEval"></span>
             </div>
           </div>
 
@@ -1385,6 +1421,7 @@
             <span id="evalStatusText"></span>
             <!-- 按钮组整体右对齐：重跑隐藏（评测进行中）时查看也不会左移 -->
             <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+              <button class="mini-btn hide" id="btnEvalStop">停止</button>
               <button class="mini-btn hide" id="btnEvalRerunLast">重跑</button>
               <button class="mini-btn" id="btnEvalViewLast">查看</button>
             </span>
@@ -1392,20 +1429,20 @@
 
           <div class="sk-sec">
             <div class="sk-sec-head">
-              <h4>评测任务</h4>
-              <span class="sk-count" id="evalTaskCount">0 条</span>
-              <span class="sk-hint">带 🔒 的任务被常驻回归钉死（诚实性簇/安全策略），不能删除；改动需保存后才生效</span>
-              <button class="mini-btn" id="btnEvalAdd">新增任务</button>
-              <button class="mini-btn" id="btnEvalSave">保存任务集</button>
+              <h4>任务</h4>
+              <span class="sec-count" id="evalTaskCount">(0)</span>
+              <span class="sec-help" data-help="评测集是 harness 的标尺：每条任务喂给完整 agent 管线，判定全部走程序、零 LLM 调用。带 🔒 的任务被常驻回归钉死（诚实性簇/安全策略），不能删除；改动保存后即生效。" data-helppath="evals/tasks.yaml" data-helplabel="任务集文件"></span>
+              <span class="sp"></span>
+              <button class="mini-btn" id="btnEvalAdd" title="新增一条评测任务">＋</button>
             </div>
             <div class="alist" id="evalTaskList"></div>
           </div>
 
           <div class="sk-sec">
             <div class="sk-sec-head">
-              <h4>评测报告</h4>
-              <span class="sk-count" id="evalReportCount">0 份</span>
-              <span class="sk-hint">每轮评测自动生成；JSON 同名文件在 evals/results/，bench_compare 可直接使用</span>
+              <h4>报告</h4>
+              <span class="sec-count" id="evalReportCount">(0)</span>
+              <span class="sec-help" data-help="每轮评测自动生成：时间、代码版本、逐条表现与失败归因分布；同名 JSON 文件在报告目录下，bench_compare 可直接使用。" data-helppath="evals/results" data-helplabel="报告目录"></span>
             </div>
             <div class="alist" id="evalReportList"></div>
             <pre class="eval-report hide" id="evalReportView"></pre>
@@ -1721,30 +1758,166 @@ function selCheckbox(view, key, disabled){
   if(disabled){ cb.disabled = true; cb.title = '该条目被钉死，不能清理'; }
   cb.onclick = e => e.stopPropagation();
   cb.onchange = ()=>{
+    // 普通模式下勾选 = 直接进入全选模式（只勾这一条），确认清理/评测按钮随即出现；
+    // 全选模式下勾到空 = 自动退出全选模式
+    if(cb.checked && !st.on){
+      st.on = true;
+      st.checked = new Set([key]);
+      selUIOn(view, true);
+      selRerender[view]();
+      return;
+    }
     if(cb.checked) st.checked.add(key); else st.checked.delete(key);
+    if(st.on && !st.checked.size){ exitSel(view); return; }
     renderSelBar(view);
   };
   return cb;
 }
+/* ============ 统一条目交互（第 38 步）============
+   条目上不再常驻按钮：悬停尾部（70% 起）整条左滑出按钮块（每颗占条目宽 10%，
+   图标+文字，高度与条目一致）；悬停头部（20% 前）右滑出勾选框（与条目留缝）。
+   内容整体刚性平移，绝不重排挤压。点条目本体开弹窗编辑/查看。 */
+const ABT_ICONS = {
+  edit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>',
+  del: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+  run: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7 4l13 8-13 8z"/></svg>',
+  view: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
+};
+function itRow(view, bodyEl, actions, opts){
+  opts = opts || {};
+  const n = actions.length;
+  // 有勾选框才参与全选模式与头部滑出（报告条目没有勾选框，不参与）
+  const withCb = !!opts.checkbox;
+  const row = el('div', 'it-row acts-' + n
+    + ((withCb && selState[view] && selState[view].on) ? ' sel' : ''));
+  const cbw = el('div', 'it-check');
+  if(opts.checkbox) cbw.appendChild(opts.checkbox);
+  row.appendChild(cbw);
+  const bd = el('div', 'it-body');
+  bd.appendChild(bodyEl);
+  row.appendChild(bd);
+  if(n){
+    const acts = el('div', 'it-acts');
+    for(const a of actions){
+      const b = el('button', 'abtn' + (a.cls ? ' ' + a.cls : ''));
+      b.innerHTML = (ABT_ICONS[a.icon] || '') + '<span></span>';
+      b.lastChild.textContent = a.label;
+      if(a.disabled){
+        b.disabled = true;
+        if(a.title) b.title = a.title;
+      }else{
+        if(a.title) b.title = a.title;
+        b.onclick = ev => { ev.stopPropagation(); a.onclick(ev); };
+      }
+      acts.appendChild(b);
+    }
+    row.appendChild(acts);
+  }
+  // 悬停滑出按鼠标在条目内的横向比例判定；全选模式锁定为勾选态，不再滑按钮
+  row.onmousemove = e => {
+    if(selState[view] && selState[view].on) return;
+    const r = row.getBoundingClientRect();
+    if(!r.width) return;
+    const x = (e.clientX - r.left) / r.width;
+    row.classList.toggle('sl-l', x >= .7 && n > 0);
+    row.classList.toggle('sl-r', x < .2 && withCb);
+  };
+  row.onmouseleave = ()=> row.classList.remove('sl-l', 'sl-r');
+  if(opts.onOpen){
+    bd.onclick = e => {
+      // 条目内的链接/勾选框/输入控件不触发「点条目」
+      if(e.target.closest('button,a,input,textarea,select,[data-openpath],.link')) return;
+      opts.onOpen();
+    };
+  }
+  return row;
+}
+/* 通用表单弹窗：标题 + 说明 + 自定义内容 + 取消/确定。onOk 返回 false = 校验
+   失败不关窗（toast 自己发）。替代各栏目原来的行内编辑器。 */
+function formModal(cfg){
+  const mask = el('div', 'modal-mask');
+  const box = el('div', 'modal');
+  const head = el('div', 'modal-head');
+  head.appendChild(el('h3', '', cfg.title || ''));
+  if(cfg.sub) head.appendChild(el('p', '', cfg.sub));
+  box.appendChild(head);
+  const body = el('div', 'modal-body');
+  const ctx = (cfg.build ? cfg.build(body) : null) || {};
+  const foot = el('div', 'modal-foot');
+  const cancel = el('button', 'btn ghost', '取消');
+  const ok = el('button', 'btn', cfg.okText || '确定');
+  cancel.onclick = ()=> mask.remove();
+  ok.onclick = async ()=>{
+    const keep = cfg.onOk ? await cfg.onOk(ctx, ok) : true;
+    if(keep !== false) mask.remove();
+  };
+  foot.appendChild(cancel);
+  foot.appendChild(ok);
+  box.appendChild(foot);
+  mask.appendChild(box);
+  mask.onclick = e => { if(e.target === mask) mask.remove(); };
+  document.body.appendChild(mask);
+  const first = body.querySelector('textarea,input,select');
+  if(first) first.focus();
+  return { close: ()=> mask.remove(), ctx };
+}
+/* 集合头小问号：悬停弹富卡片（说明文字 + 可点击文件路径，路径走全局打开代理） */
+(function bindSecHelp(){
+  const pop = el('div', 'sec-pop hide');
+  document.body.appendChild(pop);
+  let cur = null, hideT = null;
+  function show(icon){
+    cur = icon;
+    pop.innerHTML = '';
+    for(const t of String(icon.dataset.help || '').split('\n').filter(Boolean))
+      pop.appendChild(el('div', '', t));
+    if(icon.dataset.helppath){
+      const cap = el('span', 'sp-cap', (icon.dataset.helplabel || '位置') + '：');
+      const path = el('span', 'sp-path', icon.dataset.helppath);
+      path.dataset.openpath = icon.dataset.helppath;   // 点路径 = 打开所在文件夹
+      path.title = '点击打开所在文件夹';
+      cap.appendChild(path);
+      pop.appendChild(cap);
+    }
+    pop.classList.remove('hide');
+    const r = icon.getBoundingClientRect();
+    let x = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 10));
+    let y = r.bottom + 8;
+    if(y + pop.offsetHeight > innerHeight - 8) y = Math.max(8, r.top - pop.offsetHeight - 8);
+    pop.style.left = x + 'px';
+    pop.style.top = y + 'px';
+  }
+  function hide(){
+    if(hideT) clearTimeout(hideT);
+    hideT = setTimeout(()=>{ pop.classList.add('hide'); cur = null; }, 120);
+  }
+  document.addEventListener('mouseover', e => {
+    const icon = e.target.closest && e.target.closest('.sec-help');
+    if(icon){ if(hideT) clearTimeout(hideT); if(icon !== cur) show(icon); return; }
+    if(pop.contains(e.target)){ if(hideT) clearTimeout(hideT); return; }
+    if(cur || !pop.classList.contains('hide')) hide();
+  });
+  window.addEventListener('scroll', ()=>{ pop.classList.add('hide'); cur = null; }, true);
+  window.addEventListener('blur', ()=>{ pop.classList.add('hide'); cur = null; });
+})();
 function renderSelBar(view){
   const st = selState[view];
+  // 统一规则：全选模式的按钮常驻右上角（确认清理在左、全选按钮变身「退出」在右），
+  // 这里只把勾选数刷进「确认清理」文案
+  const clear = $('btn' + selCap(view) + 'Clear');
+  if(clear) clear.textContent = st.checked.size
+    ? `确认清理(${st.checked.size} 项)` : '确认清理';
+}
+/* 右上角按钮组状态：全选按钮在「全选/退出」间变身，确认清理与评测按钮随模式显隐 */
+function selUIOn(view, on){
+  const sel = $('btn' + selCap(view) + 'Sel');
+  if(sel) sel.textContent = on ? '退出' : '全选';
+  const clear = $('btn' + selCap(view) + 'Clear');
+  if(clear) clear.classList.toggle('hide', !on);
   if(view === 'eval'){
-    // 评测台：按钮固定在 pane-head 行内（取消全选/退出/确认清理），不渲染浮动 selbar，
-    // 只把勾选数刷进「确认清理」文案
-    const clear = $('btnEvalClear');
-    if(clear) clear.textContent = st.checked.size
-      ? `确认清理(${st.checked.size} 项)` : '确认清理';
-    return;
+    const go = $('btnEvalGo');
+    if(go) go.classList.toggle('hide', !on || evalRunningFlag);
   }
-  const bar = $('selbar' + selCap(view));
-  if(!bar) return;
-  bar.innerHTML = '';
-  // 顺序与评测台一致：确认清理在最左、退出在最右，危险按钮与高频点击隔开
-  const ok = el('button', 'btn danger', `确认清理(${st.checked.size} 项)`);
-  ok.onclick = ()=> confirmSel(view);
-  const cancel = el('button', 'btn ghost', '退出');
-  cancel.onclick = ()=> exitSel(view);
-  bar.appendChild(ok); bar.appendChild(cancel);
 }
 function enterSel(view){
   const st = selState[view];
@@ -1757,35 +1930,18 @@ function enterSel(view){
   if(!keys.length){ toast(null, '这一栏还没有条目', 'mute'); return; }
   st.on = true;
   st.checked = new Set(keys);
-  $('btn' + selCap(view) + 'Sel').classList.add('hide');
+  selUIOn(view, true);
   renderSelBar(view);
-  if(view === 'eval') $('evalSelBtns').classList.remove('hide');
-  else $('selbar' + selCap(view)).classList.remove('hide');
-  if(view === 'eval') syncEvalRunBtn();
   selRerender[view]();
 }
 function exitSel(view, reload){
   const st = selState[view];
   st.on = false;
   st.checked.clear();
-  $('btn' + selCap(view) + 'Sel').classList.remove('hide');
-  if(view === 'eval'){
-    const row = $('evalSelBtns');
-    if(row) row.classList.add('hide');
-  } else {
-    $('selbar' + selCap(view)).classList.add('hide');
-  }
-  if(view === 'eval') syncEvalRunBtn();
+  selUIOn(view, false);
   if(reload === undefined || reload === true)
     ({mem: loadMemory, skill: loadSkills, gap: loadGaps, eval: loadEvals})[view]();
   else selRerender[view]();
-}
-/* 评测台专属：进全选后「全部评测」变「批量评测」（只跑勾选条目）；
-   行内三按钮（取消全选/退出/确认清理）的显隐由 enterSel/exitSel 切换 */
-function syncEvalRunBtn(){
-  const run = $('btnEvalRun');
-  if(!run) return;
-  run.textContent = selState.eval.on ? '批量评测' : '全部评测';
 }
 async function confirmSel(view){
   const st = selState[view];
@@ -1829,17 +1985,11 @@ async function confirmSel(view){
     await saveEvalTasks(null);
   }
 }
-$('btnMemSel').onclick = ()=> enterSel('mem');
-$('btnSkillSel').onclick = ()=> enterSel('skill');
-$('btnGapSel').onclick = ()=> enterSel('gap');
-$('btnEvalSel').onclick = ()=> enterSel('eval');
-$('btnEvalUnsel').onclick = ()=>{
-  selState.eval.checked.clear();
-  renderSelBar('eval');
-  selRerender.eval();
-  toast(null, '已取消全部勾选（仍在全选模式），可重新勾选需要的条目', 'mute');
-};
-$('btnEvalExit').onclick = ()=> exitSel('eval');   // 与其他栏「取消」一致：退出全选模式
+/* 全选按钮 = 模式开关：点「全选」进入并勾选全部，点「退出」收场（确认清理在它左边） */
+$('btnMemSel').onclick = ()=> selState.mem.on ? exitSel('mem') : enterSel('mem');
+$('btnSkillSel').onclick = ()=> selState.skill.on ? exitSel('skill') : enterSel('skill');
+$('btnGapSel').onclick = ()=> selState.gap.on ? exitSel('gap') : enterSel('gap');
+$('btnEvalSel').onclick = ()=> selState.eval.on ? exitSel('eval') : enterSel('eval');
 $('btnEvalClear').onclick = ()=> confirmSel('eval');
 
 /* ================= 记忆管理 =================
@@ -1859,76 +2009,62 @@ async function memPost(body){
     return await r.json();
   }catch(e){ return null; }
 }
-/* 行内编辑：记住正在编辑的行号（entries() 的 index，跨重渲染稳定） */
-let memEditIdx = null;
+/* 记忆新增/编辑弹窗：+ 弹窗替代页内输入行，点击条目弹窗替代行内编辑器 */
+function memFormModal(title, sub, text, onOk){
+  formModal({
+    title, sub, okText: '保存',
+    build: body=>{
+      const ta = document.createElement('textarea');
+      ta.rows = 4;
+      ta.placeholder = '记忆内容（最长 600 字，换行会压平）';
+      ta.value = text || '';
+      body.appendChild(ta);
+      return {ta};
+    },
+    onOk: async ctx => onOk(ctx.ta.value.trim())
+  });
+}
 function renderMemory(d){
   const box = $('memList');
   if(!box) return;
   selRaw.mem = d;
   box.innerHTML = '';
   const items = (d && d.entries) || [];
-  if(memEditIdx !== null && !items.some(e => e.index === memEditIdx)) memEditIdx = null;
   memBadge(items.length);
-  if(d && d.path) $('memPath').textContent = d.path;
+  $('memCount').textContent = '(' + items.length + ')';
   if(!items.length){
     if(selState.mem.on) exitSel('mem', false);   // 清空了还停在空列表：自动退出全选
     box.appendChild(el('div','task-empty',
-      '还没有记忆。任务跑完会自动沉淀偏好（你明说「记住 / 以后 / 每次」的内容一定会被收到）；也可以在上面手动添加。'));
+      '还没有记忆。任务跑完会自动沉淀偏好（你明说「记住 / 以后 / 每次」的内容一定会被收到）；也可以点集合名右侧的＋手动添加。'));
     return;
   }
   for(const e of items){
-    const row = el('div','mem-item');
-    if(selState.mem.on) row.appendChild(selCheckbox('mem', String(e.index)));
-    row.appendChild(el('div','mtxt', e.text || ''));
+    const card = el('div','mem-item');
+    card.appendChild(el('div','mtxt', e.text || ''));
     const meta = el('div','mmeta');
     if(e.ts) meta.appendChild(el('span','', e.ts));
     if(e.task) meta.appendChild(el('span','mtag', '任务 ' + e.task));
-    const edt = el('button','mini-btn','编辑');
-    edt.onclick = ()=>{
-      if(selState.mem.on){ toast(null, '先退出全选模式再编辑', 'mute'); return; }
-      if(memEditIdx !== null && memEditIdx !== e.index){ toast(null, '已有条目在编辑中，先保存或取消', 'mute'); return; }
-      memEditIdx = memEditIdx === e.index ? null : e.index;
-      renderMemory(selRaw.mem);
-    };
-    meta.appendChild(edt);
-    const del = el('button','mini-btn','删除');
-    del.title = '只删这一条';
-    del.onclick = async ()=>{
+    card.appendChild(meta);
+    const edit = ()=> memFormModal('编辑记忆', '只改内容，时间与任务标记原样保留（出处不因改写而失真）',
+      e.text, async text => {
+        if(!text){ toast(null, '内容不能为空', 'bad'); return false; }
+        const r = await memPost({action:'update', index:e.index, text});
+        if(r && r.ok){
+          renderMemory(r);
+          toast(null, '已更新这条记忆，新任务开始时会按更新后的内容生效', 'ok');
+        }
+        else{ toast(null, (r && r.error) || '保存失败', 'bad'); return false; }
+      });
+    const del = async ()=>{
       const r = await memPost({action:'delete', index:e.index});
-      if(r && r.ok){ renderMemory(r); toast(del, '已删除该条记忆', 'mute'); }
-      else toast(del, (r && r.error) || '删除失败', 'bad');
+      if(r && r.ok){ renderMemory(r); toast(null, '已删除该条记忆', 'mute'); }
+      else toast(null, (r && r.error) || '删除失败', 'bad');
     };
-    meta.appendChild(del);
-    row.appendChild(meta);
-    if(memEditIdx === e.index) row.appendChild(memEditor(e));
-    box.appendChild(row);
+    box.appendChild(itRow('mem', card, [
+      {icon:'edit', label:'编辑', onclick: edit},
+      {icon:'del', label:'删除', cls:'danger', title: '只删这一条', onclick: del}
+    ], {checkbox: selCheckbox('mem', String(e.index)), onOpen: edit}));
   }
-}
-/* 记忆编辑器：只改正文，时间与任务标记原样保留（出处不因改写而失真） */
-function memEditor(e){
-  const box = el('div','eval-edit');
-  const ta = document.createElement('textarea');
-  ta.rows = 2;
-  ta.placeholder = '记忆内容（最长 600 字，换行会压平）';
-  ta.value = e.text || '';
-  const foot = el('div','ee-foot');
-  const cancel = el('button','mini-btn','取消');
-  cancel.onclick = ()=>{ memEditIdx = null; renderMemory(selRaw.mem); };
-  const save = el('button','mini-btn','保存');
-  save.onclick = async ()=>{
-    const text = ta.value.trim();
-    if(!text){ toast(save, '内容不能为空', 'bad'); return; }
-    const r = await memPost({action:'update', index:e.index, text});
-    if(r && r.ok){
-      memEditIdx = null;
-      renderMemory(r);
-      toast(null, '已更新这条记忆，新任务开始时会按更新后的内容生效', 'ok');
-    }
-    else toast(save, (r && r.error) || '保存失败', 'bad');
-  };
-  foot.appendChild(cancel); foot.appendChild(save);
-  box.appendChild(ta); box.appendChild(foot);
-  return box;
 }
 async function loadMemory(){
   try{
@@ -1959,15 +2095,17 @@ function checkMemoryGrew(){
   }).catch(()=>{});
 }
 $('navMemory').onclick = ()=>{ showView('memory'); loadMemory(); };
-$('btnMemAdd').onclick = async ()=>{
-  const inp = $('memAddInput');
-  const text = (inp.value || '').trim();
-  if(!text){ toast($('btnMemAdd'), '先写点内容再添加', 'mute'); return; }
-  const r = await memPost({action:'add', text});
-  if(r && r.ok){ inp.value = ''; renderMemory(r); toast($('btnMemAdd'), '已加入记忆', 'ok'); }
-  else toast($('btnMemAdd'), (r && r.error) || '添加失败', 'bad');
+/* + 弹窗新增记忆（页内输入行已移除）：填完确定即落盘并刷新 */
+$('btnMemAdd').onclick = ()=>{
+  if(selState.mem.on){ toast(null, '先退出全选模式再新增', 'mute'); return; }
+  memFormModal('新增记忆', '写入后立即生效；长对话会自动带上（按记忆条数与窗口预算裁剪）',
+    '', async text => {
+      if(!text){ toast(null, '先写点内容再添加', 'mute'); return false; }
+      const r = await memPost({action:'add', text});
+      if(r && r.ok){ renderMemory(r); toast(null, '已添加到记忆栏目', 'ok'); }
+      else{ toast(null, (r && r.error) || '添加失败', 'bad'); return false; }
+    });
 };
-$('memAddInput').onkeydown = e => { if(e.key === 'Enter'){ e.preventDefault(); $('btnMemAdd').click(); } };
 /* 「全部清空」已由行内全选清理取代（见 selState / confirmSel） */
 
 /* ================= 技能管理 =================
@@ -1975,7 +2113,6 @@ $('memAddInput').onkeydown = e => { if(e.key === 'Enter'){ e.preventDefault(); $
    和「安装得到的技能」（放进 skills/ 目录的）。每条给出 名字 / 作用 / 时间 / 路径。 */
 let skillKnownCount = 0;
 /* 行内编辑：正在编辑的技能名（跨重渲染稳定；null = 没有在编辑的） */
-let skillEditName = null;
 async function skillPost(body){
   try{
     const r = await fetch('/api/skills',{
@@ -1988,8 +2125,7 @@ async function skillPost(body){
 
 /* 单条技能卡片：纵向排布，名称一行、作用一行、边界/时间/路径一行 */
 function skillItem(s){
-  const it = el('div','sk-item');
-  if(selState.skill.on) it.appendChild(selCheckbox('skill', s.name));
+  const card = el('div','sk-item');
   const head = el('div','sk-head');
   head.appendChild(el('span','sk-name', s.name));
   head.appendChild(el('span','sk-tag' + (s.source === 'extracted' ? ' extracted' : ''),
@@ -1997,9 +2133,9 @@ function skillItem(s){
   if(s.version) head.appendChild(el('span','sk-ver', 'v' + s.version));
   if((s.resources||[]).length) head.appendChild(el('span','sk-tag', (s.resources||[]).length + ' 个资源'));
   if(!s.managed) head.appendChild(el('span','sk-tag', '外部目录'));
-  it.appendChild(head);
+  card.appendChild(head);
 
-  it.appendChild(el('div','sk-desc', '作用：' + (s.description || '（无描述）')));
+  card.appendChild(el('div','sk-desc', '作用：' + (s.description || '（无描述）')));
 
   // 触发边界：版本化的技能资产要说清「什么场景该用 / 不该用」
   if(s.when_to_use || s.when_not_to_use){
@@ -2016,114 +2152,91 @@ function skillItem(s){
       row.appendChild(el('span','fv', s.when_not_to_use));
       fields.appendChild(row);
     }
-    it.appendChild(fields);
+    card.appendChild(fields);
   }
 
   const meta = el('div','sk-meta');
   const whenLabel = s.source === 'extracted' ? '提取时间' : '安装时间';
   meta.appendChild(el('span','', `${whenLabel}：${s.when_text || '未知'}`));
   if(s.note) meta.appendChild(el('span','', s.note));
-  if(s.managed){
-    const edt = el('button','mini-btn','编辑');
-    edt.title = '修改作用与触发边界（description 是自动匹配的依据）';
-    edt.onclick = ()=>{
-      if(selState.skill.on){ toast(null, '先退出全选模式再编辑', 'mute'); return; }
-      if(skillEditName && skillEditName !== s.name){ toast(null, '已有技能在编辑中，先保存或取消', 'mute'); return; }
-      skillEditName = skillEditName === s.name ? null : s.name;
-      renderSkills(selRaw.skill);
-    };
-    const del = el('button','mini-btn','删除');
-    del.title = '删除该技能（删除前会自动备份到 .run/）';
-    del.onclick = async ()=>{
-      const ok = await confirmModal({
-        title: `删除技能 ${s.name}？`,
-        sub: '会连同该技能目录一起删掉，并先整目录备份到 .run/ 下；删除后立即退出后续任务的自动匹配。',
-        danger: true, okText: '删除'
-      });
-      if(!ok) return;
-      const r = await skillPost({action:'delete', name:s.name});
-      if(r && r.ok){ renderSkills(r); toast(del, `已删除技能 ${s.name}`, 'mute'); }
-      else toast(del, (r && r.error) || '删除失败', 'bad');
-    };
-    const box = el('span','sk-actions');
-    box.appendChild(edt);
-    box.appendChild(del);
-    meta.appendChild(box);
-  }
-  it.appendChild(meta);
-  if(s.path) it.appendChild(el('div','sk-path', s.path));
-  if(skillEditName === s.name) it.appendChild(skillEditor(s));
-  return it;
-}
-/* 技能编辑器：只改 作用 / 适用 / 不适用 三个 frontmatter 字段，
-   名称、版本与正文不动；改完服务端重扫注册表，自动匹配立即生效 */
-function skillEditor(s){
-  const box = el('div','eval-edit');
-  const descTa = document.createElement('textarea');
-  descTa.rows = 2;
-  descTa.placeholder = '作用（description：自动匹配的主要依据，不能为空）';
-  descTa.value = s.description || '';
-  const useTa = document.createElement('textarea');
-  useTa.rows = 2;
-  useTa.placeholder = '适用场景（可空）：什么任务该命中它';
-  useTa.value = s.when_to_use || '';
-  const notTa = document.createElement('textarea');
-  notTa.rows = 2;
-  notTa.placeholder = '不适用场景（可空）：命中时技能会主动让位';
-  notTa.value = s.when_not_to_use || '';
-  const foot = el('div','ee-foot');
-  const cancel = el('button','mini-btn','取消');
-  cancel.onclick = ()=>{ skillEditName = null; renderSkills(selRaw.skill); };
-  const save = el('button','mini-btn','保存');
-  save.onclick = async ()=>{
-    if(!descTa.value.trim()){ toast(save, '作用（description）不能为空', 'bad'); return; }
-    const r = await skillPost({action:'update', name:s.name,
-      description: descTa.value, when_to_use: useTa.value,
-      when_not_to_use: notTa.value});
-    if(r && r.ok){
-      skillEditName = null;
-      renderSkills(r);
-      toast(null, `技能 ${s.name} 已保存，自动匹配立即按新描述生效`, 'ok');
-    }
-    else toast(save, (r && r.error) || '保存失败', 'bad');
+  card.appendChild(meta);
+  if(s.path) card.appendChild(el('div','sk-path', s.path));
+  if(!s.managed) return card;   // 外部目录技能只读：不挂按钮块也不开编辑窗
+  const edit = ()=> skillEditModal(s);
+  const del = async ()=>{
+    const ok = await confirmModal({
+      title: `删除技能 ${s.name}？`,
+      sub: '会连同该技能目录一起删掉，并先整目录备份到 .run/ 下；删除后立即退出后续任务的自动匹配。',
+      danger: true, okText: '删除'
+    });
+    if(!ok) return;
+    const r = await skillPost({action:'delete', name:s.name});
+    if(r && r.ok){ renderSkills(r); toast(null, `已删除技能 ${s.name}`, 'mute'); }
+    else toast(null, (r && r.error) || '删除失败', 'bad');
   };
-  foot.appendChild(cancel); foot.appendChild(save);
-  box.appendChild(descTa); box.appendChild(useTa); box.appendChild(notTa);
-  box.appendChild(foot);
-  return box;
+  return itRow('skill', card, [
+    {icon:'edit', label:'编辑', title: '修改作用与触发边界（description 是自动匹配的依据）', onclick: edit},
+    {icon:'del', label:'删除', cls:'danger', title: '删除该技能（删除前会自动备份到 .run/）', onclick: del}
+  ], {checkbox: selCheckbox('skill', s.name), onOpen: edit});
 }
-
-function fillSkillSection(listEl, items, emptyText){
-  listEl.innerHTML = '';
-  if(!items.length){
-    listEl.appendChild(el('div','task-empty', emptyText));
-    return;
-  }
-  for(const s of items) listEl.appendChild(skillItem(s));
+/* 技能编辑弹窗：只改 作用 / 适用 / 不适用 三个 frontmatter 字段，
+   名称、版本与正文不动；改完服务端重扫注册表，自动匹配立即生效 */
+function skillEditModal(s){
+  formModal({
+    title: `编辑技能 ${s.name}`,
+    sub: '名称、版本与正文不动；description 是自动匹配的主要依据，不能为空。',
+    okText: '保存',
+    build: body=>{
+      const descTa = document.createElement('textarea');
+      descTa.rows = 2;
+      descTa.placeholder = '作用（description：自动匹配的主要依据，不能为空）';
+      descTa.value = s.description || '';
+      const useTa = document.createElement('textarea');
+      useTa.rows = 2;
+      useTa.placeholder = '适用场景（可空）：什么任务该命中它';
+      useTa.value = s.when_to_use || '';
+      const notTa = document.createElement('textarea');
+      notTa.rows = 2;
+      notTa.placeholder = '不适用场景（可空）：命中时技能会主动让位';
+      notTa.value = s.when_not_to_use || '';
+      body.appendChild(descTa); body.appendChild(useTa); body.appendChild(notTa);
+      return {descTa, useTa, notTa};
+    },
+    onOk: async ctx => {
+      if(!ctx.descTa.value.trim()){ toast(null, '作用（description）不能为空', 'bad'); return false; }
+      const r = await skillPost({action:'update', name:s.name,
+        description: ctx.descTa.value, when_to_use: ctx.useTa.value,
+        when_not_to_use: ctx.notTa.value});
+      if(r && r.ok){
+        renderSkills(r);
+        toast(null, `技能 ${s.name} 已保存，自动匹配立即按新描述生效`, 'ok');
+      }
+      else{ toast(null, (r && r.error) || '保存失败', 'bad'); return false; }
+    }
+  });
 }
-
 function renderSkills(d){
-  const exBox = $('skillExtractedList'), inBox = $('skillInstalledList');
-  if(!exBox || !inBox) return;
+  const box = $('skillList');
+  if(!box) return;
   selRaw.skill = d;
   const extracted = (d && d.extracted) || [];
   const installed = (d && d.installed) || [];
   if(selState.skill.on && !extracted.length && !installed.length) exitSel('skill', false);
   skillKnownCount = (d && d.extracted_count) || 0;
-  $('skExtractedCount').textContent = extracted.length + ' 个';
-  $('skInstalledCount').textContent = installed.length + ' 个';
-  if(d && d.dirs) $('skillDirs2').textContent = d.dirs.join('   |   ') || '—';
-  fillSkillSection(exBox, extracted,
-    '还没有提取出技能。任务里浮现出可复用的「方法论」时，收尾会用本地模型自动提炼成技能落在这里。');
-  fillSkillSection(inBox, installed,
-    '还没有安装技能。把含 SKILL.md 的目录放进 skills/ 即可。');
+  $('skCount').textContent = '(' + (extracted.length + installed.length) + ')';
+  const all = extracted.concat(installed);
+  if(!all.length){
+    box.appendChild(el('div','task-empty',
+      '还没有技能。任务里浮现出可复用的「方法论」时，收尾会自动提炼；也可以把含 SKILL.md 的目录放进技能目录。'));
+    return;
+  }
+  for(const s of all) box.appendChild(skillItem(s));
 }
 async function loadSkills(){
   try{
     renderSkills(await apiGet('/api/skills'));
   }catch(e){
-    renderListError($('skillExtractedList'), e, loadSkills);
-    renderListError($('skillInstalledList'), e, loadSkills);
+    renderListError($('skillList'), e, loadSkills);
   }
 }
 /* ================= 能力缺口 =================
@@ -2133,27 +2246,15 @@ async function loadSkills(){
    - eval_fail          评测任务失败（失败层归因写在 samples 里）
    同类缺口合并计数，用来回答「该补什么工具 / 该沉淀什么技能」。 */
 /* 行内编辑：正在编辑的记录（kind|key，跨重渲染稳定；null = 没有在编辑的） */
-let gapEditKey = null;
 function gapItem(g){
-  const it = el('div','sk-item');
-  if(selState.gap.on) it.appendChild(selCheckbox('gap', selKeyOf.gap(g)));
+  const card = el('div','sk-item');
   const head = el('div','sk-head');
   head.appendChild(el('span','sk-name', g.key || '(未知)'));
   head.appendChild(el('span','sk-tag', g.kind_label || g.kind || ''));
   if(g.count) head.appendChild(el('span','sk-ver', '×' + g.count));
   const gkey = (g.kind || '') + '|' + (g.key || '');
-  // 编辑/删除按钮：参考技能管理的 .sk-actions（margin-left:auto），靠右对齐不跟文案
-  const edt = el('button','mini-btn','编辑');
-  edt.title = '修订名称与样例描述（次数与时间是架构记录，不可改）';
-  edt.onclick = ()=>{
-    if(selState.gap.on){ toast(null, '先退出全选模式再编辑', 'mute'); return; }
-    if(gapEditKey && gapEditKey !== gkey){ toast(null, '已有记录在编辑中，先保存或取消', 'mute'); return; }
-    gapEditKey = gapEditKey === gkey ? null : gkey;
-    renderGaps(selRaw.gap);
-  };
-  const del = el('button','mini-btn','删除');
-  del.title = '删除该条记录';
-  del.onclick = async ()=>{
+  const edit = ()=> gapEditModal(g);
+  const del = async ()=>{
     const ok = await confirmModal({
       title: `删除记录 ${g.key}？`,
       sub: '只从台账里删掉这一条；同类缺口再出现时仍会被架构自动重新登记。',
@@ -2168,67 +2269,65 @@ function gapItem(g){
       renderGaps(r);
       // 删掉的若在已知基线里，同步出基线，免得下次核对把它当成「新增」误报
       gapsKnownKeys = gapsKnownKeys.filter(k => k !== (g.kind||'') + ':' + (g.key||''));
-      toast(del, `已删除记录 ${g.key}`, 'mute');
+      toast(null, `已删除记录 ${g.key}`, 'mute');
     }
-    else toast(del, '删除失败', 'bad');
+    else toast(null, '删除失败', 'bad');
   };
-  const box = el('span','sk-actions');
-  box.appendChild(edt);
-  box.appendChild(del);
-  head.appendChild(box);
-  it.appendChild(head);
+  card.appendChild(head);
   // 小步骤：缺口发生时正在做的子任务 / 多路径方案（架构在每步开始前标记）
-  if(g.last_step) it.appendChild(el('div','sk-path', `小步骤：${g.last_step}`));
-  if((g.samples||[]).length) it.appendChild(el('div','sk-desc', g.samples.join('；')));
-  it.appendChild(el('div','sk-path', `首次：${g.first || '—'}　最近：${g.last || '—'}`));
-  if(gapEditKey === gkey) it.appendChild(gapEditor(g));
-  return it;
+  if(g.last_step) card.appendChild(el('div','sk-path', `小步骤：${g.last_step}`));
+  if((g.samples||[]).length) card.appendChild(el('div','sk-desc', g.samples.join('；')));
+  card.appendChild(el('div','sk-path', `首次：${g.first || '—'}　最近：${g.last || '—'}`));
+  return itRow('gap', card, [
+    {icon:'edit', label:'编辑', title: '修订名称与样例描述（次数与时间是架构记录，不可改）', onclick: edit},
+    {icon:'del', label:'删除', cls:'danger', title: '删除该条记录', onclick: del}
+  ], {checkbox: selCheckbox('gap', selKeyOf.gap(g)), onOpen: edit});
 }
-/* 缺口编辑器：只改 名称(key) 与 样例描述；次数/首末时间是架构记的事实，不开放。
+/* 缺口编辑弹窗：只改 名称(key) 与 样例描述；次数/首末时间是架构记的事实，不开放。
    改名会迁移台账键（同名已存在会被服务端拒绝），保存后同步已知基线防误报 */
-function gapEditor(g){
-  const box = el('div','eval-edit');
-  const keyIn = document.createElement('input');
-  keyIn.placeholder = '名称（同类缺口按名称合并计数）';
-  keyIn.value = g.key || '';
-  const ta = document.createElement('textarea');
-  ta.rows = 3;
-  ta.placeholder = '样例描述（每行一条，最多 5 条；留空即清空样例）';
-  ta.value = (g.samples || []).join('\n');
-  const foot = el('div','ee-foot');
-  const cancel = el('button','mini-btn','取消');
-  cancel.onclick = ()=>{ gapEditKey = null; renderGaps(selRaw.gap); };
-  const save = el('button','mini-btn','保存');
-  save.onclick = async ()=>{
-    const nk = keyIn.value.trim();
-    if(!nk){ toast(save, '名称不能为空', 'bad'); return; }
-    const samples = ta.value.split('\n').map(x => x.trim()).filter(Boolean);
-    const r = await fetch('/api/gaps',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({action:'update', kind:g.kind || '', key:g.key || '',
-                            new_key:nk, samples})
-    }).then(x=>x.json()).catch(()=>null);
-    if(r && r.ok){
-      gapEditKey = null;
-      renderGaps(r);
-      // 名称可能改了：基线里换掉旧键，免得下次核对把改名当成「新增缺口」误报
-      const oldKey = (g.kind||'') + ':' + (g.key||''), newKey = (g.kind||'') + ':' + nk;
-      gapsKnownKeys = gapsKnownKeys.filter(k => k !== oldKey);
-      if(!gapsKnownKeys.includes(newKey)) gapsKnownKeys.push(newKey);
-      toast(null, `记录已保存${nk !== g.key ? `：${g.key} → ${nk}` : ''}，同类缺口再出现会按新名称合并`, 'ok');
+function gapEditModal(g){
+  formModal({
+    title: `编辑记录 ${g.key}`,
+    sub: '次数与首末时间是架构记的事实，不可改；同类缺口按名称合并计数。',
+    okText: '保存',
+    build: body=>{
+      const keyIn = document.createElement('input');
+      keyIn.placeholder = '名称（同类缺口按名称合并计数）';
+      keyIn.value = g.key || '';
+      const ta = document.createElement('textarea');
+      ta.rows = 3;
+      ta.placeholder = '样例描述（每行一条，最多 5 条；留空即清空样例）';
+      ta.value = (g.samples || []).join('\n');
+      body.appendChild(keyIn); body.appendChild(ta);
+      return {keyIn, ta};
+    },
+    onOk: async ctx => {
+      const nk = ctx.keyIn.value.trim();
+      if(!nk){ toast(null, '名称不能为空', 'bad'); return false; }
+      const samples = ctx.ta.value.split('\n').map(x => x.trim()).filter(Boolean);
+      const r = await fetch('/api/gaps',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({action:'update', kind:g.kind || '', key:g.key || '',
+                              new_key:nk, samples})
+      }).then(x=>x.json()).catch(()=>null);
+      if(r && r.ok){
+        renderGaps(r);
+        // 名称可能改了：基线里换掉旧键，免得下次核对把改名当成「新增缺口」误报
+        const oldKey = (g.kind||'') + ':' + (g.key||''), newKey = (g.kind||'') + ':' + nk;
+        gapsKnownKeys = gapsKnownKeys.filter(k => k !== oldKey);
+        if(!gapsKnownKeys.includes(newKey)) gapsKnownKeys.push(newKey);
+        toast(null, `记录已保存${nk !== g.key ? `：${g.key} → ${nk}` : ''}，同类缺口再出现会按新名称合并`, 'ok');
+      }
+      else{ toast(null, (r && r.error) || '保存失败', 'bad'); return false; }
     }
-    else toast(save, (r && r.error) || '保存失败', 'bad');
-  };
-  foot.appendChild(cancel); foot.appendChild(save);
-  box.appendChild(keyIn); box.appendChild(ta); box.appendChild(foot);
-  return box;
+  });
 }
 function renderGaps(d){
   const box = $('gapList');
   if(!box) return;
   selRaw.gap = d;
   const items = (d && d.items) || [];
-  $('gapCount').textContent = items.length + ' 条';
+  $('gapCount').textContent = '(' + items.length + ')';
   box.innerHTML = '';
   if(!items.length){
     if(selState.gap.on) exitSel('gap', false);   // 清空了还停在空列表：自动退出全选
@@ -2284,7 +2383,7 @@ $('navGaps').onclick = ()=>{ showView('gaps'); loadGaps(); };
    3. 任务集增删改（前端改好整体提交；受保护任务服务端拒绝删除，
       保存前自动备份、保存后回读校验，坏了自动回滚）。 */
 let evalData = {cases: [], protected: [], categories: {}, reports: []};
-let evalEditRef = null;    // 正在展开编辑的任务对象（null = 无）
+let evalRunningFlag = false;   // 评测运行中：评测按钮变身停止，显隐随 show/hideEvalRunning
 let evalTimer = null;      // 轮询评测进度的定时器
 let evalLastCases = [];    // 上次评测跑的条目 id（重跑按钮用，后端随 status 下发）
 
@@ -2304,16 +2403,14 @@ async function loadEvals(){
 function renderEvalTasks(){
   const box = $('evalTaskList');
   box.innerHTML = '';
-  $('evalTaskCount').textContent = evalData.cases.length + ' 条';
+  $('evalTaskCount').textContent = '(' + evalData.cases.length + ')';
   if(!evalData.cases.length){
     if(selState.eval.on) exitSel('eval', false);   // 清空了还停在空列表：自动退出全选
-    box.appendChild(el('div','task-empty','任务集是空的。点「新增任务」加一条（旧文件每次保存前都备份在 evals/.run/）。'));
+    box.appendChild(el('div','task-empty','任务集是空的。点集合名右侧的＋加一条（旧文件每次保存前都备份在 evals/.run/）。'));
     return;
   }
-  // 新增草稿永远渲染在最上面（见 btnEvalAdd 的说明），其余按分类分组
-  for(const c of evalData.cases.filter(x => x._isNew)) box.appendChild(evalTaskItem(c));
   let lastCat = null;
-  for(const c of evalData.cases.filter(x => !x._isNew)){
+  for(const c of evalData.cases){
     const cat = c.category || 'general';
     if(cat !== lastCat){
       box.appendChild(el('div','sk-path', `—— ${cat} ——`));
@@ -2324,140 +2421,117 @@ function renderEvalTasks(){
 }
 function evalTaskItem(c){
   const prot = evalData.protected.includes(c.id);
-  const it = el('div','sk-item');
-  if(selState.eval.on) it.appendChild(selCheckbox('eval', c.id, prot));
+  const card = el('div','sk-item');
   const head = el('div','sk-head');
   head.appendChild(el('span','sk-name', (prot ? '🔒 ' : '') + (c.id || '(无 id)')));
-  head.appendChild(el('span','sk-tag', c._draft ? '草稿' : (c.category || 'general')));
+  head.appendChild(el('span','sk-tag', c.category || 'general'));
   const layers = Object.keys(c.expect || {}).join('/');
   if(layers) head.appendChild(el('span','sk-ver', layers));
-  // 单条评测：只跑这一条，跑完轮询自动展开报告（服务端 cases=id 过滤）
-  const run1 = el('button','mini-btn','评测');
-  run1.onclick = ()=> runEvalSubset([c.id], run1);
-  const edit = el('button','mini-btn','编辑');
-  edit.onclick = ()=>{ evalEditRef = evalEditRef === c ? null : c; renderEvalTasks(); };
-  const del = el('button','mini-btn','删除');
-  del.onclick = ()=> delEvalTask(c);
-  // 参考技能管理的 .sk-actions（margin-left:auto）：按钮靠右对齐，不跟在文案后面
-  const actions = el('span','sk-actions');
-  actions.appendChild(run1);
-  actions.appendChild(edit);
-  actions.appendChild(del);
-  head.appendChild(actions);
-  it.appendChild(head);
+  card.appendChild(head);
   const p = c.prompt || '';
-  it.appendChild(el('div','sk-desc', p.slice(0, 160) + (p.length > 160 ? '…' : '')));
-  if(c.notes) it.appendChild(el('div','sk-path', c.notes));
-  if(evalEditRef === c) it.appendChild(c._draft ? evalDraftEditor(c) : evalEditor(c));
-  return it;
+  card.appendChild(el('div','sk-desc', p.slice(0, 160) + (p.length > 160 ? '…' : '')));
+  if(c.notes) card.appendChild(el('div','sk-path', c.notes));
+  const edit = ()=> evalTaskModal(c);
+  const del = ()=> delEvalTask(c);
+  return itRow('eval', card, [
+    {icon:'run', label:'评测', title: '只跑这一条，跑完自动展开报告', onclick: ()=> runEvalSubset([c.id])},
+    {icon:'edit', label:'编辑', onclick: edit},
+    {icon:'del', label:'删除', cls:'danger',
+     title: prot ? '被常驻回归钉死（诚实性簇/安全策略），不能删除' : '从任务集移除并保存',
+     disabled: prot, onclick: del}
+  ], {checkbox: selCheckbox('eval', c.id, prot), onOpen: edit});
 }
-/* 新增草稿编辑器：只有任务指令一个必填项——「LLM 一键生成」把 id/分类/seed/
-   expect 交给决策模型出，产出塞回草稿并切换到完整编辑器供核对；不想用 LLM
-   就走「手动填写」，展开旧版全字段编辑器。 */
-function evalDraftEditor(c){
-  const box = el('div','eval-edit');
-  const ta = document.createElement('textarea');
-  ta.rows = 3;
-  ta.placeholder = '只填任务指令（会原样喂给完整 agent 管线），其余字段交给 LLM 一键生成';
-  ta.value = c.prompt || '';
-  const gen = el('button','mini-btn','LLM 一键生成其余字段');
-  const resetGen = ()=>{ gen.disabled = false; gen.textContent = 'LLM 一键生成其余字段'; };
-  gen.onclick = async ()=>{
-    const p = ta.value.trim();
-    if(!p){ toast(gen, '先把任务指令填上再生成', 'bad'); return; }
-    gen.disabled = true; gen.textContent = '生成中…';
-    try{
-      const r = await fetch('/api/evals/suggest',{
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({prompt: p})
-      }).then(x=>x.json());
-      if(r.error){ toast(gen, r.error, 'bad'); resetGen(); return; }
-      const k = r.case || {};
-      // 生成的 id 撞上已有任务时自动加尾号，不静默覆盖
-      let cid = k.id || 'new-task';
-      const taken = new Set(evalData.cases.filter(x => x !== c).map(x => x.id));
-      const base = cid; let n = 2;
-      while(taken.has(cid)) cid = base + '-' + (n++);
-      Object.assign(c, {id: cid, category: k.category || 'analysis',
-                        prompt: p, expect: k.expect || {},
-                        seed: k.seed || {}, notes: k.notes || ''});
-      delete c._draft;
-      evalEditRef = c;
-      renderEvalTasks();
-      toast(null, '字段已生成，检查无误后点「保存到此任务集」', 'ok');
-    }catch(e){ toast(gen, '生成失败：' + e.message, 'bad'); resetGen(); }
-  };
-  const manual = el('button','mini-btn','手动填写');
-  manual.onclick = ()=>{
-    delete c._draft;
-    renderEvalTasks();
-    const editor = $('evalTaskList').querySelector('.eval-edit');
-    if(editor){ const first = editor.querySelector('input'); if(first) first.focus(); }
-  };
-  const cancel = el('button','mini-btn','取消');
-  cancel.onclick = ()=>{
-    if(c._isNew) evalData.cases = evalData.cases.filter(x => x !== c);
-    evalEditRef = null; renderEvalTasks();
-  };
-  const foot = el('div','ee-foot');
-  foot.appendChild(cancel); foot.appendChild(manual); foot.appendChild(gen);
-  box.appendChild(ta); box.appendChild(foot);
-  return box;
-}
-function evalEditor(c){
-  const box = el('div','eval-edit');
-  const row1 = el('div','ee-row');
-  const idIn = document.createElement('input');
-  idIn.placeholder = 'id（唯一，如 c6-xxx）'; idIn.value = c.id || '';
-  if(!c._isNew) idIn.disabled = true;   // 改 id 等于删旧建新，语义模糊——新建时才可填
-  const catSel = document.createElement('select');
-  for(const cat of ['coding','fileops','writing','analysis','ops','honesty','policy'])
-    catSel.appendChild(new Option(cat, cat));
-  catSel.value = c.category || 'coding';
-  row1.appendChild(idIn); row1.appendChild(catSel);
-  const promptTa = document.createElement('textarea');
-  promptTa.rows = 2; promptTa.placeholder = '任务指令（会原样喂给完整 agent 管线）';
-  promptTa.value = c.prompt || '';
-  const expectTa = document.createElement('textarea');
-  expectTa.rows = 4;
-  expectTa.placeholder = '判定条件 expect（JSON）：contains/contains_norm/numbers/keywords/must_not/check/check_contains/min_ratio';
-  expectTa.value = JSON.stringify(c.expect || {}, null, 1);
-  const seedTa = document.createElement('textarea');
-  seedTa.rows = 3; seedTa.placeholder = 'seed 文件（JSON：{"相对路径":"内容"}，可空 {}）';
-  seedTa.value = JSON.stringify(c.seed || {}, null, 1);
-  const notesIn = document.createElement('input');
-  notesIn.placeholder = '备注（可空）'; notesIn.value = c.notes || '';
-  const foot = el('div','ee-foot');
-  const cancel = el('button','mini-btn','取消');
-  cancel.onclick = ()=>{
-    if(c._isNew) evalData.cases = evalData.cases.filter(x => x !== c);
-    evalEditRef = null; renderEvalTasks();
-  };
-  const save = el('button','mini-btn','保存到此任务集');
-  save.onclick = async ()=>{
-    let expect, seed;
-    try{ expect = JSON.parse(expectTa.value || '{}'); }
-    catch(e){ toast(save, 'expect 不是合法 JSON：' + e.message, 'bad'); return; }
-    try{ seed = JSON.parse(seedTa.value || '{}'); }
-    catch(e){ toast(save, 'seed 不是合法 JSON：' + e.message, 'bad'); return; }
-    const cid = idIn.value.trim();
-    if(!cid){ toast(save, 'id 不能为空', 'bad'); return; }
-    // 排除草稿自身：新增草稿在点「新增任务」时就已 unshift 进 cases（仅本地，
-    // 不写服务端），LLM 生成字段后 c.id 已赋值——不排除自己会永远撞上「id 已存在」，
-    // 保存被误拦、任务从未入库（刷新后消失）
-    if(c._isNew && evalData.cases.some(x => x !== c && x.id === cid)){
-      toast(save, 'id 已存在：' + cid, 'bad'); return;
+/* 评测任务弹窗：新增（c=null）与编辑共用。新增时先只填任务指令，
+   可「LLM 一键生成」其余字段；点确定自动保存（保存任务集按钮已删）。 */
+function evalTaskModal(c){
+  const isNew = !c;
+  const draft = isNew ? {id:'', category:'', prompt:'', expect:{}, seed:{}, notes:''} : c;
+  formModal({
+    title: isNew ? '新增评测任务' : `编辑评测任务 ${c.id || ''}`,
+    sub: isNew
+      ? '只填任务指令即可（会原样喂给完整 agent 管线），其余字段可交给 LLM 一键生成；点确定自动保存。'
+      : '改动保存后即生效；旧文件自动备份到 evals/.run/。',
+    okText: isNew ? '确定并保存' : '保存',
+    build: body=>{
+      const row = el('div','ee-row');
+      const idIn = document.createElement('input');
+      idIn.placeholder = 'id（唯一，如 c6-xxx；留空自动生成）';
+      idIn.value = draft.id || '';
+      if(!isNew) idIn.disabled = true;   // 改 id 等于删旧建新，语义模糊——新建时才可填
+      const catSel = document.createElement('select');
+      for(const cat of ['coding','fileops','writing','analysis','ops','honesty','policy'])
+        catSel.appendChild(new Option(cat, cat));
+      catSel.value = draft.category || 'coding';
+      row.appendChild(idIn); row.appendChild(catSel);
+      const promptTa = document.createElement('textarea');
+      promptTa.rows = 3; promptTa.placeholder = '任务指令（会原样喂给完整 agent 管线）';
+      promptTa.value = draft.prompt || '';
+      const adv = el('div','hide');
+      const expectTa = document.createElement('textarea');
+      expectTa.rows = 4;
+      expectTa.placeholder = '判定条件 expect（JSON）：contains/contains_norm/numbers/keywords/must_not/check/check_contains/min_ratio';
+      expectTa.value = JSON.stringify(draft.expect || {}, null, 1);
+      const seedTa = document.createElement('textarea');
+      seedTa.rows = 3; seedTa.placeholder = 'seed 文件（JSON：{"相对路径":"内容"}，可空 {}）';
+      seedTa.value = JSON.stringify(draft.seed || {}, null, 1);
+      const notesIn = document.createElement('input');
+      notesIn.placeholder = '备注（可空）'; notesIn.value = draft.notes || '';
+      adv.appendChild(expectTa); adv.appendChild(seedTa); adv.appendChild(notesIn);
+      const gen = el('button','mini-btn','LLM 一键生成其余字段');
+      gen.onclick = async ()=>{
+        const p = promptTa.value.trim();
+        if(!p){ toast(gen, '先把任务指令填上再生成', 'bad'); return; }
+        gen.disabled = true; gen.textContent = '生成中…';
+        try{
+          const r = await fetch('/api/evals/suggest',{
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({prompt: p})
+          }).then(x=>x.json());
+          if(r.error){ toast(gen, r.error, 'bad'); return; }
+          const k = r.case || {};
+          idIn.value = k.id || idIn.value || 'new-task';
+          catSel.value = k.category || 'analysis';
+          expectTa.value = JSON.stringify(k.expect || {}, null, 1);
+          seedTa.value = JSON.stringify(k.seed || {}, null, 1);
+          notesIn.value = k.notes || '';
+          adv.classList.remove('hide');
+          toast(null, '字段已生成，核对无误后点确定保存', 'ok');
+        }catch(e){ toast(gen, '生成失败：' + e.message, 'bad'); }
+        finally{ gen.disabled = false; gen.textContent = 'LLM 一键生成其余字段'; }
+      };
+      const manual = el('button','mini-btn','手动填写其余字段');
+      manual.onclick = ()=> adv.classList.toggle('hide');
+      const btns = el('div','ee-foot');
+      btns.appendChild(manual); btns.appendChild(gen);
+      body.appendChild(row); body.appendChild(promptTa);
+      body.appendChild(btns); body.appendChild(adv);
+      return {idIn, catSel, promptTa, expectTa, seedTa, notesIn};
+    },
+    onOk: async ctx => {
+      const p = ctx.promptTa.value.trim();
+      if(!p){ toast(null, '任务指令不能为空', 'bad'); return false; }
+      let expect, seed;
+      try{ expect = JSON.parse(ctx.expectTa.value || '{}'); }
+      catch(e){ toast(null, 'expect 不是合法 JSON：' + e.message, 'bad'); return false; }
+      try{ seed = JSON.parse(ctx.seedTa.value || '{}'); }
+      catch(e){ toast(null, 'seed 不是合法 JSON：' + e.message, 'bad'); return false; }
+      let cid = ctx.idIn.value.trim();
+      if(!cid){
+        cid = 'c-' + Date.now().toString(36);   // 留空自动生成唯一 id
+        if(isNew && evalData.cases.some(x => x.id === cid))
+          cid = cid + '-' + Math.floor(Math.random() * 1e4);
+      }
+      if(isNew && evalData.cases.some(x => x.id === cid)){
+        toast(null, 'id 已存在：' + cid, 'bad'); return false;
+      }
+      const rec = {id: cid, category: ctx.catSel.value, prompt: p,
+                   expect, seed, notes: ctx.notesIn.value.trim()};
+      if(isNew) evalData.cases.unshift(rec);
+      else Object.assign(c, rec);
+      await saveEvalTasks(null);
+      toast(null, isNew ? '评测台已添加新任务' : `任务 ${cid} 已保存`, 'ok');
     }
-    Object.assign(c, {id: cid, category: catSel.value, prompt: promptTa.value,
-                      expect, seed, notes: notesIn.value.trim()});
-    delete c._isNew;
-    await saveEvalTasks(save);
-  };
-  foot.appendChild(cancel); foot.appendChild(save);
-  box.appendChild(row1); box.appendChild(promptTa);
-  box.appendChild(expectTa); box.appendChild(seedTa);
-  box.appendChild(notesIn); box.appendChild(foot);
-  return box;
+  });
 }
 async function saveEvalTasks(anchor){
   try{
@@ -2466,7 +2540,6 @@ async function saveEvalTasks(anchor){
       body: JSON.stringify({action:'save', cases: evalData.cases})
     }).then(x=>x.json());
     if(r.error){ toast(anchor, r.error, 'bad'); return; }   // 服务端已回滚，保留本地改动供修正
-    evalEditRef = null;
     toast(null, `任务集已保存（${r.count} 条，旧文件已备份）`, 'ok');
     loadEvals();
   }catch(e){ toast(anchor, '保存失败：' + e.message, 'bad'); }
@@ -2485,29 +2558,10 @@ async function delEvalTask(c){
   evalData.cases = evalData.cases.filter(x => x !== c);
   await saveEvalTasks(null);
 }
-/* 新增任务：先给一条「只填任务」的草稿（草稿渲染在清单顶部——旧版 push 到
-   末尾再 scrollIntoView，整个页面被拽到底部，像转跳；置顶后几乎不滚动），
-   其余字段由 LLM 一键生成，生成结果进完整编辑器供核对后再保存 */
+/* 新增任务：+ 弹窗（只填任务指令，可 LLM 一键生成其余字段），确定即自动保存 */
 $('btnEvalAdd').onclick = ()=>{
   if(selState.eval.on){ toast(null, '先退出全选模式再新增任务', 'mute'); return; }
-  // 已有任务在编辑：直接取消（草稿丢弃，普通编辑弃掉本地未保存的输入），
-  // 然后照常弹创建窗口——不再用 toast 把用户顶回去
-  if(evalEditRef){
-    const prev = evalEditRef;
-    if(prev._isNew) evalData.cases = evalData.cases.filter(x => x !== prev);
-    evalEditRef = null;
-  }
-  const c = {id: '', category: '', prompt: '', expect: {}, seed: {},
-             notes: '', _isNew: true, _draft: true};
-  evalData.cases.unshift(c);
-  evalEditRef = c;
-  renderEvalTasks();
-  const editor = $('evalTaskList').querySelector('.eval-edit');
-  if(editor){
-    editor.scrollIntoView && editor.scrollIntoView({behavior:'smooth', block:'nearest'});
-    const ta = editor.querySelector('textarea');
-    if(ta) ta.focus();
-  }
+  evalTaskModal(null);
 };
 /* ---- 运行与进度 ---- */
 function applyEvalState(st){
@@ -2523,18 +2577,20 @@ function applyEvalState(st){
   }
 }
 function showEvalRunning(st){
+  evalRunningFlag = true;
   $('evalStatus').classList.remove('hide');
   $('evalStatus').querySelector('.eval-spin').style.display = '';
   $('evalStatusText').textContent = `评测中 ${st.done || 0}/${st.total || '?'} · 当前 ${st.current || '—'}`
     + (st.repeat > 1 ? ` · pass^${st.repeat}` : '')
     + (st.stop_requested ? ' ·（已请求停止，跑完当前任务收工）' : '');
-  $('btnEvalRun').classList.add('hide');
   $('btnEvalStop').classList.remove('hide');
   $('btnEvalRerunLast').classList.add('hide');   // 正在跑的评测不能再重跑
+  $('btnEvalGo').textContent = '停止';           // 评测按钮变身停止（点击请求停止）
 }
 function hideEvalRunning(){
+  evalRunningFlag = false;
   $('evalStatus').classList.add('hide');
-  $('btnEvalRun').classList.remove('hide');
+  $('btnEvalGo').textContent = '评测';
   $('btnEvalStop').classList.add('hide');
 }
 function startEvalPoll(){
@@ -2555,11 +2611,10 @@ function startEvalPoll(){
     loadEvals();
   }, 2000);
 }
-/* 运行入口：三档共用一个后端（/api/evals/run 的 cases=逗号分隔 id 过滤）。
-   - 全部评测（未进全选）：整集单次跑；
-   - 批量评测（全选模式）：只跑勾选的条目；
-   - 单条评测（条目上的「评测」按钮）：runEvalSubset 只跑那一条。
-   分类/遍数/报告名输入框已按需求移除，固定单次、报告名 web。 */
+/* 运行入口：全走 /api/evals/run 的 cases=逗号分隔 id 过滤。
+   - 「评测」按钮（全选模式右上角，退出下方）：只跑勾选条目；运行中变身「停止」；
+   - 单条评测（条目悬停按钮块）：runEvalSubset 只跑那一条。
+   常态不再有独立「全部评测」按钮——想全量跑就全选再评测。固定单次、报告名 web。 */
 function evalRunStart(body, anchor, doneMsg){
   return fetch('/api/evals/run',{
     method:'POST', headers:{'Content-Type':'application/json'},
@@ -2572,27 +2627,29 @@ function evalRunStart(body, anchor, doneMsg){
     return true;
   }).catch(e=>{ toast(anchor, '启动失败：' + e.message, 'bad'); return false; });
 }
-$('btnEvalRun').onclick = ()=>{
-  const st = selState.eval;
-  if(st.on){
-    if(!st.checked.size){ toast($('btnEvalRun'), '没有勾选任何条目：勾选后批量评测，或点「取消全选」', 'bad'); return; }
-    evalRunStart({cases: [...st.checked].join(','), repeat:1, label:'web'},
-                 $('btnEvalRun'), n => `批量评测已启动：${n} 条勾选任务`);
-  }else{
-    evalRunStart({repeat:1, label:'web'}, $('btnEvalRun'),
-                 n => `全部评测已启动：${n} 条任务`);
+$('btnEvalGo').onclick = ()=>{
+  if(evalRunningFlag){                       // 运行中 → 变身停止键
+    requestEvalStop();
+    return;
   }
+  const st = selState.eval;
+  if(!st.on){ toast(null, '先点「全选」再评测', 'mute'); return; }
+  if(!st.checked.size){ toast(null, '没有勾选任何条目', 'bad'); return; }
+  evalRunStart({cases: [...st.checked].join(','), repeat:1, label:'web'},
+               $('btnEvalGo'), n => `评测已启动：${n} 条勾选任务`);
 };
 async function runEvalSubset(ids, anchor){
   await evalRunStart({cases: ids.join(','), repeat:1, label:'web'},
                      anchor, n => `单条评测已启动（${ids[0]}），跑完自动展开报告`);
 }
-$('btnEvalStop').onclick = async ()=>{
-  const r = await fetch('/api/evals/stop',{
+function requestEvalStop(){
+  fetch('/api/evals/stop',{
     method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
-  }).then(x=>x.json()).catch(()=>null);
-  toast(null, r && r.ok ? '已请求停止：当前任务跑完后收工' : (r && r.error) || '停止失败', 'mute');
-};
+  }).then(x=>x.json()).then(r=>{
+    toast(null, r && r.ok ? '已请求停止：当前任务跑完后收工' : (r && r.error) || '停止失败', 'mute');
+  }).catch(()=> toast(null, '停止失败（服务未响应）', 'bad'));
+}
+$('btnEvalStop').onclick = requestEvalStop;
 /* 刷新按钮已移除：清理完前端立即重拉显示，服务重启后用 Ctrl+F5 强刷 */
 /* ---- 报告 ---- */
 let evalOpenReport = null;   // 当前展开的报告文件名；null = 全部收起
@@ -2603,15 +2660,15 @@ function renderEvalReports(reports){
   const pre = $('evalReportView');
   if(pre && pre.parentNode) pre.parentNode.removeChild(pre);
   box.innerHTML = '';
-  $('evalReportCount').textContent = reports.length + ' 份';
+  $('evalReportCount').textContent = '(' + reports.length + ')';
   if(!reports.length){
     pre.classList.add('hide');
-    box.appendChild(el('div','task-empty','还没有报告。点「全部评测」跑一轮，报告会自动生成在这里。'));
+    box.appendChild(el('div','task-empty','还没有报告。全选任务点「评测」跑一轮，报告会自动生成在这里。'));
     return;
   }
   let openEl = null;
   for(const r of reports){
-    const it = el('div','sk-item');
+    const card = el('div','sk-item');
     const head = el('div','sk-head');
     // 文件名可点：在资源管理器里定位这份报告（抵达其所在文件夹）
     const nameEl = el('span','sk-name link', r.name);
@@ -2626,15 +2683,14 @@ function renderEvalReports(reports){
     };
     head.appendChild(nameEl);
     head.appendChild(el('span','sk-ver', r.mtime || ''));
-    // 同一时刻只展开一份：展开的那份按钮显示「收起」，再点即收起；靠右对齐
-    const view = el('button','mini-btn', evalOpenReport === r.name ? '收起' : '查看');
-    view.onclick = ()=> openEvalReport(r.name);
-    const actions = el('span','sk-actions');
-    actions.appendChild(view);
-    head.appendChild(actions);
-    it.appendChild(head);
-    box.appendChild(it);
-    if(evalOpenReport === r.name) openEl = it;
+    card.appendChild(head);
+    // 报告条目：查看保留内嵌展开（点条目或悬停按钮块的「查看/收起」都触发）
+    const row = itRow('eval', card, [
+      {icon:'view', label: evalOpenReport === r.name ? '收起' : '查看',
+       onclick: ()=> openEvalReport(r.name)}
+    ], {checkbox: null, onOpen: ()=> openEvalReport(r.name)});
+    box.appendChild(row);
+    if(evalOpenReport === r.name) openEl = row;
   }
   // 报告面板插在【当前展开的报告条目】之下、下一份之前——
   // 固定挂在清单末尾会让人误以为展开的总是最新一份
