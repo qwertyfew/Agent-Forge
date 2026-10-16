@@ -210,7 +210,9 @@
   .ctx-rings{display:flex;align-items:center;gap:5px}
   .ctx-ring-wrap{display:inline-flex;cursor:help}
   /* 规则7：模型勾选=橙色填充（与发送框「完全访问权限」开启时同色系） */
-  .it-row.m-on .it-body{background:var(--orange-soft);box-shadow:inset 3px 0 0 var(--orange)}
+  /* 规则7：勾选的模型整个卡片淡橙填满（与「完全访问权限」开启同色）。
+     注意要填 .aitem——它是带底色的可见卡片，填在 .it-body 上会被它盖住。 */
+  .it-row.m-on .aitem{background:var(--orange-soft);border-color:var(--orange)}
   .badge.blocked{color:var(--err);border-color:var(--err)}
   .chip.top{border-color:var(--ok);color:var(--ok)}
   .mv-warn{font-size:12px;line-height:1.55;color:var(--err);background:var(--err-soft);
@@ -381,7 +383,7 @@
      问号用 ::after 画在圆心；整体抬到名字右上角（上标位） */
   .sec-help{width:16px;height:16px;border-radius:50%;border:1px solid var(--line2);
     color:var(--ink3);font-size:10.5px;font-weight:600;display:inline-flex;
-    align-items:center;justify-content:center;cursor:help;flex:none;user-select:none;
+    align-items:center;justify-content:center;cursor:default;flex:none;user-select:none;
     align-self:flex-start;margin-top:-3px;position:relative;top:2px}
   .sec-help::after{content:'?';line-height:1}
   .sec-help:hover{border-color:var(--ink2);color:var(--ink)}
@@ -2830,13 +2832,17 @@ function updateApplyButtons(){
   bLocal.classList.toggle('primary', onLocal);
   bAll.innerHTML = ICON_BEST + ' 自动配置最佳模型' + (onBest ? '<span class="onnow">生效中</span>' : '');
   bLocal.innerHTML = ICON_LOCAL + ' 自动配置本地模型' + (onLocal ? '<span class="onnow">生效中</span>' : '');
-  bAll.title = onBest ? '按任务类型自动选模型（含付费最佳）正在生效' : '开启按任务类型自动选模型，自动选用覆盖最全、含付费的最佳组合';
-  bLocal.title = onLocal ? '按任务类型自动选模型（仅本地）正在生效' : '开启按任务类型自动选模型，只在本地模型里自动选用最强者';
+  bAll.title = onBest ? '入口模型按任务类型初选（含付费升级）正在生效；执行分配仍按小步骤交给各维度最强模型'
+                      : '一键勾选覆盖最全的组合（含付费），入口模型按任务类型初选；执行分配仍按小步骤规则';
+  bLocal.title = onLocal ? '入口模型按任务类型初选（仅本地）正在生效；执行分配仍按小步骤交给各维度最强模型'
+                         : '一键勾选本地最强组合（不用付费），入口模型按任务类型初选；执行分配仍按小步骤规则';
   const st = $('routingStatus');
   if(st){
-    if(mode === 'best') st.textContent = '路由模式：自动配置最佳模型（按任务类型自动选，含付费）';
-    else if(mode === 'local') st.textContent = '路由模式：自动配置本地模型（按任务类型自动选，仅本地）';
-    else st.textContent = '路由模式：关闭（使用默认模型，偏弱时仅提示）';
+    // 如实描述：路由只决定「入口模型」的初选；真正的执行分配按小步骤规则，
+    // 由调度器把每一步交给该维度最强的已勾选模型（第 42 步起）。
+    if(mode === 'best') st.textContent = '路由模式：入口模型按任务类型初选，偏弱时自动升级（含付费）。执行分配不受影响——每步仍交给该维度最强的已勾选模型';
+    else if(mode === 'local') st.textContent = '路由模式：入口模型按任务类型初选，偏弱时自动升级（仅本地）。执行分配不受影响——每步仍交给该维度最强的已勾选模型';
+    else st.textContent = '路由模式：关闭（入口用默认模型，偏弱时仅提示）。执行分配不受影响——每步仍交给该维度最强的已勾选模型';
   }
   // 本地串行执行已是硬规则（第 42 步），不再有开关
 }
@@ -2848,7 +2854,6 @@ function refreshModels(){
     renderCombo();
     renderModelList();
     ensurePaidTests();   // 规则5：付费模型勾选框出现时自动实测连接
-    renderProviders();
     renderDispatcher();
     updatePoolHint();
     updateApplyButtons();
@@ -3449,7 +3454,7 @@ $('btnBest').onclick = async ()=>{
   b.disabled = false;
   if(r.error){ toast(b, r.error, 'bad'); return; }
   catalog = r; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons();
-  toast(b, `已自动配置最佳模型 · 按任务类型自动选模型已开启（含付费）`, 'ok');
+  toast(b, `已勾选最佳组合（含付费） · 入口模型按任务类型初选`, 'ok');
 };
 
 $('btnBestLocal').onclick = async ()=>{
@@ -3459,7 +3464,7 @@ $('btnBestLocal').onclick = async ()=>{
   b.disabled = false;
   if(r.error){ toast(b, r.error, 'bad'); return; }
   catalog = r; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons();
-  toast(b, `已自动配置本地模型 · 按任务类型自动选模型已开启（仅本地）`, 'ok');
+  toast(b, `已勾选本地最佳组合 · 入口模型按任务类型初选（仅本地）`, 'ok');
 };
 /* 决策模型下拉：多 agent 的「调度大脑」。可选任意模型（本地或在线）——
    只要它能稳定产出 JSON。留空 = 关闭调度，回退到规则拆解。 */
@@ -3505,24 +3510,6 @@ $('dispatcherModel').onchange = async function(){
   catalog = r; renderDispatcher();
   toast(this, model ? '决策模型已更新，多 agent 调度立即生效' : '已关闭多 agent 调度', 'ok');
 };
-
-function renderProviders(){
-  if(!catalog || !catalog.providers) return;
-  const sel = $('paidProvider');
-  if(sel.options.length) return;
-  for(const p of catalog.providers){
-    const o = document.createElement('option');
-    o.value = p.id; o.textContent = p.label;
-    sel.appendChild(o);
-  }
-  sel.value = 'deepseek';
-  sel.onchange = () => {
-    const p = catalog.providers.find(x=>x.id === sel.value);
-    $('paidHint').textContent = p ? (p.hint || '') : '';
-    $('paidBase').placeholder = p && p.base_url ? p.base_url : 'https://...';
-  };
-  sel.onchange();
-}
 
 function updatePoolHint(){
   if(!catalog) return;
@@ -3590,31 +3577,10 @@ function hideModelPop(){ $('modelPop').classList.remove('on'); }
 const RISK_LABEL = {safe:'只读', write:'写文件', exec:'执行命令'};
 
 function refreshSkills(){
-  fetch('/api/skills').then(r=>r.json()).then(d=>{
-    const box = $('skillAdminList');
-    box.innerHTML = '';
-    const list = d.skills || [];
-    if(!list.length){
-      box.appendChild(el('div','task-empty','尚未安装技能。把含 SKILL.md 的目录放进 skills/ 即可。'));
-    }
-    for(const s of list){
-      const it = el('div','aitem');
-      const h = el('div','ah');
-      h.appendChild(el('span','aname mono', s.name));
-      h.appendChild(el('span','badge', s.source === 'extracted' ? '提取得到' : '安装得到'));
-      h.appendChild(el('span','badge local','自动匹配'));
-      const n = (s.resources || []).length;
-      if(n) h.appendChild(el('span','badge', n + ' 个资源'));
-      it.appendChild(h);
-      it.appendChild(el('div','adesc', '作用：' + (s.description || '（无描述）')));
-      const line = (s.source === 'extracted' ? '提取时间：' : '安装时间：') + (s.when_text || '未知');
-      it.appendChild(el('div','adesc', line));
-      if(s.path) it.appendChild(el('div','apath', s.path));
-      box.appendChild(it);
-    }
-    $('skillDirs').textContent = '检索目录：' + ((d.dirs || []).join('   |   ') || '—')
-      + (d.auto_load ? `。自动加载已开启，关键词命中阈值 ${d.min_score}。` : '。自动加载已关闭。');
-  }).catch(()=>{});
+  /* 技能集与工具集同栏后走 renderSkills（itRow 条目，支持全选/悬停滑出）；
+     旧设置页的 skillAdminList/skillDirs 已随 pane 删除，别再写它们。 */
+  apiGet('/api/skills').then(renderSkills)
+    .catch(e => renderListError($('skillList'), e, refreshSkills));
 }
 
 function refreshTools(){
