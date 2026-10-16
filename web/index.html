@@ -360,10 +360,13 @@
   /* 集合头：名字 + 计数(N) + 小问号 + 右端加号 */
   .sec-count{font-size:11px;color:var(--ink3);white-space:nowrap}
   .sk-sec-head .sp{flex:1}
-  /* 圆形小问号：悬停弹富卡片（文字 + 可点击文件路径） */
+  /* 圆形小问号：悬停弹富卡片（文字 + 可点击文件路径）。
+     问号用 ::after 画在圆心；整体抬到名字右上角（上标位） */
   .sec-help{width:16px;height:16px;border-radius:50%;border:1px solid var(--line2);
     color:var(--ink3);font-size:10.5px;font-weight:600;display:inline-flex;
-    align-items:center;justify-content:center;cursor:help;flex:none;user-select:none;align-self:center}
+    align-items:center;justify-content:center;cursor:help;flex:none;user-select:none;
+    align-self:flex-start;margin-top:-3px;position:relative;top:2px}
+  .sec-help::after{content:'?';line-height:1}
   .sec-help:hover{border-color:var(--ink2);color:var(--ink)}
   .sec-pop{position:fixed;z-index:70;max-width:360px;background:var(--card);
     border:1px solid var(--line2);border-radius:10px;padding:10px 13px;
@@ -378,6 +381,7 @@
      --acts-w 按按钮数给档位（每个按钮块 = 条目宽 10%）；勾选框弹出带 9%
      （触发区 = 弹出带 = 0~9%，勾选框居中于弹出带中线，与条目自然留缝）。 */
   .it-row{position:relative;overflow:hidden}
+  .it-row.has-open .it-body{cursor:pointer}   /* 点条目可打开，与全选按钮同样的可点提示 */
   .it-row .it-body{transition:transform .16s ease;will-change:transform}
   .it-row.acts-1{--acts-w:10%}.it-row.acts-2{--acts-w:20%}.it-row.acts-3{--acts-w:30%}
   .it-row{--cbw:9%}
@@ -726,11 +730,13 @@
   .set-nav button.on{background:var(--hover);color:var(--ink);font-weight:550}
   /* 滚动条 overlay：常态不占布局宽（-9px 外挂），栏目切换时全选按钮纹丝不动；
      滚动时细条半透明「贴」在内容上。Firefox 降级为细滚动条。 */
-  .set-pane{flex:1;overflow-y:auto;padding:20px 26px 60px;min-width:0;margin-right:-9px;padding-right:35px}
+  /* scrollbar-gutter:stable：滚动条槽位恒定保留——出不出滚动条，内容区宽度都一样，
+     栏目切换时全选按钮位置零移动（39 步的负 margin 手法实测在 Edge 无效） */
+  .set-pane{flex:1;overflow-y:auto;scrollbar-gutter:stable;padding:20px 26px 60px;min-width:0}
   .set-pane::-webkit-scrollbar{width:9px;background:transparent}
   .set-pane::-webkit-scrollbar-thumb{background:var(--line2);border-radius:5px;border:2px solid transparent;background-clip:padding-box}
   .set-pane::-webkit-scrollbar-thumb:hover{background:var(--ink3);border:2px solid transparent;background-clip:padding-box}
-  @supports (-moz-appearance:none){ .set-pane{margin-right:0;padding-right:26px;scrollbar-width:thin;scrollbar-color:var(--line2) transparent} }
+  @supports (-moz-appearance:none){ .set-pane{scrollbar-width:thin;scrollbar-color:var(--line2) transparent} }
   .pane-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:16px}
   .pane-head h3{margin:0 0 4px;font-size:17px;font-weight:650}
   /* 说明文案统一最大宽度：一行塞不下自动换行，同时给右侧按钮组留足同行空间；
@@ -1046,7 +1052,7 @@
       </button>
       <div class="meta clickable" id="wsMeta" title="点击在工作区的资源管理器中打开">
         <span class="ic"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>
-        <span class="ws" id="ws" title=""></span>
+        <span class="ws" id="ws"></span>
       </div>
     </div>
     <div id="sideResize" title="拖动调整侧栏宽度"></div>
@@ -1790,7 +1796,8 @@ function itRow(view, bodyEl, actions, opts){
   // 有勾选框才参与全选模式与头部滑出（报告条目没有勾选框，不参与）
   const withCb = !!opts.checkbox;
   const row = el('div', 'it-row acts-' + n
-    + ((withCb && selState[view] && selState[view].on) ? ' sel' : ''));
+    + ((withCb && selState[view] && selState[view].on) ? ' sel' : '')
+    + (opts.onOpen ? ' has-open' : ''));   // 点条目可打开编辑：给 pointer 光标提示
   const cbw = el('div', 'it-check');
   if(opts.checkbox) cbw.appendChild(opts.checkbox);
   row.appendChild(cbw);
@@ -1854,6 +1861,7 @@ function formModal(cfg){
   };
   foot.appendChild(cancel);
   foot.appendChild(ok);
+  box.appendChild(body);   // 内容区挂进弹窗——38 步漏了这行，弹窗永远只有标题和按钮
   box.appendChild(foot);
   mask.appendChild(box);
   mask.onclick = e => { if(e.target === mask) mask.remove(); };
@@ -4288,7 +4296,8 @@ let ollamaUrl = 'http://127.0.0.1:11434';
    所以失败不清空、由 checkHealth 轮询里 wsPendant 补拉，成功即回填。 */
 function applyBasicState(s){
   $('ws').textContent = s.workspace || '';
-  $('ws').title = '点击在工作区的资源管理器中打开';
+  // 提示文案由父级 #wsMeta 的 title 提供——给 ws 自己再挂一份会形成嵌套 title，
+  // 悬停时鼠标在两层命中区间移动，悬停卡片引擎反复切换触发元素，出两张卡
   $('genWs').textContent = s.workspace || '';
   $('genOllama').textContent = s.ollama || '';
   if(s.ollama) ollamaUrl = s.ollama;
@@ -5697,6 +5706,10 @@ $('pathBtn').onclick = ()=>{
     mx = e.clientX; my = e.clientY;
     const el = t.closest('[title],[data-tip]');
     if(el === cur || el === pending) return;   // 还是同一个元素：不重置延迟
+    // 嵌套防抖：新元素与当前/等待元素是祖先-后代关系（如 #wsMeta > #ws）时，
+    // 鼠标在两层命中区间移动会来回切换触发元素——视为同一次悬停，不重置
+    if(cur && (cur.contains(el) || el.contains(cur))) return;
+    if(pending && (pending.contains(el) || el.contains(pending))) return;
     hide();
     if(!el) return;
     // 立即接管原生 title：否则浏览器自带的 title 提示（约 1s）会抢在

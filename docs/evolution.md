@@ -1659,3 +1659,33 @@ loadBasicState；checkHealth 30s 轮询发现 ws 为空就补拉回填，路径�
 **现场事实**：当时 Ollama `/api/tags` 返回空列表——本机一个本地模型都没装，
 gemma4:12b / qwen3.5:4b 均真实不可用，黄字是对的、绿字是 bug；修复后黄字将
 稳定显示直到真正 pull。全套测试 GREEN。
+
+## 第 40 步：五个前端缺陷修复（2026-10-16）
+
+本轮引入 **Edge headless + CDP 实测**排查：agent-browser 守护进程在沙箱环境下
+存活不了，改用 msedge --headless --remote-debugging-port + Python websocket-client
+直连 CDP，在真实浏览器里复现、修复、验证——比静态审查可靠得多（Bug 1 静态审查
+三轮都没找到，真机一次命中）。注意：环境代理会劫持 localhost 请求，urllib 需
+ProxyHandler({}) 绕过；Edge 需 --remote-allow-origins=*。
+
+1. **普通条目编辑失效（根因深）**：第 38 步新写的 `formModal` 漏了
+   `box.appendChild(body)`——内容区创建并填充了、却从未挂进弹窗，弹窗永远只有
+   标题和按钮。静态审查多轮无果（代码"看起来"是完整的），真机 dump 弹窗 DOM +
+   A/B 实验（body.parentNode=false）实锤。补一行修复；openModal（确认弹窗）
+   一直正确，印证只有新函数踩坑。
+2. **条目可点无提示**：itRow 有 onOpen 时加 `has-open` 类，`.it-body` cursor:pointer，
+   与全选按钮同款可点暗示。
+3. **左下角双卡片**：`#wsMeta`（父）与 `#ws`（子）都挂 title，悬停时鼠标在两层
+   命中区移动，悬停卡片引擎反复切换触发元素出两张卡。修复：ws 去掉自己的 title
+   （HTML + applyBasicState），提示由父级提供；引擎加嵌套防抖——新触发元素与
+   当前/等待元素为祖先-后代关系时视为同一次悬停，不重置（通用兜底）。
+4. **问号圆圈**：`.sec-help` 是空 span，圆内从没有过问号。`::after{content:'?'}`
+   画在圆心；位置从垂直居中改为名字右上角（align-self:flex-start + 微调）。
+5. **全选按钮跨栏目不齐**：CDP 实测 mem/gap 的按钮 right=751、skill/eval=742——
+   差 9px 全是滚动条挤压（39 步负 margin 手法在 Edge 实测无效）。换标准方案
+   `scrollbar-gutter:stable`：槽位恒定保留，出不出滚动条内容区宽度都一致。
+   复测四栏目 left/top/right 完全相同（678/66/733）。
+
+**验证**：真机全流程——点击条目→弹窗含 textarea→改内容→保存→关闭→列表落盘
+更新（随后还原）；四栏目按钮坐标一致；问号 content="?"；ws.title 已空；全程
+零运行时错误。前端语法 node --check 通过。
