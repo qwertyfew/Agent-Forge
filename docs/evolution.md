@@ -1580,3 +1580,29 @@ REA 源码迁入 `external/rea`（同盘移动，git 历史完整核验 3964 文
 其自身 git 仓库与历史）；要接入 harness 能力时为其新增对应 skill（如
 `skills/rea-analysis/`）或经未来的 MCP 客户端挂载工具；源码位置本身不产生
 任何自动接入——接入点是 skill，不是目录。
+
+## 第 37 步：落地态发送框居中（2026-10-16）
+
+**需求**：点「新建任务」/全新空对话时，hero 标题与发送框成组居中在页面中部；
+发出第一条消息后消息区加载、发送框落回底部。
+
+**与既有规则的冲突处理**：本步修订了第 35 步的字面不变量「输入框永久钉底」——
+钉底从「永久」变为「有消息后」；但其精神内核（**不搬 DOM 节点、不量高定位**，
+当年跳动类 bug 的两个根因）完整保留。与「各页面独立渲染」原则不冲突：本步管的
+是任务页内部两态，属页面自己的显示规则。
+
+**实现（零节点搬动）**：`main` 加 `id="mainPane"`；`renderLanding()` 在原有
+hero 显隐之外同步切换 `mainPane.classList.toggle('land', on)`（isLanding 判定
+复用：view=chat 且未打开任务且零消息）。纯 CSS 两态：
+
+- 常态：hero flex:1 居中亮标题，composer-wrap flex:none 钉底（原行为）；
+- 落地态 `main.land`：hero 与 composer-wrap 各占一半 flex——标题
+  `justify-content:flex-end` 沉底、发送框 `justify-content:flex-start` 浮顶，
+  交汇于页面中线，视觉成组居中。
+
+时序安全：打开已存在任务先设 `openTaskId`（3870 行）再 enterChat，isLanding
+为 false，无异步窗口期闪烁；enterChat 显式移除 land 兜底。发出消息后
+addUser → renderLanding → land 撤销，发送框自然落底。
+
+**顺手清理**：三处上次重构漏改的过期注释（「输入框挂在 hero 里」「输入框停在
+页面中部」等）按实际行为改述。内联脚本 node --check 语法校验通过。

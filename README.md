@@ -453,8 +453,9 @@ examples/              示例工作区（demo-excel、novel-sample）
 | 34 | REA 逆向能力接入（路径 A：CLI 桥接） | 全局安装 `rea-agents`（rea CLI v6.5.0，源码克隆在仓库内 `external/rea`），agent 经 `run_command` 直接调 `rea <子命令> --json` 获得逆向分析能力：JS/Electron 应用静态重建（全量 Evidence 先落盘再投影摘要，绝不灌上下文）、.NET 程序集元数据/CIL、SQLite 快照、Go/Rust 二进制、原生分析（需 Hopper/Ghidra/IDA provider）与运行时捕获；新增 `skills/rea-analysis/SKILL.md` 收录按目标类型选路的命令速查与 Evidence 引用纪律（结论必须带出处、观察与推断分开）。零代码改动——纯技能层扩展，`rea doctor` 预检环境 |
 | 35 | 澄清弹窗全链路 + 确定性触发 + 算力闸门 | `ask_user` 工具三模式（评测脚本答案/交互挂起等 `/api/ask-answer`/CLI 静态提示）+ 前端弹窗卡片 + 系统提示第 9 条「信息不足先问再猜」；判定层加 `must_ask` 与 `tool_called`（f5 改过程判定，不再被回复措辞随机误判）；**确定性触发不指望模型自觉**：loop 层按工具固定输出格式识别 8 个检索类工具的「未命中/多候选」信号，模型收尾追问时 harness 亲自弹窗（多候选项直接用命中 repo 名）；弹窗前先翻记忆条目（命中喂模型不弹窗），信息补充后第二问「是否存入记忆」+ `notify` 绿色提示并刷记忆面板；评测台：上次评测常驻（重启从 JSON 恢复）、重跑按完整计划批次、查看跳转修复；前端页面独立渲染（composer 钉底、落地页纯显隐、「任务执行中」角标挂当前对话）；算力闸门 `compute.max_running`：超出登记 queued 排队、有空位自动开跑、前端放开发送 |
 | 36 | external/ 第三方接入目录 | 新建仓库内 `external/` 作为第三方项目统一存放地，REA 源码迁入 `external/rea`（git 历史完整）；`rea` CLI 来自全局 npm 安装、与源码位置无关，运行时零依赖；`external/` 加入 .gitignore 防嵌套仓库误入库；README/SKILL/evolution 旧路径同步更新。约定：接入点是 skill 而非目录——新项目放 `external/<name>/` 并为其新增对应 skill |
+| 37 | 落地态发送框居中 | 「新建任务」/零消息空对话时 hero 标题与发送框经 `main.land` 纯 CSS 成组居中（各占一半 flex：标题沉底+输入框浮顶交汇于中线），发出首条消息后发送框落底；零节点搬动——修订第 35 步「永久钉底」字面不变量但保留「不搬 DOM/不量高」内核，防跳动 bug 不回归 |
 
-上面这张表是全部 36 步的索引；**每一步的来龙去脉（以及「这套东西是怎么被一步步训出来的」）在 [`docs/evolution.md`](docs/evolution.md)**。README 不再重复长叙事——它是每次会话都要读的入口，不该背着两万字的历史。
+上面这张表是全部 37 步的索引；**每一步的来龙去脉（以及「这套东西是怎么被一步步训出来的」）在 [`docs/evolution.md`](docs/evolution.md)**。README 不再重复长叙事——它是每次会话都要读的入口，不该背着两万字的历史。
 
 ## 设计原则：设定靠架构，偏好靠记忆
 

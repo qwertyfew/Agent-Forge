@@ -396,11 +396,14 @@
   .icon-btn:hover{background:var(--hover);color:var(--ink)}
   #btnMenu{display:none}
 
-  /* 首页 Hero：落地态大标题。输入框不再搬进 hero——它永久钉在对话页底部，
-     落地态只是把这块标题亮出来（各页面独立渲染，互不挪动对方的节点）。 */
+  /* 首页 Hero：落地态大标题。输入框节点永不搬家（防跳动类 bug 的根），
+     位置只由 CSS 状态类切换：常态钉在对话页底部；落地态（main.land，由
+     isLanding 驱动）hero 与 composer-wrap 各占一半 flex——标题沉底、输入框
+     浮顶，交汇于页面中线，视觉上成组居中。各页面独立渲染互不挪节点。 */
   .hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 24px 8px}
   .hero h1{margin:0;font-size:30px;font-weight:650;letter-spacing:.2px}
   .hero .hint{margin-top:9px}
+  main.land .hero{justify-content:flex-end;padding-bottom:16px}
 
   /* 对话流 */
   .thread{flex:1;overflow-y:auto;scrollbar-width:thin}
@@ -626,6 +629,8 @@
 
   /* ============ 输入区 ============ */
   .composer-wrap{padding:6px 24px 12px;flex:none}
+  /* 落地态：发送框上移到页面中部与 hero 标题成组——纯 CSS 换样式，不挪节点 */
+  main.land .composer-wrap{flex:1;display:flex;flex-direction:column;justify-content:flex-start;padding-top:0}
   .composer{max-width:760px;margin:0 auto;position:relative}
   .c-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
     box-shadow:var(--shadow);padding:14px 14px 12px}
@@ -1000,7 +1005,7 @@
   <div class="model-pop" id="modelPop"></div>
   <div class="ctx-pop" id="ctxPop"></div>
 
-  <main>
+  <main id="mainPane">
     <div class="topbar">
       <button class="icon-btn" id="btnMenu" title="菜单">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
@@ -1571,8 +1576,9 @@ function renderListError(box, err, onRetry){
 if($('offlineRetry')) $('offlineRetry').onclick = ()=> location.reload();
 
 /* ================= 空态（落地页）=================
-   输入框永久钉在对话页底部，绝不挪动（页面独立渲染，互不搬节点）。
-   落地态只是「全新空对话」时把 hero 大标题亮出来：
+   输入框节点永不搬家（页面独立渲染，互不搬节点——防跳动类 bug 的根）。
+   落地态（全新空对话、零消息）hero 标题与发送框经 main.land 纯 CSS 成组居中；
+   发出第一条消息后落地态收起，发送框回到底部——两态切换只换样式不碰 DOM 结构。
    执行中点「新建任务」与空闲时点，效果完全一致。 */
 let attachments = [];          // 已上传附件：[{name, path}]
 function isLanding(){
@@ -1583,6 +1589,8 @@ function isLanding(){
 function renderLanding(){
   const on = isLanding();
   if(view === 'chat') hero.classList.toggle('hide', !on);
+  // 落地态同时驱动发送框位置（纯 CSS，节点不搬）：零消息时居中，有消息后落底
+  $('mainPane').classList.toggle('land', on);
   return on;      // showView 用同一个返回值决定 hero 显隐，别再单独算一遍判定
 }
 
@@ -1633,9 +1641,8 @@ function showView(v){
   $('viewGaps').classList.toggle('hide', !isGaps);
   $('viewEvals').classList.toggle('hide', !isEval);
   $('composerWrap').classList.toggle('hide', isSet || isMem || isSkill || isGaps || isEval);
-  // 空态时输入框挂在 hero 里（页面中部），否则挂在底部常驻位置
   // land 用 renderLanding() 的返回值（含上锁判定），别再裸算 isLanding——
-  // 否则输入框在底部而 hero（大标题区）却被点亮，出现一块空落地页。
+  // 否则发送框已落底而 hero（大标题区）却被点亮，出现一块空落地页。
   const land = renderLanding();
   hero.classList.toggle('hide', isSet || isMem || isSkill || isGaps || isEval || !land);
   setThreadHidden(isSet || isMem || isSkill || isGaps || isEval || history.length === 0);
@@ -4400,6 +4407,7 @@ $('wsMeta').onclick = async () => {
 /* ================= 消息渲染 ================= */
 function enterChat(title){
   hero.classList.add('hide');
+  $('mainPane').classList.remove('land');   // 进入有消息的对话，发送框落底
   thread.classList.remove('hide');
   if(title){
     chatTitle = title.length > 24 ? title.slice(0,24) + '…' : title;
@@ -6192,7 +6200,7 @@ scrim.onclick = closeSidebar;
   });
 })();
 
-/* 首屏：空态落地页，输入框停在页面中部 */
+/* 首屏：空态落地页，标题与发送框成组居中（main.land） */
 renderAttach();
 showView('chat');
 </script>
