@@ -231,7 +231,10 @@ class Config:
         cfg.ollama_host = _expand(o.get("host", cfg.ollama_host)).rstrip("/")
         cfg.keep_alive = str(o.get("keep_alive", cfg.keep_alive))
         cfg.request_timeout = int(o.get("request_timeout", cfg.request_timeout))
-        cfg.local_serial = bool(o.get("local_serial", cfg.local_serial))
+        # 本地模型串行执行已升级为**硬规则**（第 42 步），不再可配置：同一时刻
+        # 只跑一个本地模型，避免并发任务互相抢显存。config 里残留的
+        # local_serial 键会被忽略（写 False 也无效），界面上的开关已移除。
+        cfg.local_serial = True
         cfg.ollama_auto_start = bool(o.get("auto_start", cfg.ollama_auto_start))
         cfg.ollama_wait = int(o.get("auto_start_wait", cfg.ollama_wait))
         # 容器/云端部署：环境变量优先于配置文件——镜像里的 config.yaml 不用改，

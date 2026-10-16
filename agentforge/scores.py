@@ -43,17 +43,23 @@ DIMENSIONS: list[tuple[str, str]] = [
 DIM_KEYS = [k for k, _ in DIMENSIONS]
 DIM_LABEL = dict(DIMENSIONS)
 
-# 总分权重：Agent 场景下编码与推理是主战场，写作/中文次之，
-# 速度与成本是实际体验的隐藏项，长上下文是加分项。
+# 小步骤分配架构下的维度裁剪（第 42 步）：任务按能力类型拆成小步骤、各配该维度
+# 最强的模型之后，「速度」「成本」不再参与评分与展示——分配只看能力维度，
+# 本地模型本就零费用、速度也不再是组合决策的输入。数据仍收录在 KNOWLEDGE 里
+# （score_overrides 兼容旧配置），只是不再进总分与任何展示。
+INACTIVE_DIMS = ("speed", "cost")
+ACTIVE_DIMS = [k for k in DIM_KEYS if k not in INACTIVE_DIMS]
+
+# 总分权重：Agent 场景下编码与推理是主战场，写作/中文次之，长上下文是加分项。
+# 权重按 ACTIVE_DIMS 归一化（原编码.22/推理.22/写作.13/中文.10/数学.10/上下文.07，
+# 合计 0.84，除回去保证总分仍是 0-100 口径）。
 WEIGHTS: dict[str, float] = {
-    "coding": 0.22,
-    "reasoning": 0.22,
-    "writing": 0.13,
-    "chinese": 0.10,
-    "math": 0.10,
-    "speed": 0.09,
-    "cost": 0.07,
-    "context": 0.07,
+    "coding": 0.262,
+    "reasoning": 0.262,
+    "writing": 0.155,
+    "chinese": 0.119,
+    "math": 0.119,
+    "context": 0.083,
 }
 
 
@@ -480,19 +486,19 @@ def lookup(name: str, provider: str = "", kind: str = "paid") -> ScoreInfo:
 def combo(entries: list[dict]) -> dict:
     """组合得分：各维度取池内最高分（能力取长补短），再算加权总分。
 
-    entries 每项需含 scores 与 name。
+    entries 每项需含 scores 与 name。只算 ACTIVE_DIMS（速度/成本已裁剪）。
     """
     if not entries:
         return {"scores": _blank(), "total": 0, "best": {}, "count": 0}
     best: dict[str, dict] = {}
-    for dim in DIM_KEYS:
+    for dim in ACTIVE_DIMS:
         top = max(entries, key=lambda e: e.get("scores", {}).get(dim, 0))
         best[dim] = {
             "value": int(top.get("scores", {}).get(dim, 0)),
             "model": top.get("name", ""),
             "entry_id": top.get("id", ""),
         }
-    scores = {d: best[d]["value"] for d in DIM_KEYS}
+    scores = {d: best[d]["value"] for d in ACTIVE_DIMS}
     return {"scores": scores, "total": total_of(scores), "best": best, "count": len(entries)}
 
 

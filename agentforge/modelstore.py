@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Config, ModelSpec, DEFAULT_CONFIG_PATH
-from .scores import DIMENSIONS, DIM_KEYS, combo, lookup, total_of
+from .scores import DIMENSIONS, DIM_KEYS, INACTIVE_DIMS, combo, lookup, total_of
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE_PATH = ROOT / "models.json"
@@ -593,7 +593,8 @@ class ModelStore:
         best_local = self.best_local_combo()
         # 勾选的模型里有多少是本机真能跑的？前端靠它提示「勾了但没装」
         return {
-            "dimensions": [{"key": k, "label": v} for k, v in DIMENSIONS],
+            "dimensions": [{"key": k, "label": v} for k, v in DIMENSIONS
+                           if k not in INACTIVE_DIMS],
             "models": [e.as_dict(self.cfg.models.get(e.key)) for e in entries],
             "enabled": [e.id for e in pool],
             "usable": [e.id for e in usable],

@@ -206,6 +206,16 @@
   .ctx-ring .fg{stroke:var(--ok);stroke-linecap:round;transition:stroke-dasharray .35s ease,stroke .35s ease}
   .ctx-ring .fg.mid{stroke:#d9930a}
   .ctx-ring .fg.hot{stroke:var(--err)}
+  /* 第 42 步：每模型上下文占用圈 */
+  .ctx-rings{display:flex;align-items:center;gap:5px}
+  .ctx-ring-wrap{display:inline-flex;cursor:help}
+  /* 规则7：模型勾选=橙色填充（与发送框「完全访问权限」开启时同色系） */
+  .it-row.m-on .it-body{background:var(--orange-soft);box-shadow:inset 3px 0 0 var(--orange)}
+  .badge.blocked{color:var(--err);border-color:var(--err)}
+  .chip.top{border-color:var(--ok);color:var(--ok)}
+  .mv-warn{font-size:12px;line-height:1.55;color:var(--err);background:var(--err-soft);
+    border:1px solid var(--err);border-radius:9px;padding:7px 9px;margin-bottom:8px}
+  .mv-kv{font-size:12px;line-height:1.7;color:var(--ink2);margin:6px 0}
   .ctx-bar i{display:block;height:100%;width:0;border-radius:99px;background:var(--ink2);transition:width .3s ease}
   .ctx-bar i.hot{background:var(--err)}
   .foot-btn{display:flex;align-items:center;gap:9px;padding:6px 10px;border-radius:9px;
@@ -859,6 +869,7 @@
   .toast.ok{background:var(--ok);color:#fff}
   .toast.bad{background:var(--err);color:#fff}
   .toast.mute{background:var(--ink2);color:var(--bg)}
+  .toast.warn{background:var(--orange);color:#fff}
   html[data-theme="dark"] .toast{box-shadow:0 6px 16px rgba(0,0,0,.4),0 14px 34px rgba(0,0,0,.35)}
   /* ---- 统一悬停卡片（tip-card）----
      全站所有 title 悬停提示的统一形态：圆角矩形、单行优先，
@@ -1005,15 +1016,19 @@
         </span>
         新建任务
       </button>
-      <!-- 新建任务下方的栏目：记忆管理 + 技能管理，后续新栏目继续往下排 -->
+      <!-- 新建任务下方的栏目：记忆管理 + 模型管理 + 技能工具，后续新栏目继续往下排 -->
       <div class="side-nav">
         <button class="nav-item" id="navMemory" title="查看与管理任务自动沉淀的记忆">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3L2.5 8 12 13l9.5-5z"/><path d="M2.5 12.5L12 17.5l9.5-5"/><path d="M2.5 17L12 22l9.5-5"/></svg>
           <span class="nt" id="memNavLabel">记忆管理</span>
         </button>
-        <button class="nav-item" id="navSkill" title="查看与管理任务自动沉淀的技能">
+        <button class="nav-item" id="navModels" title="勾选参与任务的模型、查看组合得分、新增付费模型">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/></svg>
+          <span class="nt" id="modelsNavLabel">模型管理</span>
+        </button>
+        <button class="nav-item" id="navSkill" title="查看与管理任务自动沉淀的技能与可调用的工具">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19a1 1 0 0 1 1 1v13a2.5 2.5 0 0 0-2.5-2.5H6.5A2.5 2.5 0 0 1 4 12z"/><path d="M4 12a2.5 2.5 0 0 1 2.5-2.5H20"/><path d="M9 8h7M9 11h5"/></svg>
-          <span class="nt" id="skillNavLabel">技能管理</span>
+          <span class="nt" id="skillNavLabel">技能工具</span>
         </button>
         <button class="nav-item" id="navGaps" title="查看任务暴露出的缺失工具与技能，明确该补什么">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
@@ -1082,12 +1097,9 @@
       <span class="top-run hide" id="topRun"><span class="rd"></span><span id="topRunTxt">任务执行中</span></span>
       <div class="spacer"></div>
       <!-- 上下文占用与压缩是同一件事：长对话才用，统一放在任务顶栏 -->
-      <div class="ctx-line top hide" id="ctxLine" aria-label="当前对话占用模型上下文窗口的比例（按 token 估算）；悬停看明细">
-        <svg class="ctx-ring" width="16" height="16" viewBox="0 0 36 36" aria-hidden="true">
-          <circle class="bg" cx="18" cy="18" r="15.9" pathLength="100"/>
-          <circle class="fg" id="ctxFill" cx="18" cy="18" r="15.9" pathLength="100"/>
-        </svg>
-        <span id="ctxPct">上下文 0%</span>
+      <!-- 规则12：几个 LLM 参与任务就有几个占用圈，各按自己的窗口算；悬停看是哪个模型 -->
+      <div class="ctx-line top hide" id="ctxLine" aria-label="各模型实际的上下文占用；悬停看是哪个模型">
+        <span class="ctx-rings" id="ctxRings"></span>
       </div>
       <button class="top-act hide" id="btnCompact" title="把较早的对话重写成摘要，节省上下文">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6M4 10h10M4 18h4M20 4l-4 4m0-4l4 4M14 20l6-6"/></svg>
@@ -1168,117 +1180,11 @@
     <section class="settings hide" id="viewSettings">
       <div class="set-body">
         <nav class="set-nav">
-          <button class="on" data-tab="models">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/></svg>
-            可用模型管理
-          </button>
-          <button data-tab="skills">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 5.3L20 9.5l-4 3.9.9 5.6L12 16.3 7.1 19l.9-5.6-4-3.9 5.8-1.2z"/></svg>
-            技能管理
-          </button>
-          <button data-tab="tools">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0 5.4 5.4l-8 8a2.8 2.8 0 0 1-4-4z"/><path d="M5 5l4 4"/></svg>
-            工具管理
-          </button>
-          <button data-tab="general">
+          <button class="on" data-tab="general">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9L7 7m10 10l2.1 2.1M4.9 19.1L7 17m10-10l2.1-2.1"/></svg>
             通用
           </button>
         </nav>
-
-        <div class="set-pane" id="paneModels">
-          <div class="pane-head">
-            <div>
-              <h3>可用模型管理</h3>
-              <p>开启下面的自动配置后，AgentForge 会按任务类型自动选用最适配的模型，无需再逐个勾选。下方列出全部可调用的模型，不需要的可以「移除」——移除付费模型会删掉它的密钥配置，移除本地模型会把它从 Ollama 里真正删除（磁盘文件一并移除）。</p>
-            </div>
-            <div class="pane-actions">
-              <button class="btn" id="btnBest" title="开启按任务类型自动选模型：自动选用覆盖最全、含付费的最佳组合">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 13H11l-1 9 8.5-11H12z"/></svg>
-                自动配置最佳模型
-              </button>
-              <button class="btn" id="btnBestLocal" title="开启按任务类型自动选模型：只在本地模型里自动选用最强者，绝不用付费模型">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
-                自动配置本地模型
-              </button>
-            </div>
-            <div class="routing-status sub" id="routingStatus"></div>
-            <label class="sub lserial" id="localSerialWrap">
-              <input type="checkbox" id="chkLocalSerial">
-              本地模型串行执行（同一时刻只跑一个，避免并发任务互相抢显存）
-            </label>
-            <div class="dsel">
-              <div class="dsel-row">
-                <label for="dispatcherModel">决策模型（多 agent 调度）</label>
-                <select id="dispatcherModel" title="负责把请求拆成多个任务、指派执行 agent 并维护交接的「调度大脑」"></select>
-              </div>
-              <span class="fhint" id="dispatcherStatus"></span>
-            </div>
-          </div>
-
-          <div class="combo-card" id="comboCard"></div>
-          <div class="mlist" id="modelList"></div>
-
-          <div class="addpaid">
-            <h4>添加付费模型</h4>
-            <p class="sub">填入厂商与 API Key 后，该模型立即成为「可用模型」并参与评分、路由与任务分配。密钥保存在 <span class="mono">models.json</span>，该文件已 gitignore，只留在本机、不会进入版本库。</p>
-            <div class="fgrid">
-              <div class="field">
-                <label>厂商</label>
-                <select id="paidProvider"></select>
-                <span class="fhint" id="paidHint"></span>
-              </div>
-              <div class="field">
-                <label>模型号</label>
-                <input id="paidModel" placeholder="例如 deepseek-chat / gpt-5.5">
-              </div>
-              <div class="field">
-                <label>API Key</label>
-                <input id="paidKey" type="password" placeholder="sk-...">
-              </div>
-              <div class="field">
-                <label>显示名称（可选）</label>
-                <input id="paidLabel" placeholder="留空则用模型号">
-              </div>
-              <div class="field" style="grid-column:1/-1">
-                <label>接口地址（选填，留空用厂商默认）</label>
-                <input id="paidBase" placeholder="https://...">
-                <span class="fhint">中转站或私有部署填这里，需为 OpenAI 兼容接口</span>
-              </div>
-            </div>
-            <div class="form-foot">
-              <button class="btn primary" id="btnAddPaid">测试并保存</button>
-              <span class="form-msg" id="paidMsg"></span>
-            </div>
-          </div>
-        </div>
-
-        <div class="set-pane hide" id="paneSkills">
-          <div class="pane-head">
-            <div>
-              <h3>Skill 管理</h3>
-              <p>全部技能（Agent Skills 开放标准），含 Agent 自动提炼的与放进 skills/ 的。任务命中技能描述时，正文会自动注入本轮上下文；也可以让模型主动用 use_skill 加载。</p>
-            </div>
-            <div class="pane-actions">
-              <button class="btn" id="btnReloadSkills">刷新</button>
-            </div>
-          </div>
-          <div class="alist" id="skillAdminList"></div>
-          <div class="adim" id="skillDirs"></div>
-        </div>
-
-        <div class="set-pane hide" id="paneTools">
-          <div class="pane-head">
-            <div>
-              <h3>工具管理</h3>
-              <p>模型可调用的全部工具，含运行时热加载的插件工具。标「需审批」的在默认权限下执行前会请求确认；切到「完全访问权限」后直接执行。</p>
-            </div>
-            <div class="pane-actions">
-              <button class="btn" id="btnReloadTools">刷新</button>
-            </div>
-          </div>
-          <div class="alist" id="toolAdminList"></div>
-        </div>
 
         <div class="set-pane hide" id="paneGeneral">
           <div class="pane-head"><div><h3>通用</h3><p>界面主题与运行环境信息。</p></div></div>
@@ -1341,19 +1247,83 @@
       </div>
     </section>
 
-    <!-- ============ 技能管理 ============ -->
+    <!-- ============ 模型管理（原设置里的「可用模型管理」移入侧栏） ============ -->
+    <section class="settings hide" id="viewModels">
+      <div class="set-body">
+        <div class="set-pane">
+          <div class="pane-head">
+            <div>
+              <h3>模型管理</h3>
+              <p>
+                勾选哪些模型，任务池里就有哪些执行者：复合任务会被拆成<b>按能力类型分层的小步骤</b>
+                （检索 / 分析 / 编码 / 写作…），每一步交给勾选模型中该维度最强的那个。
+                本地模型勾选即用；付费模型保存时自动实测连接，<b>测不通的无法勾选</b>。
+                「自动配置」仍可一键选出覆盖最全的组合；「移除」付费模型会删掉密钥配置，
+                移除本地模型会把它从 Ollama 里真正删除（磁盘文件一并移除）。
+              </p>
+            </div>
+            <div class="pane-actions">
+              <div class="pane-col">
+                <div class="pane-row">
+                  <button class="btn danger hide" id="btnModelsClear">确认清理</button>
+                  <button class="btn" id="btnModelsSel">全选</button>
+                </div>
+                <button class="btn hide" id="btnModelApply">应用</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="combo-card" id="comboCard"></div>
+
+          <div class="sk-sec">
+            <div class="sk-sec-head">
+              <h4>模型</h4>
+              <span class="sec-count" id="modelCount">(0)</span>
+              <span class="sec-help" data-help="勾选规则：勾选即进入任务池，模型条目会以橙色填充（与发送框「完全访问权限」开启时同色），不用点开就知道勾没勾。
+本地模型串行执行是硬规则：同一时刻只跑一个本地模型，避免并发任务互相抢显存——不再提供开关，恒定生效。
+全选模式：点「全选」勾上全部模型（此时只是待选方案），可逐个调整，点「应用」一次性生效；「退出」关闭全选模式，不改动任何模型的勾选状态。
+付费模型勾选框出现时自动实测连接，测不通的模型带 ⊘ 标记、无法勾选，点条目可看失败原因。" data-helppath="models.json" data-helplabel="模型配置文件"></span>
+              <span class="sp"></span>
+              <button class="mini-btn" id="btnModelAdd" title="新增付费模型">＋</button>
+            </div>
+            <div class="alist" id="modelItemList"></div>
+          </div>
+
+          <div class="pane-actions" style="margin-top:14px">
+            <button class="btn" id="btnBest" title="开启按任务类型自动选模型：自动选用覆盖最全、含付费的最佳组合">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 13H11l-1 9 8.5-11H12z"/></svg>
+              自动配置最佳模型
+            </button>
+            <button class="btn" id="btnBestLocal" title="开启按任务类型自动选模型：只在本地模型里自动选用最强者，绝不用付费模型">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+              自动配置本地模型
+            </button>
+          </div>
+          <div class="routing-status sub" id="routingStatus"></div>
+          <div class="dsel">
+            <div class="dsel-row">
+              <label for="dispatcherModel">决策模型（多 agent 调度）</label>
+              <select id="dispatcherModel" title="负责把请求拆成小步骤、按能力指派执行 agent 并维护交接的「调度大脑」"></select>
+            </div>
+            <span class="fhint" id="dispatcherStatus"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 技能工具 ============ -->
     <section class="settings hide" id="viewSkills">
       <div class="set-body">
         <div class="set-pane">
           <div class="pane-head">
             <div>
-              <h3>技能管理</h3>
+              <h3>技能工具</h3>
               <p>
-                Agent Skills 开放标准：技能是一份带 frontmatter 的 SKILL.md，任务命中它的
-                触发词时正文会被自动注入上下文。技能有两个来源——<b>提取得到</b>的是 Agent
-                跑完任务后自己提炼沉淀的，<b>安装得到</b>的来自 skills/ 目录（来源标在每张卡片上）。
-                每张卡片展示技能的<b>版本</b>、<b>触发边界</b>（什么场景该用 / 不该用）与附带资源；
-                声明的「不适用」场景命中时会主动让位，避免关键词撞车导致的误加载。
+                两个条目集。<b>技能</b>：Agent Skills 开放标准，一份带 frontmatter 的 SKILL.md，
+                任务命中触发词时正文自动注入上下文；有「提取得到」（Agent 跑完任务自己提炼沉淀）
+                与「安装得到」（放进 skills/ 目录）两个来源，每张卡片展示版本、触发边界与附带资源。
+                <b>工具</b>：模型可调用的全部工具，含运行时热加载的插件工具；标「需审批」的在
+                默认权限下执行前会请求确认，切到「完全访问权限」后直接执行。
               </p>
             </div>
             <div class="pane-actions">
@@ -1369,6 +1339,15 @@
               <span class="sec-help" data-help="「提取得到」：任务收尾时由自检机制自动提炼；「安装得到」：把含 SKILL.md 的目录放进技能目录即可。删除会连同技能目录一起备份到 .run/。" data-helppath="skills" data-helplabel="技能目录"></span>
             </div>
             <div class="alist" id="skillList"></div>
+          </div>
+
+          <div class="sk-sec">
+            <div class="sk-sec-head">
+              <h4>工具</h4>
+              <span class="sec-count" id="toolCount">(0)</span>
+              <span class="sec-help" data-help="模型可调用的全部工具，含运行时热加载的插件工具。标「需审批」的在默认权限下执行前会请求确认；切到「完全访问权限」后直接执行。工具由 harness 注册与加载，此栏只读。" data-helppath="agentforge/tools" data-helplabel="工具目录"></span>
+            </div>
+            <div class="alist" id="toolAdminList"></div>
           </div>
         </div>
       </div>
@@ -1683,36 +1662,41 @@ function showView(v){
   view = v;
   const isSet = v === 'settings';
   const isMem = v === 'memory';
+  const isModels = v === 'models';
   const isSkill = v === 'skills';
   const isGaps = v === 'gaps';
   const isEval = v === 'evals';
   $('viewSettings').classList.toggle('hide', !isSet);
   $('viewMemory').classList.toggle('hide', !isMem);
+  $('viewModels').classList.toggle('hide', !isModels);
   $('viewSkills').classList.toggle('hide', !isSkill);
   $('viewGaps').classList.toggle('hide', !isGaps);
   $('viewEvals').classList.toggle('hide', !isEval);
-  $('composerWrap').classList.toggle('hide', isSet || isMem || isSkill || isGaps || isEval);
+  $('composerWrap').classList.toggle('hide', isSet || isMem || isModels || isSkill || isGaps || isEval);
   // land 用 renderLanding() 的返回值（含上锁判定），别再裸算 isLanding——
   // 否则发送框已落底而 hero（大标题区）却被点亮，出现一块空落地页。
   const land = renderLanding();
-  hero.classList.toggle('hide', isSet || isMem || isSkill || isGaps || isEval || !land);
-  setThreadHidden(isSet || isMem || isSkill || isGaps || isEval || history.length === 0);
-  if(!isSet && !isMem && !isSkill && !isGaps && !isEval) rebuildRail();   // 离开对话视图时收起右侧回溯导航
-  $('btnBack').classList.toggle('hide', !(isSet || isMem || isSkill || isGaps || isEval));
-  $('btnMenu').classList.toggle('hide', isSet || isMem || isSkill || isGaps || isEval);
+  const sidePane = isSet || isMem || isModels || isSkill || isGaps || isEval;
+  hero.classList.toggle('hide', sidePane || !land);
+  setThreadHidden(sidePane || history.length === 0);
+  if(!sidePane) rebuildRail();   // 离开对话视图时收起右侧回溯导航
+  $('btnBack').classList.toggle('hide', !sidePane);
+  $('btnMenu').classList.toggle('hide', sidePane);
   if(isSet) $('topTitle').textContent = '设置';
   else if(isMem) $('topTitle').textContent = '记忆管理';
-  else if(isSkill) $('topTitle').textContent = '技能管理';
+  else if(isModels) $('topTitle').textContent = '模型管理';
+  else if(isSkill) $('topTitle').textContent = '技能工具';
   else if(isGaps) $('topTitle').textContent = '能力缺口';
   else if(isEval) $('topTitle').textContent = '评测台';
   else $('topTitle').textContent = chatTitle;
   $('navMemory').classList.toggle('on', isMem);
+  $('navModels').classList.toggle('on', isModels);
   $('navSkill').classList.toggle('on', isSkill);
   $('navGaps').classList.toggle('on', isGaps);
   $('navEval').classList.toggle('on', isEval);
   syncTopRun();   // 角标跟着视图走：离开在跑的那条对话就收起来，切回去再亮
-  // 栏目互斥高亮：进设置/记忆管理/技能管理/能力缺口/评测台时，「新建任务」也跟着变淡
-  $('btnNew').classList.toggle('dimmed', isMem || isSkill || isSet || isGaps || isEval);
+  // 栏目互斥高亮：进侧栏任一栏目时，「新建任务」也跟着变淡
+  $('btnNew').classList.toggle('dimmed', sidePane);
   updateCompactBtn();
   closeSidebar();
 }
@@ -1724,8 +1708,8 @@ function updateCompactBtn(){
   if(line) line.classList.toggle('hide', !open);
 }
 let chatTitle = '';
-$('btnSettings').onclick = () => openSettings('models');
-$('btnModelConfig').onclick = () => openSettings('models');
+$('btnSettings').onclick = () => openSettings('general');
+$('btnModelConfig').onclick = () => { showView('models'); refreshModels(); };
 /* 悬停「模型配置」看当前组合明细：不再常驻侧栏，鼠标离开或点开设置就收起 */
 (function bindModelPop(){
   const btn = $('btnModelConfig');
@@ -1748,6 +1732,7 @@ $('btnBack').onclick = () => showView('chat');
 const selState = {
   mem: {on:false, checked:new Set()}, skill:{on:false, checked:new Set()},
   gap:{on:false, checked:new Set()}, eval:{on:false, checked:new Set()},
+  models:{on:false, checked:new Set()},
 };
 const selRaw = {};    // 各栏最后一次渲染的数据快照，进出全选模式原地重渲不重新拉取
 const selKeyOf = {
@@ -1755,12 +1740,14 @@ const selKeyOf = {
   skill: s => s.name,
   gap: g => (g.kind || '') + '|' + (g.key || ''),
   eval: c => c.id,
+  models: m => m.id,
 };
 const selRerender = {
   mem: () => renderMemory(selRaw.mem),
   skill: () => renderSkills(selRaw.skill),
   gap: () => renderGaps(selRaw.gap),
   eval: renderEvalTasks,
+  models: renderModelList,
 };
 const selCap = v => v[0].toUpperCase() + v.slice(1);
 
@@ -1934,12 +1921,22 @@ function selUIOn(view, on){
     const go = $('btnEvalGo');
     if(go) go.classList.toggle('hide', !on || evalRunningFlag);
   }
+  if(view === 'models'){
+    const go = $('btnModelApply');
+    if(go) go.classList.toggle('hide', !on);
+  }
 }
 function enterSel(view){
   const st = selState[view];
   if(st.on) return;
   const keys = (view === 'eval')
     ? evalData.cases.filter(c => !evalData.protected.includes(c.id)).map(selKeyOf.eval)
+    : (view === 'models')
+    ? (catalog ? catalog.models
+        .filter(m => {                        // 测不通的付费模型不进全选方案（规则5）
+          const t = paidTest[m.id];
+          return !(m.kind === 'paid' && t && t.ok === false);
+        }).map(selKeyOf.models) : [])
     : (selRaw[view] ? (selRaw[view].items || selRaw[view].entries
         || (selRaw[view].extracted || []).concat(selRaw[view].installed || [])
         ).map(selKeyOf[view]) : []);
@@ -1956,7 +1953,7 @@ function exitSel(view, reload){
   st.checked.clear();
   selUIOn(view, false);
   if(reload === undefined || reload === true)
-    ({mem: loadMemory, skill: loadSkills, gap: loadGaps, eval: loadEvals})[view]();
+    ({mem: loadMemory, skill: loadSkills, gap: loadGaps, eval: loadEvals, models: refreshModels})[view]();
   else selRerender[view]();
 }
 async function confirmSel(view){
@@ -1999,6 +1996,20 @@ async function confirmSel(view){
       c => evalData.protected.includes(c.id) || !st.checked.has(c.id));
     exitSel(view, false);            // 退出全选但不重拉：保存后 loadEvals 统一刷
     await saveEvalTasks(null);
+  } else if(view === 'models'){
+    const yes = await confirmModal({
+      title: '移除模型',
+      sub: `确定移除勾选的 ${n} 个模型吗？付费模型会删除密钥配置；本地模型会从 Ollama 里删除（磁盘文件一并移除）。`,
+      okText: '移除', danger: true
+    });
+    if(!yes) return;
+    let okN = 0;
+    for(const id of st.checked){
+      const r = await postModels({action:'remove_model', id, delete_file:true});
+      if(!r.error) okN++;
+    }
+    toast(null, `已移除 ${okN}/${n} 个模型`, okN === n ? 'ok' : 'bad');
+    exitSel('models');
   }
 }
 /* 全选按钮 = 模式开关：点「全选」进入并勾选全部，点「退出」收场（确认清理在它左边） */
@@ -2007,6 +2018,18 @@ $('btnSkillSel').onclick = ()=> selState.skill.on ? exitSel('skill') : enterSel(
 $('btnGapSel').onclick = ()=> selState.gap.on ? exitSel('gap') : enterSel('gap');
 $('btnEvalSel').onclick = ()=> selState.eval.on ? exitSel('eval') : enterSel('eval');
 $('btnEvalClear').onclick = ()=> confirmSel('eval');
+/* 模型管理（规则3/4/9）：全选=待选方案＋应用一次性生效；＋=新增付费模型 */
+$('btnModelsSel').onclick = ()=> selState.models.on ? exitSel('models') : enterSel('models');
+$('btnModelsClear').onclick = ()=> confirmSel('models');
+$('btnModelApply').onclick = async ()=>{
+  const st = selState.models;
+  if(!st.checked.size){ toast(null, '至少要勾选一个模型', 'mute'); return; }
+  const r = await postModels({action:'enable', ids:[...st.checked]});
+  if(r.error){ toast(null, r.error, 'bad'); return; }
+  toast(null, `已应用勾选方案：${st.checked.size} 个模型参与任务`, 'ok');
+  exitSel('models');
+};
+$('btnModelAdd').onclick = openAddPaidModal;
 
 /* ================= 记忆管理 =================
    任务跑完会自动往工作区记忆里沉淀「用户偏好」（规则 + 本地模型提炼），
@@ -2111,6 +2134,7 @@ function checkMemoryGrew(){
   }).catch(()=>{});
 }
 $('navMemory').onclick = ()=>{ showView('memory'); loadMemory(); };
+$('navModels').onclick = ()=>{ showView('models'); refreshModels(); };
 /* + 弹窗新增记忆（页内输入行已移除）：填完确定即落盘并刷新 */
 $('btnMemAdd').onclick = ()=>{
   if(selState.mem.on){ toast(null, '先退出全选模式再新增', 'mute'); return; }
@@ -2390,7 +2414,7 @@ function checkGapsGrew(){
     gapsKnownKeys = items.map(g=>(g.kind||'') + ':' + (g.key||''));
   }).catch(()=>{});
 }
-$('navSkill').onclick = ()=>{ showView('skills'); loadSkills(); };
+$('navSkill').onclick = ()=>{ showView('skills'); loadSkillsAndTools(); };
 $('navGaps').onclick = ()=>{ showView('gaps'); loadGaps(); };
 /* ================= 评测台 =================
    评测集是 harness 的标尺。这个栏目负责三件事：
@@ -2763,11 +2787,11 @@ function refreshSkillCount(){
 refreshMemCount();
 refreshSkillCount();
 checkGapsGrew();   // 首次调用只建基线：启动时已有的缺口不弹提示
-const PANES = {models:'paneModels', skills:'paneSkills', tools:'paneTools', general:'paneGeneral'};
+const PANES = {general:'paneGeneral'};
 function openSettings(tab){
   hideModelPop();
   showView('settings');
-  const t = tab || 'models';
+  const t = PANES[tab] ? tab : 'general';   // 旧的 models/skills/tools tab 已移入侧栏栏目
   switchTab(t);
   onTabShown(t);
 }
@@ -2785,7 +2809,9 @@ document.querySelectorAll('.set-nav button').forEach(b =>
   b.onclick = () => { switchTab(b.dataset.tab); onTabShown(b.dataset.tab); });
 
 /* ================= 模型池 ================= */
-const DIM_ORDER = ['coding','reasoning','writing','chinese','math','speed','cost','context'];
+// 第 42 步维度裁剪：速度/成本不再参与评分与展示（小步骤分配只看能力维度）。
+// 后端 snapshot.dimensions 也只下发这六项；这里保留硬编码作 catalog 未到时的兜底。
+const DIM_ORDER = ['coding','reasoning','writing','chinese','math','context'];
 
 const ICON_BEST = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 13H11l-1 9 8.5-11H12z"/></svg>';
 const ICON_LOCAL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
@@ -2812,8 +2838,7 @@ function updateApplyButtons(){
     else if(mode === 'local') st.textContent = '路由模式：自动配置本地模型（按任务类型自动选，仅本地）';
     else st.textContent = '路由模式：关闭（使用默认模型，偏弱时仅提示）';
   }
-  const cs = $('chkLocalSerial');
-  if(cs) cs.checked = rt.local_serial !== false;
+  // 本地串行执行已是硬规则（第 42 步），不再有开关
 }
 
 function refreshModels(){
@@ -2822,6 +2847,7 @@ function refreshModels(){
     catalog = data;
     renderCombo();
     renderModelList();
+    ensurePaidTests();   // 规则5：付费模型勾选框出现时自动实测连接
     renderProviders();
     renderDispatcher();
     updatePoolHint();
@@ -2845,7 +2871,8 @@ function comboOf(models){
     for(const m of on) if(!top || m.scores[d] > top.scores[d]) top = m;
     best[d] = top ? {value: top.scores[d], model: top.name} : {value:0, model:''};
   }
-  const W = {coding:.22, reasoning:.22, writing:.13, chinese:.10, math:.10, speed:.09, cost:.07, context:.07};
+  // 权重已按六维归一化（原八维去掉速度/成本后除回 0.84），总分仍是 0-100 口径
+  const W = {coding:.262, reasoning:.262, writing:.155, chinese:.119, math:.119, context:.083};
   let total = 0;
   for(const d of DIM_ORDER) total += best[d].value * W[d];
   return {count: on.length, best, total: Math.round(total), models: on};
@@ -2888,7 +2915,7 @@ function renderCombo(){
 
   const note = el('div','combo-note');
   if(!c.count){
-    note.textContent = '还没有勾选任何模型，任务无法执行。点「一键应用最优配置」自动选一组。';
+    note.textContent = '还没有勾选任何模型，任务无法执行。用下方「自动配置」选一组，或逐个勾选。';
   }else{
     const strong = DIM_ORDER.map(d=>({d, v:c.best[d].value})).sort((a,b)=>b.v-a.v).slice(0,3)
       .map(x=>`${labelOf(x.d)} ${x.v}（${c.best[x.d].model}）`).join(' · ');
@@ -2899,110 +2926,224 @@ function renderCombo(){
   box.appendChild(note);
 }
 
+/* ================= 模型条目（第 42 步规则 5/6/7/9） =================
+   条目交互与其他栏目同一套：悬停尾部左滑出「移除」、悬停头部右滑出勾选框、
+   点条目开详情弹窗。差异点：普通模式下勾选框点击立即生效（其他栏目是进全选
+   模式）；付费模型渲染时自动实测连接，测不通的禁止勾选并给 ⊘ 标记。 */
+const paidTest = {};                 // 模型id -> {ok:true/false/null, message, at}
+const PAID_TEST_TTL = 5 * 60 * 1000; // 实测结果缓存 5 分钟，过期重测
+
+function ensurePaidTests(){
+  if(!catalog) return;
+  let pending = false;
+  for(const m of (catalog.models || [])){
+    if(m.kind !== 'paid') continue;
+    const t = paidTest[m.id];
+    if(t && t.ok !== null && (Date.now() - t.at) < PAID_TEST_TTL) continue;   // 结果还新鲜
+    if(t && t.ok === null && (Date.now() - t.at) < 15000) continue;           // 测试中防重入
+    paidTest[m.id] = {ok:null, message:'', at:Date.now()};
+    pending = true;
+    const mid = m.id;
+    fetch('/api/models',{ method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'test', id:mid})})
+      .then(x=>x.json())
+      .then(r=>{ paidTest[mid] = {ok:!!r.ok, message:r.message || '', at:Date.now()}; renderModelList(); })
+      .catch(e=>{ paidTest[mid] = {ok:false, message:String(e), at:Date.now()}; renderModelList(); });
+  }
+  if(pending) renderModelList();     // 先画出「连接测试中…」占位
+}
+
+function removeModel(m){
+  const paid = m.kind === 'paid';
+  return confirmModal({
+    title: paid ? '移除付费模型' : '移除本地模型',
+    sub: paid
+      ? `确定移除「${m.name}」吗？它的 API Key 会一并从本地配置里移除，之后不会再参与自动分配。`
+      : `确定移除本地模型「${m.name}」吗？它会同时从 Ollama 里删除——磁盘上的模型文件会被一并移除，之后需要重新 pull 才能再用。`,
+    okText: paid ? '移除' : '移除并删除文件', danger: true
+  }).then(async yes=>{
+    if(!yes) return;
+    const r = await postModels({action:'remove_model', id:m.id, delete_file:!paid});
+    if(r.error){ toast(null, r.error, 'bad'); return; }
+    toast(null, `已移除模型 ${m.name}${paid ? '' : '（含本地文件）'}`, 'ok');
+  });
+}
+
+function openModelModal(m, lockReason){
+  formModal({
+    title: m.name,
+    sub: (m.kind === 'local' ? '本地模型' : '付费模型') + (m.provider_label ? ' · ' + m.provider_label : ''),
+    okText: '关闭',
+    build:(body)=>{
+      if(lockReason){
+        const w = el('div','mv-warn');
+        w.textContent = '⊘ 连接测试未通过，无法勾选：' + lockReason;
+        body.appendChild(w);
+      }
+      const ctxWin = (m.spec && m.spec.num_ctx) || m.context_window || 0;
+      if(m.desc) body.appendChild(el('div','adesc', m.desc));
+      const kv = el('div','mv-kv');
+      kv.appendChild(el('div','', `总分：${m.total}`));
+      if(ctxWin) kv.appendChild(el('div','', `上下文窗口：${ctxWin.toLocaleString()} tokens`));
+      if(m.version) kv.appendChild(el('div','', `版本：${m.version}`));
+      if(m.source) kv.appendChild(el('div','', `得分来源：${m.source}`));
+      body.appendChild(kv);
+      const sc = el('div','arow');
+      for(const d of DIM_ORDER){
+        const chip = el('span','chip', `${labelOf(d)} ${m.scores[d]}`);
+        sc.appendChild(chip);
+      }
+      body.appendChild(sc);
+      if(m.evidence){
+        const d = el('details','evi');
+        d.appendChild(el('summary','','得分依据'));
+        d.appendChild(el('div','evi-body', m.evidence));
+        body.appendChild(d);
+      }
+      return {};
+    },
+    onOk: ()=>true,
+  });
+}
+
+function openAddPaidModal(){
+  if(!catalog || !catalog.providers){ toast(null, '模型目录还没加载', 'mute'); return; }
+  formModal({
+    title: '新增付费模型',
+    sub: '填入厂商与 API Key，保存时自动实测连接，通过才加入模型池。密钥保存在 models.json（已 gitignore，只留本机）。',
+    okText: '测试并保存',
+    build:(body)=>{
+      const grid = el('div','fgrid');
+      const mk = (labelText, node, hintNode) => {
+        const w = el('div','field');
+        w.appendChild(el('label','', labelText));
+        w.appendChild(node);
+        if(hintNode) w.appendChild(hintNode);
+        grid.appendChild(w);
+        return node;
+      };
+      const sel = document.createElement('select');
+      for(const pr of catalog.providers){
+        const o = document.createElement('option'); o.value = pr.id; o.textContent = pr.label;
+        sel.appendChild(o);
+      }
+      const hint = el('span','fhint');
+      mk('厂商', sel, hint);
+      const inpModel = mk('模型号', el('input',''));
+      inpModel.placeholder = '例如 deepseek-chat / gpt-5.5';
+      const inpKey = mk('API Key', el('input',''));
+      inpKey.type = 'password'; inpKey.placeholder = 'sk-...';
+      const inpLabel = mk('显示名称（可选）', el('input',''));
+      inpLabel.placeholder = '留空则用模型号';
+      const inpBase = mk('接口地址（选填，留空用厂商默认）', el('input',''));
+      inpBase.placeholder = 'https://...';
+      inpBase.closest('.field').style.gridColumn = '1/-1';
+      body.appendChild(grid);
+      const syncHint = ()=>{
+        const pr = catalog.providers.find(x=>x.id === sel.value);
+        hint.textContent = pr ? (pr.hint || '') : '';
+        inpBase.placeholder = pr && pr.base_url ? pr.base_url : 'https://...';
+      };
+      sel.onchange = syncHint;
+      sel.value = 'deepseek';
+      if(!sel.value) sel.selectedIndex = 0;
+      syncHint();
+      return {sel, inpModel, inpKey, inpLabel, inpBase};
+    },
+    onOk: async (ctx, okBtn)=>{
+      const model_id = ctx.inpModel.value.trim();
+      const api_key = ctx.inpKey.value.trim();
+      if(!model_id){ toast(null, '请填写模型号', 'bad'); return false; }
+      if(!api_key){ toast(null, '请填写 API Key', 'bad'); return false; }
+      okBtn.disabled = true; okBtn.textContent = '测试中…';
+      const r = await postModels({action:'add_paid', provider:ctx.sel.value, model_id, api_key,
+        base_url: ctx.inpBase.value.trim(), label: ctx.inpLabel.value.trim()});
+      okBtn.disabled = false; okBtn.textContent = '测试并保存';
+      if(r.error){ toast(null, r.error, 'bad'); return false; }
+      toast(null, `已添加付费模型 ${model_id}，连接实测通过`, 'ok');
+      return true;
+    }
+  });
+}
+
 function renderModelList(){
   if(!catalog) return;
-  const list = $('modelList');
+  const list = $('modelItemList');
+  if(!list) return;
   list.innerHTML = '';
   const c = comboOf(catalog.models);
+  const st = selState.models;
+  const cnt = $('modelCount');
+  if(cnt) cnt.textContent = '(' + catalog.models.length + ')';
   for(const m of catalog.models){
-    const row = el('div','mrow');
-
-    const main = el('div','mmain');
-    const l1 = el('div','mline1');
-    l1.appendChild(el('span','mname', m.name));
-    l1.appendChild(el('span','badge ' + (m.kind === 'local' ? 'local' : 'paid'),
+    const key = m.id;
+    const tested = paidTest[m.id];
+    const testing = m.kind === 'paid' && (!tested || tested.ok === null);
+    const lockReason = m.kind === 'paid' && tested && tested.ok === false
+      ? (tested.message || '连接失败') : '';
+    const body = el('div','aitem');
+    const h = el('div','ah');
+    h.appendChild(el('span','aname mono', m.name));
+    h.appendChild(el('span','badge ' + (m.kind === 'local' ? 'local' : 'paid'),
       m.kind === 'local' ? '本地' : '付费'));
-    if(m.provider_label) l1.appendChild(el('span','badge', m.provider_label));
-    if(m.discovered) l1.appendChild(el('span','badge warn','自动发现'));
-    if(m.source === '估算') l1.appendChild(el('span','badge','估算分'));
-    if(m.kind === 'local' && !m.available) l1.appendChild(el('span','badge warn','未安装'));
-    // 窗口徽章：自动探测来的要标清楚，用户才知道这个数字是怎么定的
+    if(m.provider_label) h.appendChild(el('span','badge', m.provider_label));
+    if(m.discovered) h.appendChild(el('span','badge warn','自动发现'));
+    if(m.source === '估算') h.appendChild(el('span','badge','估算分'));
+    if(m.kind === 'local' && !m.available) h.appendChild(el('span','badge warn','未安装'));
+    if(testing) h.appendChild(el('span','badge','连接测试中…'));
+    if(lockReason) h.appendChild(el('span','badge blocked','⊘ 无法勾选'));
     const ctxWin = (m.spec && m.spec.num_ctx) || m.context_window || 0;
     if(ctxWin){
       const wb = el('span','badge', '窗口 ' + (ctxWin >= 1024 ? Math.round(ctxWin/1024) + 'K' : ctxWin));
       wb.title = `当前使用 ${ctxWin.toLocaleString()} tokens`
-        + (m.native_ctx
-            ? (m.auto_ctx
-                ? `\n模型原生支持 ${m.native_ctx.toLocaleString()}，部署后自动设为上面这个值`
-                : `\n模型原生支持 ${m.native_ctx.toLocaleString()}`)
-            : '');
-      l1.appendChild(wb);
+        + (m.native_ctx ? (m.auto_ctx
+            ? `\n模型原生支持 ${m.native_ctx.toLocaleString()}，部署后自动设为上面这个值`
+            : `\n模型原生支持 ${m.native_ctx.toLocaleString()}`) : '');
+      h.appendChild(wb);
     }
-    const tot = el('span','mtotal');
-    tot.innerHTML = '<b>' + m.total + '</b> 总分';
-    l1.appendChild(tot);
-    main.appendChild(l1);
-
-    if(m.desc) main.appendChild(el('div','mdesc', m.desc));
-
-    const sc = el('div');
+    body.appendChild(h);
+    if(m.desc) body.appendChild(el('div','adesc', m.desc));
+    const sc = el('div','arow');
     for(const d of DIM_ORDER){
       const isTop = c.models.length > 1 && c.best[d] && c.best[d].model === m.name
         && m.enabled && m.scores[d] === c.best[d].value;
-      const chip = el('span','dchip' + (isTop ? ' top' : ''));
-      chip.innerHTML = labelOf(d) + ' <b>' + m.scores[d] + '</b>';
+      const chip = el('span','chip' + (isTop ? ' top' : ''));
+      chip.textContent = `${labelOf(d)} ${m.scores[d]}`;
       chip.title = `${labelOf(d)} ${m.scores[d]} 分` + (isTop ? '（当前组合该维度最强）' : '');
       sc.appendChild(chip);
     }
-    main.appendChild(sc);
-
-    if(m.evidence){
-      const d = el('details','evi');
-      const s = el('summary','','得分依据（' + m.source + (m.version ? ' · ' + m.version : '') + '）');
-      d.appendChild(s);
-      d.appendChild(el('div','evi-body', m.evidence));
-      main.appendChild(d);
-    }
-    row.appendChild(main);
-
-    const acts = el('div','mactions');
-    const tb = el('button','minibtn','测试连接');
-    tb.onclick = async ()=>{
-      tb.textContent = '测试中…'; tb.disabled = true;
-      try{
-        const r = await fetch('/api/models',{
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({action:'test', id:m.id})
-        }).then(x=>x.json());
-        tb.textContent = r.ok ? '可用 ✓' : '不可用';
-        tb.title = r.message || '';
-        if(r.snapshot){ catalog = r.snapshot; renderCombo(); updatePoolHint(); updateApplyButtons(); }
-        setTimeout(()=>{ tb.textContent = '测试连接'; tb.disabled = false; }, 2600);
-      }catch(e){ tb.textContent = '测试失败'; tb.disabled = false; }
+    body.appendChild(sc);
+    const checked = st.on ? st.checked.has(key) : !!m.enabled;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.className = 'sel-cb';
+    cb.checked = checked;
+    if(lockReason){ cb.disabled = true; cb.title = '连接测试未通过，无法勾选：' + lockReason; }
+    cb.onclick = e => e.stopPropagation();
+    cb.onchange = ()=>{
+      if(st.on){
+        // 全选模式：只调整待选方案，点「应用」才一次性落盘（规则3）
+        if(cb.checked) st.checked.add(key); else st.checked.delete(key);
+        renderSelBar('models');
+        renderModelList();
+        return;
+      }
+      // 普通模式：立即生效；规则9——勾选变化弹绿/橙提示
+      const want = cb.checked;
+      const ids = catalog.models.filter(x => x.id === key ? want : x.enabled).map(x => x.id);
+      postModels({action:'enable', ids}).then(r=>{
+        if(r.error){ toast(null, r.error, 'bad'); renderModelList(); return; }
+        toast(null, want ? '已新增模型' : '已减少模型', want ? 'ok' : 'warn');
+      });
     };
-    acts.appendChild(tb);
-
-    const del = el('button','minibtn danger','移除');
-    if(m.kind === 'paid'){
-      del.onclick = async ()=>{
-        const yes = await confirmModal({
-          title: '移除付费模型',
-          sub: `确定移除「${m.name}」吗？它的 API Key 会一并从本地配置里移除，之后不会再参与自动分配。`,
-          okText: '移除', danger: true
-        });
-        if(!yes) return;
-        const r = await postModels({action:'remove_model', id:m.id});
-        if(r.error){ toast(del, r.error, 'bad'); return; }
-        toast(del, `已移除付费模型 ${m.name}`, 'ok');
-      };
-    }else{
-      del.onclick = async ()=>{
-        const yes = await confirmModal({
-          title: '移除本地模型',
-          sub: `确定移除本地模型「${m.name}」吗？它会同时从 Ollama 里删除——磁盘上的模型文件会被一并移除，之后需要重新 pull 才能再用。`,
-          okText: '移除并删除文件', danger: true
-        });
-        if(!yes) return;
-        const r = await postModels({action:'remove_model', id:m.id, delete_file:true});
-        if(r.error){ toast(del, r.error, 'bad'); return; }
-        toast(del, `已移除本地模型 ${m.name}（含本地文件）`, 'ok');
-      };
-    }
-    acts.appendChild(del);
-    row.appendChild(acts);
+    const row = itRow('models', body, [
+      {icon:'del', label:'移除', onclick: ()=> removeModel(m)},
+    ], { checkbox: cb, onOpen: ()=> openModelModal(m, lockReason) });
+    // 规则7：勾选即橙色填充（与发送框「完全访问权限」开启时同色），不点开也知道勾没勾
+    if(checked) row.classList.add('m-on');
     list.appendChild(row);
   }
 }
+
 
 async function postModels(payload){
   const r = await fetch('/api/models',{
@@ -3301,14 +3442,6 @@ function confirmModal(cfg){
 
 /* 本地模型串行执行开关：切换后立即持久化到配置文件，并热更新到运行中的客户端，
    无需重启。勾选 = 同一时刻只跑一个本地模型（避免并发任务互抢显存）。 */
-$('chkLocalSerial').onchange = async function(){
-  const on = this.checked;
-  const r = await postModels({action:'set_local_serial', on});
-  if(r.error){ toast(this, r.error, 'bad'); this.checked = !on; return; }
-  toast(this, on ? '本地模型已改为串行执行（同时只跑一个）'
-                 : '本地模型已允许并行执行', 'ok');
-};
-
 $('btnBest').onclick = async ()=>{
   const b = $('btnBest');
   b.disabled = true; b.textContent = '配置中…';
@@ -3355,7 +3488,7 @@ function renderDispatcher(){
       st.textContent = '未启用调度：请求会走内置的规则拆解。选一个模型即可开启多 agent 调度。';
     }else if(d.available){
       st.textContent = `调度已启用：${d.name || cur}（${d.source === 'paid' ? '在线' : '本地'}）`
-        + '。只有真正互不相关的多件事才会被拆开，同一件事的步骤仍作为一个任务。';
+        + '。任务按能力类型拆成小步骤，每一步交给该维度最强的模型。';
     }else{
       st.textContent = `调度模型「${d.name || cur}」当前不可用`
         + (d.source === 'local' ? '（本地尚未安装，可 ollama pull）' : '（请检查 API Key / base_url）')
@@ -3391,38 +3524,6 @@ function renderProviders(){
   sel.onchange();
 }
 
-function flashPaidMsg(text, cls){
-  const m = $('paidMsg');
-  m.textContent = text; m.className = 'form-msg ' + (cls || '');
-  setTimeout(()=>{ if(m.textContent === text) m.textContent = ''; }, 5000);
-}
-
-$('btnAddPaid').onclick = async ()=>{
-  const provider = $('paidProvider').value;
-  const model_id = $('paidModel').value.trim();
-  const api_key = $('paidKey').value.trim();
-  const base_url = $('paidBase').value.trim();
-  const label = $('paidLabel').value.trim();
-  if(!model_id){ flashPaidMsg('请填写模型号', 'bad'); return; }
-  if(!api_key){ flashPaidMsg('请填写 API Key', 'bad'); return; }
-  const b = $('btnAddPaid');
-  b.disabled = true; b.textContent = '测试中…';
-  const r = await postModels({action:'add_paid', provider, model_id, api_key, base_url, label});
-  b.disabled = false; b.textContent = '测试并保存';
-  if(r.error){ flashPaidMsg(r.error, 'bad'); return; }
-  const entry = (r.models || []).find(m=>m.name === model_id);
-  if(entry){
-    const t = await fetch('/api/models',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({action:'test', id:entry.id})
-    }).then(x=>x.json()).catch(()=>({}));
-    flashPaidMsg((t.message || '已保存') + (t.ok ? '' : '（已保存，但连接失败，请检查密钥）'), t.ok ? 'ok' : 'bad');
-  }
-  $('paidModel').value = ''; $('paidKey').value = ''; $('paidLabel').value = '';
-};
-
-/* 输入框下的提示只保留「没配模型」这种需要行动的警告；
-   组合明细改到「模型配置」按钮的悬停卡片里，不再常驻占地方 */
 function updatePoolHint(){
   if(!catalog) return;
   const c = comboOf(catalog.models);
@@ -3449,7 +3550,7 @@ function renderModelPop(){
   head.appendChild(el('span','mp-total','总分 ' + c.total));
   box.appendChild(head);
   box.appendChild(el('div','mp-names',
-    c.count ? c.models.map(m=>m.name).join('、') : '点开设置 → 可用模型管理去勾选'));
+    c.count ? c.models.map(m=>m.name).join('、') : '到侧栏「模型管理」去勾选'));
   const dims = el('div','mp-dims');
   for(const d of DIM_ORDER){
     const row = el('div','mp-dim');
@@ -3464,7 +3565,7 @@ function renderModelPop(){
   }
   box.appendChild(dims);
   const foot = el('div','mp-foot');
-  foot.appendChild(el('span','', '点一下进入设置管理'));
+  foot.appendChild(el('span','', '点一下进入模型管理'));
   box.appendChild(foot);
 }
 
@@ -3521,6 +3622,8 @@ function refreshTools(){
     const box = $('toolAdminList');
     box.innerHTML = '';
     const list = d.tools || [];
+    const tcn = $('toolCount');
+    if(tcn) tcn.textContent = '(' + list.length + ')';
     if(!list.length) box.appendChild(el('div','task-empty','没有可用工具。'));
     for(const t of list){
       const it = el('div','aitem');
@@ -3540,8 +3643,9 @@ function refreshTools(){
     }
   }).catch(()=>{});
 }
-$('btnReloadSkills').onclick = refreshSkills;
-$('btnReloadTools').onclick = refreshTools;
+// 设置页已移除（技能/工具并入侧栏「技能工具」栏目）：进入栏目时两集一起刷新，
+// 刷新按钮随之取消（无独立刷新入口，切一次栏目即刷新）
+function loadSkillsAndTools(){ refreshSkills(); refreshTools(); }
 
 /* ================= 任务管理 ================= */
 let taskData = [];
@@ -3757,6 +3861,7 @@ function rebaseAIHeadTime(sec){
 }
 
 function beginLiveTask(info){
+  modelCtx = {};   // 新任务：每模型上下文占用圈清零（重放/后续 stats 会重建）
   liveTask = {
     id: info.id || '', startedAt: info.created_at || (Date.now()/1000),
     status: info.status === 'queued' ? 'queued' : 'running',
@@ -5462,154 +5567,64 @@ function ctxBudget(){
     others: list.slice(1, 4),
   };
 }
-function updateContextMeter(size, th){
-  th = th || threshold;
-  // 兼容两种入参：传 history 数组按 token 精算；传数字按字符粗估
-  const conv = Array.isArray(size) ? ctxTokens(size) : Math.round((size || 0) * 0.8);
-  const b = ctxBudget();
-  const tokens = conv + b.overhead;
-  const limit = b.win || (th ? th * 0.8 : 60000);
-  const pct = Math.max(0, Math.min(100, Math.round(tokens / limit * 1000) / 10));
-  // 短对话不足 1% 时保留一位小数，否则恒显示 0% 看不出变化
-  $('ctxPct').textContent = `上下文 ${pct < 10 ? pct.toFixed(1) : Math.round(pct)}%`;
-  // 明细改由悬停卡片承载（renderCtxPop）。这里只留存本次的数值供它取用，
-  // 顺带在卡片正开着的时候就地刷新，免得数字停在旧的一帧上。
-  ctxLast = { tokens, conv, limit, pct, alt: b.others, win: b.win, who: b.who,
-              span: b.span, measured: b.measured };
-  if($('ctxPop').classList.contains('on')) renderCtxPop();
-  const fill = $('ctxFill');
-  if(fill){
-    fill.style.strokeDasharray = `${Math.max(pct, pct > 0 ? 3 : 0)} 100`;
-    fill.classList.toggle('mid', pct >= 50 && pct <= 80);
-    fill.classList.toggle('hot', pct > 80);
-  }
+/* ================= 每模型上下文占用圈（第 42 步规则 12） =================
+   任务由多个 LLM 分工处理：几个 LLM 参与就有几个圈，各按各自的窗口算占用。
+   数据源是后端每轮 stats 事件的 prompt_tokens（实测值），不是前端估算；
+   悬停说明这是哪个模型的圈。旧的合计明细卡片已按规则移除。 */
+let modelCtx = {};   // model_key -> {name, used, win}
+
+function windowOfModelKey(modelKey){
+  if(!catalog) return 0;
+  const m = (catalog.models || []).find(x =>
+    x.key === modelKey || x.id === modelKey || x.id === 'local:' + modelKey);
+  return m ? ((m.spec && m.spec.num_ctx) || m.context_window || 0) : 0;
 }
 
-/* ================= 上下文用量卡片（悬停顶栏占比时出现） =================
-   版式：标题 + 大号占比 +「已使用 / 窗口」+ 分段条 + 逐项占比。
-   逐项之和恒等于总占比：固定开销三项先按后端估算值定比例，再整体摊成
-   「实测 or 估算」的固定开销总额——模型侧实测出的开销与三项估算之和并不完全
-   相等，各写各的就会出现「各项加起来对不上标题里那个百分比」。
-   本产品没有 MCP/连接器，所以没有那一行：只列真实存在的四类来源。 */
-const CTX_COLOR = { sys:'#3b7dd8', tool:'#2f9e5f', conv:'#e0892a', skill:'#cf5a9b', other:'#8b8b8b' };
-function fmtTokK(n){
-  n = Math.max(0, Math.round(n || 0));
-  if(n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-  if(n >= 1000) return (n / 1000).toFixed(1) + 'K';
-  return String(n);
+function noteModelCtx(data){
+  if(!data || !data.model_key) return;
+  const k = data.model_key;
+  const used = Number(data.prompt_tokens) || 0;
+  const prev = modelCtx[k] || {};
+  modelCtx[k] = {
+    name: data.model || prev.name || k,
+    used: Math.max(used, prev.used || 0),   // 圈表示峰值占用，只涨不降
+    win: windowOfModelKey(k) || prev.win || 0,
+  };
+  renderCtxRings();
 }
-function fmtPct1(p){
-  p = Math.max(0, p || 0);
-  return (p > 0 && p < 0.05) ? '<0.1%' : p.toFixed(1) + '%';
-}
-function ctxRows(){
-  const b = ctxBudget();
-  const est = b.sysTok + b.toolCoreTok + b.indexTok;    // 固定开销的三项估算
-  if(!est){                                             // 目录还没回来：只分得开两笔账
-    return [['固定开销', b.overhead, CTX_COLOR.other],
-            ['对话消息', ctxLast.conv, CTX_COLOR.conv]];
-  }
-  const k = b.overhead / est;
-  return [['系统提示词', b.sysTok * k, CTX_COLOR.sys],
-          ['工具及子智能体', b.toolCoreTok * k, CTX_COLOR.tool],
-          ['对话消息', ctxLast.conv, CTX_COLOR.conv],
-          ['技能', b.indexTok * k, CTX_COLOR.skill]];
-}
-function renderCtxPop(){
-  const box = $('ctxPop');
+
+function renderCtxRings(){
+  const box = $('ctxRings');
   if(!box) return;
-  const b = ctxBudget();
-  const L = ctxLast.limit || 1;
-  const pct = ctxLast.pct || 0;
-  const rows = ctxRows();
-  box.textContent = '';
-
-  const head = el('div','cp-head');
-  head.appendChild(el('b','','上下文用量'));
-  const close = el('button','cp-close','×');
-  close.setAttribute('aria-label','收起');
-  close.onclick = ev => { ev.stopPropagation(); ctxKeepOpen = true; hideCtxPop(); };
-  head.appendChild(close);
-  box.appendChild(head);
-
-  const sum = el('div','cp-sum');
-  sum.appendChild(el('span','cp-pct', (pct < 10 ? pct.toFixed(1) : String(Math.round(pct))) + '%'));
-  sum.appendChild(el('span','cp-used', `已使用 ${fmtTokK(ctxLast.tokens)} / ${fmtTokK(L)}`));
-  box.appendChild(sum);
-
-  // 分段条：每段宽度 = 该项占「整个窗口」的比例，余下留白是还没用到的部分
-  const bar = el('div','cp-bar');
-  for(const [, tok, color] of rows){
-    const seg = document.createElement('i');
-    seg.style.width = Math.min(100, tok / L * 100) + '%';
-    seg.style.background = color;
-    bar.appendChild(seg);
+  box.innerHTML = '';
+  for(const k of Object.keys(modelCtx)){
+    const mc = modelCtx[k];
+    const pct = mc.win ? Math.min(100, mc.used / mc.win * 100) : 0;
+    const cls = pct > 80 ? 'hot' : (pct >= 50 ? 'mid' : '');
+    const wrap = document.createElement('span');
+    wrap.className = 'ctx-ring-wrap';
+    wrap.title = `${mc.name} 的上下文占用：${Math.round(mc.used).toLocaleString()}`
+      + ` / ${mc.win ? mc.win.toLocaleString() + ' tokens' : '窗口未知'}（${pct.toFixed(1)}%）`;
+    wrap.innerHTML =
+      `<svg class="ctx-ring" width="16" height="16" viewBox="0 0 36 36" aria-hidden="true">`
+      + `<circle class="bg" cx="18" cy="18" r="15.9" pathLength="100"/>`
+      + `<circle class="fg ${cls}" cx="18" cy="18" r="15.9" pathLength="100"`
+      + ` style="stroke-dasharray:${Math.max(pct, pct > 0 ? 3 : 0)} 100"/></svg>`;
+    box.appendChild(wrap);
   }
-  box.appendChild(bar);
-
-  const legend = el('div','cp-legend');
-  for(const [name, tok, color] of rows){
-    const row = el('div','cp-row');
-    const dot = el('span','cp-dot');
-    dot.style.background = color;
-    row.appendChild(dot);
-    row.appendChild(el('span','', name));
-    row.appendChild(el('span','v', fmtPct1(tok / L * 100)));
-    legend.appendChild(row);
-  }
-  box.appendChild(legend);
-
-  const foot = el('div','cp-foot');
-  foot.appendChild(el('div','',
-    `合计 ≈ ${ctxLast.tokens.toLocaleString()} tokens · 固定开销 ${b.overhead.toLocaleString()}`
-    + `（${b.measured ? '实测' : '估算'}，每轮都要发，不属于对话）`));
-  if(b.toolTok && b.toolAll > b.toolTok)
-    foot.appendChild(el('div','',
-      `工具按需下发：常规轮次 ${b.toolTok.toLocaleString()}，全量要 ${b.toolAll.toLocaleString()}`));
-  if(ctxLast.win){
-    foot.appendChild(el('div','',
-      `占用窗口 ${ctxLast.win.toLocaleString()}（取启用模型里最小的：${ctxLast.who}）`));
-    for(const o of (ctxLast.alt || []))
-      foot.appendChild(el('div','',
-        `${o.who}（窗口 ${o.win.toLocaleString()}）约 `
-        + `${Math.min(100, ctxLast.tokens / o.win * 100).toFixed(1)}%`));
-  }else{
-    foot.appendChild(el('div','', `未取到模型窗口，按压缩阈值 ≈${Math.round(L).toLocaleString()} 粗估`));
-  }
-  if(ctxLast.span && ctxLast.span.ratio >= 4)
-    foot.appendChild(el('div','cp-warn',
-      `⚠ 池内窗口跨度 ${ctxLast.span.ratio.toFixed(1)} 倍（${ctxLast.span.hi.who} ↔ ${ctxLast.span.lo.who}）：`
-      + `多模型接力按最小窗口封顶，大窗口模型用不上`));
-  if(pct > 80)
-    foot.appendChild(el('div','cp-warn','已超过 80%，建议点「压缩上下文」'));
-  box.appendChild(foot);
 }
-let ctxTimer = null, ctxKeepOpen = false;
-function showCtxPop(){
-  const line = $('ctxLine');
-  if(!line || line.classList.contains('hide')) return;
-  renderCtxPop();
-  const pop = $('ctxPop');
-  pop.classList.add('on');
-  const r = line.getBoundingClientRect();
-  const w = pop.offsetWidth, h = pop.offsetHeight;
-  let top = r.bottom + 10;                       // 计量条在页面顶部，一律往下弹
-  if(top + h > innerHeight - 8) top = Math.max(8, r.top - h - 10);
-  pop.style.left = Math.max(10, Math.min(r.right - w, innerWidth - w - 10)) + 'px';
-  pop.style.top = top + 'px';
+
+function updateContextMeter(size, th){
+  // 兼容旧调用点（传 history/threshold）：圈的真相来自 stats 实测，这里只负责重画
+  renderCtxRings();
 }
-function hideCtxPop(){ $('ctxPop').classList.remove('on'); }
-(function bindCtxPop(){
-  const line = $('ctxLine'), pop = $('ctxPop');
-  // 点过叉就先别再弹，等鼠标离开计量条再恢复，否则指针还停在原地会立刻重新冒出
-  line.addEventListener('mouseenter', ()=>{ if(ctxKeepOpen) return; clearTimeout(ctxTimer); showCtxPop(); });
-  line.addEventListener('mouseleave', ()=>{ ctxKeepOpen = false; ctxTimer = setTimeout(hideCtxPop, 180); });
-  pop.addEventListener('mouseenter', ()=> clearTimeout(ctxTimer));
-  pop.addEventListener('mouseleave', ()=>{ ctxTimer = setTimeout(hideCtxPop, 180); });
-  line.addEventListener('click', ()=>{ ctxKeepOpen = false; showCtxPop(); });
-  window.addEventListener('scroll', hideCtxPop, true);
-  window.addEventListener('resize', hideCtxPop);
-})();
+
+function shrinkModelCtxRings(ratio){
+  // 压缩后各模型下一次实际收到的 prompt 会等比变小；先按比例缩一圈，
+  // 下一轮 stats 的实测值立刻覆盖成真数
+  for(const k of Object.keys(modelCtx)) modelCtx[k].used = Math.round(modelCtx[k].used * ratio);
+  renderCtxRings();
+}
 
 /* ================= 压缩 ================= */
 $('btnCompact').onclick = async ()=>{
@@ -5625,7 +5640,12 @@ $('btnCompact').onclick = async ()=>{
     showView('chat');
     if(r.error){ addError('压缩失败：'+r.error); }
     else{
+      const beforeTok = ctxTokens(history);
       history = r.messages || [];
+      const afterTok = ctxTokens(history);
+      // 规则12：压缩分别作用于每个 LLM 的输入——圈按对话等比缩小，
+      // 下一轮 stats 的实测值立刻覆盖成真数
+      shrinkModelCtxRings(beforeTok > 0 ? Math.min(1, afterTok / beforeTok) : 1);
       addPillNote(r.note || '压缩完成');
       updateContextMeter(history, r.threshold);
     }
@@ -5845,7 +5865,8 @@ async function send(){
     ? (typed ? typed + '\n\n' : '') + attachments.map(a=>`[附件] ${a.path}`).join('\n')
     : typed;
   if(!catalog || !comboOf(catalog.models).count){
-    openSettings('models');
+    showView('models'); refreshModels();
+    addPillNote('还没有勾选任何模型——到「模型管理」里勾选后才能执行任务。');
     return;
   }
   // 正在看某个任务（在跑或回看）时发消息 = 开一条全新对话，
@@ -6098,6 +6119,7 @@ function handleTaskEvent(ev, data){
       lastStats.tokens += data.tokens || 0;
       lastStats.cost += (data.cost || 0);
       if(data.model) lastStats.model = data.model;
+      noteModelCtx(data);   // 规则12：每模型上下文占用圈的数据源（实测 prompt_tokens）
       // 本次请求的第一条 stats = 首轮调用，它的 prompt_tokens 就是
       // 「系统提示 + 工具定义 + 对话」的真实总量；减掉对话部分即真实固定开销。
       // 存下来，下次这个模型的占比直接用实测值（比任何估算都准）。
