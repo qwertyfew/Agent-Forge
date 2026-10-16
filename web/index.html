@@ -383,8 +383,7 @@
      问号用 ::after 画在圆心；整体抬到名字右上角（上标位） */
   .sec-help{width:16px;height:16px;border-radius:50%;border:1px solid var(--line2);
     color:var(--ink3);font-size:10.5px;font-weight:600;display:inline-flex;
-    align-items:center;justify-content:center;cursor:default;flex:none;user-select:none;
-    align-self:flex-start;margin-top:-3px;position:relative;top:2px}
+    align-items:center;justify-content:center;cursor:default;flex:none;user-select:none}
   .sec-help::after{content:'?';line-height:1}
   .sec-help:hover{border-color:var(--ink2);color:var(--ink)}
   .sec-pop{position:fixed;z-index:70;max-width:360px;background:var(--card);
@@ -1238,8 +1237,8 @@
           <div class="sk-sec">
             <div class="sk-sec-head">
               <h4>记忆</h4>
-              <span class="sec-count" id="memCount">(0)</span>
               <span class="sec-help" data-help="只存放用户的长期偏好：对话里明说「记住 / 以后 / 每次都…」的由规则直接收录，任务收尾时本地模型再提炼。环境事实与项目约定不进这里——写下来只是「劝」，不如让架构强制。" data-helppath=".agentforge/memory.md" data-helplabel="记忆文件"></span>
+              <span class="sec-count" id="memCount">(0)</span>
               <span class="sp"></span>
               <button class="mini-btn" id="btnMemAdd" title="新增一条记忆">＋</button>
             </div>
@@ -1280,11 +1279,11 @@
           <div class="sk-sec">
             <div class="sk-sec-head">
               <h4>模型</h4>
-              <span class="sec-count" id="modelCount">(0)</span>
               <span class="sec-help" data-help="勾选规则：勾选即进入任务池，模型条目会以橙色填充（与发送框「完全访问权限」开启时同色），不用点开就知道勾没勾。
 本地模型串行执行是硬规则：同一时刻只跑一个本地模型，避免并发任务互相抢显存——不再提供开关，恒定生效。
 全选模式：点「全选」勾上全部模型（此时只是待选方案），可逐个调整，点「应用」一次性生效；「退出」关闭全选模式，不改动任何模型的勾选状态。
 付费模型勾选框出现时自动实测连接，测不通的模型带 ⊘ 标记、无法勾选，点条目可看失败原因。" data-helppath="models.json" data-helplabel="模型配置文件"></span>
+              <span class="sec-count" id="modelCount">(0)</span>
               <span class="sp"></span>
               <button class="mini-btn" id="btnModelAdd" title="新增付费模型">＋</button>
             </div>
@@ -1337,8 +1336,8 @@
           <div class="sk-sec">
             <div class="sk-sec-head">
               <h4>技能</h4>
-              <span class="sec-count" id="skCount">(0)</span>
               <span class="sec-help" data-help="「提取得到」：任务收尾时由自检机制自动提炼；「安装得到」：把含 SKILL.md 的目录放进技能目录即可。删除会连同技能目录一起备份到 .run/。" data-helppath="skills" data-helplabel="技能目录"></span>
+              <span class="sec-count" id="skCount">(0)</span>
             </div>
             <div class="alist" id="skillList"></div>
           </div>
@@ -1346,8 +1345,8 @@
           <div class="sk-sec">
             <div class="sk-sec-head">
               <h4>工具</h4>
-              <span class="sec-count" id="toolCount">(0)</span>
               <span class="sec-help" data-help="模型可调用的全部工具，含运行时热加载的插件工具。标「需审批」的在默认权限下执行前会请求确认；切到「完全访问权限」后直接执行。工具由 harness 注册与加载，此栏只读。" data-helppath="agentforge/tools" data-helplabel="工具目录"></span>
+              <span class="sec-count" id="toolCount">(0)</span>
             </div>
             <div class="alist" id="toolAdminList"></div>
           </div>
@@ -1377,8 +1376,8 @@
           <div class="sk-sec">
             <div class="sk-sec-head">
               <h4>记录</h4>
-              <span class="sec-count" id="gapCount">(0)</span>
               <span class="sec-help" data-help="任务触发缺口时由架构自动登记，一键清空后可重新积累。同类缺口按名称合并计数；来源：模型调用不存在的工具、工具预检发现能力缺失、模型主动 report_gap、评测任务失败。"></span>
+              <span class="sec-count" id="gapCount">(0)</span>
             </div>
             <div class="alist" id="gapList"></div>
           </div>
@@ -1425,8 +1424,8 @@
           <div class="sk-sec">
             <div class="sk-sec-head">
               <h4>任务</h4>
-              <span class="sec-count" id="evalTaskCount">(0)</span>
               <span class="sec-help" data-help="评测集是 harness 的标尺：每条任务喂给完整 agent 管线，判定全部走程序、零 LLM 调用。带 🔒 的任务被常驻回归钉死（诚实性簇/安全策略），不能删除；改动保存后即生效。" data-helppath="evals/tasks.yaml" data-helplabel="任务集文件"></span>
+              <span class="sec-count" id="evalTaskCount">(0)</span>
               <span class="sp"></span>
               <button class="mini-btn" id="btnEvalAdd" title="新增一条评测任务">＋</button>
             </div>
@@ -1436,8 +1435,8 @@
           <div class="sk-sec">
             <div class="sk-sec-head">
               <h4>报告</h4>
-              <span class="sec-count" id="evalReportCount">(0)</span>
               <span class="sec-help" data-help="每轮评测自动生成：时间、代码版本、逐条表现与失败归因分布；同名 JSON 文件在报告目录下，bench_compare 可直接使用。" data-helppath="evals/results" data-helplabel="报告目录"></span>
+              <span class="sec-count" id="evalReportCount">(0)</span>
             </div>
             <div class="alist" id="evalReportList"></div>
             <pre class="eval-report hide" id="evalReportView"></pre>
@@ -3132,12 +3131,22 @@ function renderModelList(){
         renderModelList();
         return;
       }
-      // 普通模式：立即生效；规则9——勾选变化弹绿/橙提示
+      // 普通模式：立即生效；规则9——勾选变化弹绿/橙提示。
+      // 乐观更新：先改本地状态+当场反馈，再后台落盘。实测 fetch 可能被同连接上
+      // 在途的付费模型连接测试拖到 2s（往返本身只有 10ms），不能让勾选干等它；
+      // postModels 拿回快照后按服务端真相重渲染，失败才回滚。
       const want = cb.checked;
-      const ids = catalog.models.filter(x => x.id === key ? want : x.enabled).map(x => x.id);
+      const m = catalog.models.find(x => x.id === key);
+      if(m) m.enabled = want;
+      row.classList.toggle('m-on', want);
+      toast(null, want ? '已新增模型' : '已减少模型', want ? 'ok' : 'warn');
+      const ids = catalog.models.filter(x => x.enabled).map(x => x.id);
       postModels({action:'enable', ids}).then(r=>{
-        if(r.error){ toast(null, r.error, 'bad'); renderModelList(); return; }
-        toast(null, want ? '已新增模型' : '已减少模型', want ? 'ok' : 'warn');
+        if(r.error){
+          toast(null, r.error, 'bad');
+          if(m) m.enabled = !want;
+          renderModelList();
+        }
       });
     };
     const row = itRow('models', body, [
