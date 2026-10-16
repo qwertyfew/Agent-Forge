@@ -375,11 +375,12 @@
 
   /* 普通条目：悬停滑出交互（零按钮常驻）。
      it-body 整体刚性平移——内容不重排不挤压；按钮块/勾选框绝对定位在两端。
-     --acts-w 按按钮数给档位（每个按钮块 = 条目宽 10%）；勾选框区 18%（与条目留 16px 缝）。 */
+     --acts-w 按按钮数给档位（每个按钮块 = 条目宽 10%）；勾选框弹出带 9%
+     （触发区 = 弹出带 = 0~9%，勾选框居中于弹出带中线，与条目自然留缝）。 */
   .it-row{position:relative;overflow:hidden}
   .it-row .it-body{transition:transform .16s ease;will-change:transform}
   .it-row.acts-1{--acts-w:10%}.it-row.acts-2{--acts-w:20%}.it-row.acts-3{--acts-w:30%}
-  .it-row{--cbw:18%}
+  .it-row{--cbw:9%}
   .it-row.sl-l .it-body{transform:translateX(calc(-1 * var(--acts-w)))}
   .it-row.sl-r .it-body{transform:translateX(var(--cbw))}
   .it-row.sel .it-body{transform:translateX(var(--cbw))}
@@ -396,7 +397,7 @@
   .it-acts .abtn:disabled{opacity:.35;cursor:not-allowed}
   .it-acts .abtn svg{width:14px;height:14px;flex:none}
   .it-check{position:absolute;top:0;bottom:0;left:0;width:var(--cbw);
-    display:flex;align-items:center;justify-content:flex-end;padding-right:16px;
+    display:flex;align-items:center;justify-content:center;
     opacity:0;pointer-events:none;transition:opacity .16s ease}
   .it-row.sl-r .it-check,.it-row.sel .it-check{opacity:1;pointer-events:auto}
 
@@ -1820,7 +1821,7 @@ function itRow(view, bodyEl, actions, opts){
     if(!r.width) return;
     const x = (e.clientX - r.left) / r.width;
     row.classList.toggle('sl-l', x >= .7 && n > 0);
-    row.classList.toggle('sl-r', x < .2 && withCb);
+    row.classList.toggle('sl-r', x < .09 && withCb);
   };
   row.onmouseleave = ()=> row.classList.remove('sl-l', 'sl-r');
   if(opts.onOpen){
@@ -4282,7 +4283,10 @@ setInterval(loadTasks, 5000);
 
 /* ================= 基础状态 ================= */
 let ollamaUrl = 'http://127.0.0.1:11434';
-fetch('/api/state').then(r=>r.json()).then(s=>{
+/* 首屏基础状态（工作区路径/ollama 地址/偏好……）。加载失败必须可恢复：
+   服务重启窗口期拉不到 /api/state 的话，左下角路径会永远空白——
+   所以失败不清空、由 checkHealth 轮询里 wsPendant 补拉，成功即回填。 */
+function applyBasicState(s){
   $('ws').textContent = s.workspace || '';
   $('ws').title = '点击在工作区的资源管理器中打开';
   $('genWs').textContent = s.workspace || '';
@@ -4308,7 +4312,12 @@ fetch('/api/state').then(r=>r.json()).then(s=>{
       : '还没有记忆';
     $('genMemory').title = s.memory.path || '';
   }
-}).catch(()=>{});
+}
+function loadBasicState(){
+  fetch('/api/state').then(r=>r.json()).then(applyBasicState)
+    .catch(()=>{ /* 静默：checkHealth 每 30s 会补拉（见下方 ws 补挂） */ });
+}
+loadBasicState();
 refreshModels();
 loadTasks();
 
@@ -4365,6 +4374,11 @@ async function ensureOllama(force){
 
 async function checkHealth(){
   if(svcRestarting) return;   // 重启流程自己管状态，别打架
+  // 工作区路径挂载稳定呈现：首屏没拉到（或曾因服务重启失败）就在每轮体检时补拉，
+  // 成功即回填——路径永远不该因为一次网络抖动就永久消失
+  if(!$('ws').textContent){
+    fetch('/api/state').then(r=>r.json()).then(applyBasicState).catch(()=>{});
+  }
   try{
     const h = await apiGet('/api/health');
     if(h.local === false){

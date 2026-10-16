@@ -286,13 +286,19 @@ class ModelStore:
             self.enabled_ids = [e.id for e in entries]
 
         # 注册进 cfg，供 Agent / Router 使用；顺手标一下「这台机器能不能跑」。
-        # have 为 None 表示这次没问过 Ollama（例如 save() 触发的内部 catalog），
-        # 那就无从判断，保持 available=True——宁可让调用真报错，也不要凭空禁用。
+        # have 为 None 表示这次没问过 Ollama（例如 save()/set_dispatcher 等
+        # 内部修改触发的 catalog() 重建）——此时**保留上一轮的判断**，别乐观重置：
+        # 否则每次改配置都会把「未安装」悄悄洗成「已启用」，黄字绿字来回翻。
+        # 上一轮也没有（首次启动且 Ollama 没应答）才默认 True，宁可真报错。
         have = None if discovered is None else set(discovered)
+        prev_avail = {e.id: e.available for e in (self._catalog or [])}
         for e in entries:
             spec = self.cfg.register_model(self._spec_of(e))
             if e.kind == "local":
-                e.available = True if have is None else (e.name in have)
+                if have is not None:
+                    e.available = e.name in have
+                else:
+                    e.available = prev_avail.get(e.id, True)
             else:
                 e.available = bool(getattr(spec, "api_key", ""))
             spec.available = e.available

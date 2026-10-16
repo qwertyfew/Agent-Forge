@@ -1638,3 +1638,24 @@ addUser → renderLanding → land 撤销，发送框自然落底。
 
 **保留**：「上次评测」特殊条目行（含重跑/查看，新增停止）；报告内嵌展开；
 🔒 保护与确认清理的删除后端全部不动。清理五处过期 CSS/注释（selbar 等）。
+
+## 第 39 步：可用性判定保真、工作区路径自愈、滑出距离减半（2026-10-16）
+
+**问题一：决策模型黄字「不可用」→ 选择后变绿字「已启用」，来回翻。**
+根因：`ModelStore.catalog()` 在 `discovered=None`（save/set_dispatcher 等内部
+修改触发的重建）时，把本地模型 available **乐观重置为 True**——而 GET /api/models
+带 discovered（Ollama 实测）又改回 False。谁最后重建谁说了算，黄绿翻转。
+**修复**：无 discovered 的重建保留上一轮 available（首启且 Ollama 无应答才默认
+True），「本机装没装」从此只有实测能改写。
+
+**问题二：左下角工作区路径突然消失且不自愈。**
+根因：`$('ws')` 只在首屏一次性填充，fetch 失败静默吞掉（无 catch 重试）——
+服务重启窗口期恰好拉不到 /api/state 就永久空白。**修复**：抽取 applyBasicState/
+loadBasicState；checkHealth 30s 轮询发现 ws 为空就补拉回填，路径永远可恢复。
+
+**问题三：条目头部滑出触发距离太远。** 触发区 0~20% → 0~9%（原弹出带 18% 的一半），
+弹出带同步 18%→9%，勾选框改为居中于弹出带中线（原右对齐+16px padding）。
+
+**现场事实**：当时 Ollama `/api/tags` 返回空列表——本机一个本地模型都没装，
+gemma4:12b / qwen3.5:4b 均真实不可用，黄字是对的、绿字是 bug；修复后黄字将
+稳定显示直到真正 pull。全套测试 GREEN。
