@@ -520,7 +520,8 @@ def path_mtime(path: str, root: str | Path) -> float | None:
 def find_artifact_issues(entries: list[tuple[str, bool]],
                          root: str | Path,
                          snapshot: dict[str, float] | None = None,
-                         produced: bool | None = None) -> list[dict]:
+                         produced: bool | None = None,
+                         produced_paths: list[str] | None = None) -> list[dict]:
     """产物核查的主判定：返回问题清单，每项 {path, declared, status}。
 
     - missing  文件不存在（原 find_missing_artifacts 的行为）
@@ -533,8 +534,18 @@ def find_artifact_issues(entries: list[tuple[str, bool]],
     None = 无法判定，跳过 ghost。snapshot 为 None 时跳过 stale（没做起点
     快照）；对声明文件只要给了快照就以 mtime 为准（变了/本轮新建都算数），
     不再看 produced——mtime 比工具调用清单更权威。
+    produced_paths 是「任务真实产出过的文件」权威清单（来自执行轨迹，按解析
+    绝对路径匹配）：只要某个声称/声明文件在其中，即使 produced is False（典型
+    如收尾闸门 convo 只有 [任务原文, 拟回答]、ran_writes 缺位）也不得误判为
+    ghost——这是复测踩过的验证竞态：真实写出的交付物被当成「全程零写操作」。
     """
     root = Path(root).resolve()
+    produced_set: set[str] = set()
+    if produced_paths:
+        for pp in produced_paths:
+            t2 = _resolve_inside(str(pp), root)
+            if t2 is not None:
+                produced_set.add(str(t2.resolve()))
     issues: list[dict] = []
     seen: set[str] = set()
     for raw, declared in entries:
@@ -567,6 +578,10 @@ def find_artifact_issues(entries: list[tuple[str, bool]],
                                    "status": "stale"})
             continue
         if produced is False:
+            # 任务中途真实写出过的文件（执行轨迹权威记录），即便最终 convo 缺写工具
+            # 调用也不许误判为 ghost——修复验证竞态（见函数 docstring）。
+            if produced_set and target is not None and str(target.resolve()) in produced_set:
+                continue
             issues.append({"path": p, "declared": bool(declared),
                            "status": "ghost"})
     return issues

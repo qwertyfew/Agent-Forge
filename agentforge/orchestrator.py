@@ -197,6 +197,69 @@ def _mostly_chinese(text: str, ratio: float = 0.15) -> bool:
     return cjk / max(len(s), 1) >= ratio
 
 
+def _norm_goal(goal: str) -> str:
+    """小步骤去重用的归一化：去所有空白、转小写、截断，避免同一意图因措辞/换行
+    细微差异被当成不同步骤反复重排（复测里 Ollama 开局不稳时一批 500 的分析步
+    就这样被 R2–R5 反复重排，纯烧时长）。"""
+    return re.sub(r"\s+", "", str(goal or "")).casefold()[:200]
+
+
+def _local_model_keys(entries: list[dict], agent) -> list[str]:
+    """从模型池里挑出本地（kind=local）模型的 key——健康门禁只对本地 Ollama 模型做
+    最小生成探活；在线/付费模型由各自的 provider 负责存活，不在此探。"""
+    out: list[str] = []
+    for e in entries or []:
+        try:
+            if getattr(agent.cfg.model(e["key"]), "kind", "local") == "local":
+                out.append(e["key"])
+        except Exception:  # noqa: BLE001  模型配置查不到就跳过，宁可少探不炸
+            continue
+    return out
+
+
+def ollama_health_gate(agent, model_keys: list[str], stop_check=None):
+    """开局健康门禁：对每个本地模型做最小生成探活，失败按退避重试；全部就绪才放行，
+    否则返回错误描述（调用方据以优雅中止任务，而不是硬冲进主流程被连环 500 拖垮）。
+
+    是个生成器：边探边 yield health 事件给前端展示，最终用 return 传出错误字符串
+    （None 表示通过）。探活本身复用 OllamaClient.warmup（含 5xx 退避重试）。
+    """
+    client = agent.client
+    budget = float(getattr(agent.cfg, "ollama_warmup_timeout", 90))
+    if budget <= 0 or not model_keys:
+        return None
+    yield {"type": "health", "phase": "start",
+           "detail": f"开局健康门禁：准备探活 {len(set(model_keys))} 个本地模型"}
+    deadline = time.time() + budget
+    for key in sorted(set(model_keys)):
+        try:
+            model_name = agent.cfg.model(key).name
+        except Exception:  # noqa: BLE001
+            continue
+        yield {"type": "health", "phase": "warmup", "model": model_name}
+        ok = False
+        last_err = ""
+        while time.time() < deadline:
+            if stop_check and stop_check():
+                return "用户停止"
+            ok, last_err = client.warmup(model_name)
+            if ok:
+                break
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            time.sleep(min(3.0, remaining))
+        if ok:
+            yield {"type": "health", "phase": "ready", "model": model_name}
+        else:
+            yield {"type": "health", "phase": "failed", "model": model_name,
+                   "error": last_err}
+            return (f"本地模型 {model_name} 开局探活失败：{last_err}"
+                    f"（已等待约 {int(budget)}s）。任务中止——请确认 Ollama 已启动、"
+                    f"该模型已加载（ollama pull / 重启 Ollama），再重试本任务。")
+    return None
+
+
 def _worth_dispatch(message: str, pool_size: int) -> bool:
     """是否值得动用决策模型拆解：包含多个动作，或请求本身较长。"""
     return needs_plan(message, pool_size) or len((message or "").strip()) >= 60
@@ -243,7 +306,8 @@ def _verify_gate(agent, message: str, holder: dict,
                  auto_approve=None, stop_check=None, read_cache=None,
                  snapshot: dict[str, float] | None = None,
                  exhausted: set[str] | None = None,
-                 files: list[dict] | None = None):
+                 files: list[dict] | None = None,
+                 produced_paths: list[str] | None = None):
     """收尾验证闸门（系统侧强制）：模型只有解读权，没有裁定权。
 
     - 任务书里声明了验证命令（如「验证：python tools/x.py」）→ 程序亲自运行，
@@ -254,6 +318,10 @@ def _verify_gate(agent, message: str, holder: dict,
       开始快照一致，吃老本）/ 幽灵声明（ghost，全程零写操作却说已写入）；
       命中给一轮修正机会，复查仍不过就在答复末尾附上系统侧核查声明。
       snapshot 由调用方在任务开始时用 verify_gate.snapshot_artifacts 生成。
+    - produced_paths 是「本任务真实产出过的文件」权威清单（来自执行轨迹，解析
+      绝对路径匹配）：只要某个声称/声明文件在其中，就不许误判为 ghost——
+      收尾闸门 convo 只有 [任务原文, 拟回答]、ran_writes 缺位时，这是避免
+      验证竞态误判真实交付物「全程零写操作」的关键依据。
 
     holder 进出各带 {"summary", "convo"}：闸门可能改写总结（追加报告/被修正轮
     重写），调用方从 holder 里取最终值。
@@ -358,7 +426,8 @@ def _verify_gate(agent, message: str, holder: dict,
         produced = (verify_gate.ran_writes(convo)
                     or verify_gate.ran_verification(convo))
         issues = verify_gate.find_artifact_issues(
-            entries, cfg.workspace_root, snapshot=snapshot, produced=produced)
+            entries, cfg.workspace_root, snapshot=snapshot, produced=produced,
+            produced_paths=produced_paths)
         if issues and not corrected:
             # 修正前先记下这些文件的 mtime：复查就看它本轮有没有真的变
             pre = {c["path"].lower(): verify_gate.path_mtime(c["path"], cfg.workspace_root)
@@ -602,6 +671,14 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
     exhausted_cmds: set = set()     # 任务级闸门拦到上限仍失败的命令，汇总级不重跑
     system_notes: list[str] = []    # 系统侧声明（轮次到顶/语义验收未过等），随答复如实附出
     all_steps: list[TaskSpec] = []
+    # 失败去重状态（步骤④防抖动）：同一小步骤（按归一化目标去重）反复失败时，
+    # 最多重排执行 leader_step_retry_cap 次就标记为「已放弃」，不再让 Leader 把它
+    # 无限重排进后续批次；已成功的步骤也不重复执行。复测里 Ollama 开局不稳时，
+    # 一批 500 的分析步被 R2–R5 反复重排，纯烧时长——门禁把它收敛掉。
+    step_fails: dict[str, int] = {}         # norm_goal -> 失败次数
+    step_tried: dict[str, int] = {}         # norm_goal -> 尝试次数（含成功）
+    step_done: set[str] = set()             # 已成功完成的归一化目标
+    abandoned: set[str] = set()             # 已达上限放弃重排的目标
     owner_task = runcontrol.current_task()
 
     def spawn():
@@ -786,6 +863,14 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
         return "\n".join(lines)[-4000:]
 
     # ================= 主循环：外环重试（步骤⑤）× 内轮评估环（步骤④） =================
+    # 开局健康门禁：先对每个本地模型做最小生成探活，Ollama 开局不稳（冷启动/显存争用/
+    # 刚重启）时能在进主流程前就拦下，避免被连环 500 拖垮几十分钟。任一模型探活不过
+    # 就优雅中止并给出清晰错误，而不是硬冲。
+    gate_err = yield from ollama_health_gate(agent, _local_model_keys(entries, agent), stopped)
+    if gate_err:
+        yield {"type": "error", "message": gate_err}
+        return
+
     attempts = 0
     accepted = False
     final_answer = ""
@@ -826,6 +911,28 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                     e0 = entries[0]
                     t.model_key, t.model_name, t.model_id = e0["key"], e0["name"], e0["id"]
                     t.reason = "原指派模型已被移除，改用池内第一个可用模型"
+            # ---- 失败去重（步骤④防抖动）----
+            # 同一小步骤（按归一化目标去重）反复 500/失败，最多重排执行 cap 次即放弃，
+            # 不再让 Leader 把它无限重排进后续批次；已成功的步骤也跳过重做。
+            cap = max(1, int(getattr(cfg, "leader_step_retry_cap", 2)))
+            kept = []
+            for t in batch:
+                ng = _norm_goal(t.goal)
+                if ng in step_done:
+                    continue                      # 已成功，不重复执行
+                if step_fails.get(ng, 0) >= cap:
+                    if ng not in abandoned:       # 首次放弃：记一笔，并让 Leader 别再规划它
+                        abandoned.add(ng)
+                        ctx.add_reasons(
+                            [f"步骤「{t.title or t.goal[:30]}」已失败 {cap} 次，放弃重试，不再重排；"
+                             f"请换一种手段或绕过它"])
+                    continue
+                kept.append(t)
+            batch = kept
+            if not batch:
+                batch = [_fallback_step(round_no)]
+                yield {"type": "leader_round", "round": round_no, "phase": "plan",
+                       "note": "本批步骤均已失败/完成，退回原文整段直做兜底"}
             all_steps.extend(batch)
             # ---- 事件：首轮 dispatch（并行泳道靠它），每轮 plan 卡 ----
             if first_batch:
@@ -857,6 +964,15 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                 yield {"type": "stopped", "steps": round_no, "total": max_rounds,
                        "reason": "用户停止"}
                 return
+            # ---- 失败去重计数：本批每步的尝试/失败累计（供下一批过滤）----
+            for t in batch:
+                ng = _norm_goal(t.goal)
+                step_tried[ng] = step_tried.get(ng, 0) + 1
+                s = sink.get(t.id, {})
+                if s.get("failed"):
+                    step_fails[ng] = step_fails.get(ng, 0) + 1
+                else:
+                    step_done.add(ng)            # 成功过一次即视为已完成，不重复执行
             # ---- 步骤④：Leader 评估（判定 + 规划 + 精简，一次调用） ----
             results = []
             for t in batch:
@@ -909,9 +1025,20 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
         convo5 = [{"role": "user", "content": message},
                   {"role": "assistant", "content": final_answer}]
         holder = {"summary": final_answer, "convo": convo5}
+        # 收集本任务真实产出的文件（权威依据），传给收尾闸门——修复验证竞态：
+        # 最终 convo 只有 [任务原文, 拟回答]、ran_writes 缺位，若不告知真实产出，
+        # 总结里「已写入 X」会被 find_artifact_issues 误判成 ghost（全程零写操作）。
+        agg_paths: list[str] = []
+        for t in all_steps:
+            for p in (sink.get(t.id, {}).get("files") or []):
+                if p not in agg_paths:
+                    agg_paths.append(p)
+        gate_file_records = _file_records(agg_paths, root)
         yield from _verify_gate(agent, message, holder, auto_approve=auto_approve,
                                 stop_check=stopped, read_cache=read_cache,
-                                snapshot=snap, exhausted=exhausted_cmds)
+                                snapshot=snap, exhausted=exhausted_cmds,
+                                files=gate_file_records,
+                                produced_paths=agg_paths)
         final_answer = holder["summary"]
         # Leader 语义判定：只看 原文 + 拟回答，判语义完成度
         sem_pass, sem_reasons = True, []
@@ -1140,6 +1267,14 @@ def run_task(
                 read_cache=read_cache, outdir=outdir,
             )
             return
+
+    # 非 Leader 路径（单模型 / 计划接力）同样过开局健康门禁：Ollama 开局不稳时
+    # 在这里就被拦下，避免后续 Agent.run 直接连环 500。Leader 路径已在 run_leader
+    # 内探过活，上面早已 return，不会重复探。
+    gate_err = yield from ollama_health_gate(agent, _local_model_keys(entries, agent), stopped)
+    if gate_err:
+        yield {"type": "error", "message": gate_err}
+        return
 
     plan: list[Subtask] = []
     if auto_plan and needs_plan(message, len(entries)):

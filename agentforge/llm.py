@@ -289,6 +289,37 @@ class OllamaClient:
         except requests.RequestException:
             return []
 
+    def warmup(self, model: str, timeout: int = 60) -> tuple[bool, str]:
+        """最小生成探活（开局健康门禁用）：对 /api/chat 发一个极简请求，验证模型
+        能正常生成、不是只活着却持续 5xx。
+
+        ping() 只打 /api/tags，Ollama 进程在就返回 200，探不出「生成链路挂了」这类
+        复测里真实出现的 500；warmup 直接走真实 /api/chat，并把 5xx 交给 _post_chat
+        的指数退避重试。返回值：(是否可用, 失败原因非空时才有)。
+        """
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "keep_alive": self.keep_alive,
+        }
+        try:
+            resp = self._post_chat(payload, stream=False)
+            data = resp.json()
+            msg = ((data.get("message") or {}).get("content") or "").strip()
+            if msg:
+                return True, ""
+            return False, "模型返回了空响应（可能正处于加载/异常态）"
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else None
+            if code == 404:
+                return False, f"Ollama 中找不到模型 {model}（请先 ollama pull）"
+            if code is not None and code < 500:
+                return False, f"Ollama 返回 {code}（请求参数或模型配置问题）"
+            return False, f"Ollama 持续返回 5xx（{code}）"
+        except requests.RequestException as e:
+            return False, f"无法连接 Ollama（{type(e).__name__}: {e}）"
+
     def model_info(self, name: str) -> dict:
         """向 Ollama 询问模型元信息（原生上下文长度、参数量、架构等）。
 

@@ -100,6 +100,11 @@ class Config:
     ollama_auto_start: bool = True
     # 拉起后最多等多少秒才判定失败。冷启动要加载模型索引，别给太短。
     ollama_wait: int = 45
+    # 开局健康门禁：任务启动前对每个本地模型做「最小生成探活」的最长等待秒数。
+    # 期间对仍返回 5xx 的模型按退避重试；超时才判定该模型不可用并优雅中止任务，
+    # 而不是硬冲进主流程被连环 500 拖垮（复测里 86 分钟里有大段是 Ollama 开局不稳
+    # 时 Leader 双环空转）。给 0 关闭门禁。
+    ollama_warmup_timeout: int = 90
 
     models: dict[str, ModelSpec] = field(default_factory=dict)
     routing_default: str = "general"
@@ -194,6 +199,11 @@ class Config:
     # 步骤⑤语义验收未通过后的整体重试次数（失败原因回灌重新规划）。
     # 0 = 语义验收不过也直接放行（附系统侧声明）。
     leader_max_retries: int = 2
+    # 单步失败去重上限：同一小步骤（按归一化目标去重）在评估环里最多被重排执行
+    # leader_step_retry_cap 次，超过即标记为「已放弃」、不再让 Leader 把它无限重排进
+    # 后续批次。复测里 Ollama 开局不稳时，一批 500 的分析步会被 R2–R5 反复重排，
+    # 纯属烧时长；2 次足够暴露「确实做不动」，再重排就是抖动。
+    leader_step_retry_cap: int = 2
 
     # ---- 工具按需下发（省固定开销，见 agentforge/toolselect.py）----
     tools_lazy: bool = True            # True = 只下发核心 + 关键词命中的工具
@@ -238,6 +248,7 @@ class Config:
         cfg.local_serial = True
         cfg.ollama_auto_start = bool(o.get("auto_start", cfg.ollama_auto_start))
         cfg.ollama_wait = int(o.get("auto_start_wait", cfg.ollama_wait))
+        cfg.ollama_warmup_timeout = int(o.get("warmup_timeout", cfg.ollama_warmup_timeout))
         # 容器/云端部署：环境变量优先于配置文件——镜像里的 config.yaml 不用改，
         # 换个上游（云服务器上的 Ollama 容器 / 局域网机器）只动 compose 的 env。
         # auto_start 置假时 ollamaguard.ensure 只探测不拉起，容器里没有
@@ -330,6 +341,7 @@ class Config:
         # 失败重试：语义验收未通过后带着失败原因重新规划的整体重试次数。
         # 2 与任务级闸门的「至多三次执行」约定同口径。
         cfg.leader_max_retries = max(0, int(ld.get("max_retries", cfg.leader_max_retries)))
+        cfg.leader_step_retry_cap = max(1, int(ld.get("step_retry_cap", cfg.leader_step_retry_cap)))
 
         t = raw.get("tools", {}) or {}
         cfg.tools_lazy = bool(t.get("lazy", cfg.tools_lazy))
