@@ -1982,3 +1982,16 @@ dispatch/plan/assign/subtask/task_done/artifacts/complete 全部保留原负载�
 - test_planner / test_toolselect / test_resume 全过（test_planner 的提示词断言
   随提示词更替同步）；webui 导入与语法过；test_models_view.mjs 29 项全过。
 - 待办：真机端到端跑一条真实任务验证事件流与成本曲线（需模型余额）。
+
+### 第 47 步补记：侧栏退回藏线程（2026-10-17）
+
+用户报：402 任务的回看页里点发送栏「模型配置」再退回，会话记录消失、发送框
+顶到页面最上方。一个根因两个症状：showView 用 `history.length === 0` 判线程
+显隐，而 **live 视图（内容由事件流直接画进 log）与 summary 回看视图（台账
+history 空、靠摘要卡片渲染）的 history 恒为空**——退回时线程被整块
+display:none，flex:1 的占位一消失，发送框就被顶到页面最上方。
+
+修复：新增 `logHasContent()`（log 里有非便签的真实卡片，与 isLanding 共用
+判据），线程显隐改为「history 有内容 **或** 画面有内容 **或** 有运行中任务」。
+真机验证（tools/verify_sidepane_return.py）：①进 402 任务回看线程可见②模型
+配置退回记录不丢、land 不亮、发送框贴底 0px③空对话进设置退回落地态仍在。

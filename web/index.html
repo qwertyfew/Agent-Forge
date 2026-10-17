@@ -1654,10 +1654,16 @@ if($('offlineRetry')) $('offlineRetry').onclick = ()=> location.reload();
    发出第一条消息后落地态收起，发送框回到底部——两态切换只换样式不碰 DOM 结构。
    执行中点「新建任务」与空闲时点，效果完全一致。 */
 let attachments = [];          // 已上传附件：[{name, path}]
+/* 对话区里有没有「真实内容」（系统提示便签不算）：线程显隐与落地态共用的判据。
+   关键：不能拿 history 数组判空代替——live 视图（内容是事件流直接画进 log 的）
+   和 summary 回看视图（台账 history 为空、靠摘要卡片渲染）的 history 都恒为空，
+   拿它判「没内容」就会把有画面的线程整块藏掉（记录消失 + 发送框顶到页面最上方的根因）。 */
+function logHasContent(){
+  return [...log.children].some(n => !n.classList.contains('pillnote'));
+}
 function isLanding(){
   // 全新的空对话：没打开任何任务、没有真实消息（系统提示便签不算）。
-  return view === 'chat' && !openTaskId && history.length === 0
-    && ![...log.children].some(n => !n.classList.contains('pillnote'));
+  return view === 'chat' && !openTaskId && history.length === 0 && !logHasContent();
 }
 function renderLanding(){
   const on = isLanding();
@@ -1721,7 +1727,11 @@ function showView(v){
   const land = renderLanding();
   const sidePane = isSet || isMem || isModels || isSkill || isGaps || isEval;
   hero.classList.toggle('hide', sidePane || !land);
-  setThreadHidden(sidePane || history.length === 0);
+  // 线程显隐看「画面上有没有真实内容」，不看 history 数组——live/summary 回看
+  // 视图的 history 恒为空但画面有内容，从设置/模型页退回时不能把它们藏掉
+  //（否则线程 display:none 后发送框被顶到页面最上方，看起来像回到落地页）。
+  setThreadHidden(sidePane || !(history.length > 0 || logHasContent()
+    || (liveTask && liveTask.status === 'running')));
   if(!sidePane) rebuildRail();   // 离开对话视图时收起右侧回溯导航
   $('btnBack').classList.toggle('hide', !sidePane);
   $('btnMenu').classList.toggle('hide', sidePane);
