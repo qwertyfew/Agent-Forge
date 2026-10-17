@@ -88,8 +88,11 @@ def _restart_command(py: str | None = None, pyw: str | None = None) -> str:
     return (
         'ping -n 3 127.0.0.1 >nul'          # ≈2s：先让这条 HTTP 响应发出去（stop 连本服务一起停）
         f' & "{py}" service.py --stop'
+        ' & echo [chain] STOP_EXIT=%ERRORLEVEL%'
         ' & ping -n 4 127.0.0.1 >nul'       # ≈3s：等端口释放
+        ' & echo [chain] BEFORE_START'
         f' & start "" "{pyw}" service.py'   # start "" 的空标题参数防止路径被当成窗口名
+        ' & echo [chain] START_EXIT=%ERRORLEVEL%'
     )
 
 
@@ -2190,12 +2193,19 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"error": locked}, 429)
             return
         try:
+            # 链的输出落文件而非 DEVNULL：这整条链在「停自己」的语境下跑，
+            # 任何一步静默失败（尤其最后的 start）都意味着服务永远回不来、
+            # 页面干等 120s 超时。留一份现场，故障才有得查。
+            chain_log = open(HERE / ".run" / "restart_chain.log", "a",
+                             encoding="utf-8", errors="replace")
+            chain_log.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} 重启链发起 ---\n")
+            chain_log.flush()
             subprocess.Popen(
                 _restart_command(), cwd=str(HERE), shell=True,
                 # CREATE_NO_WINDOW：隐藏控制台，子进程继承后也不再弹窗
                 # （service.py 同款教训）；NEW_PROCESS_GROUP 不被连坐。
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=chain_log, stderr=subprocess.STDOUT,
             )
         except Exception as e:  # noqa: BLE001
             self._json({"error": f"重启指令发起失败：{type(e).__name__}: {e}"}, 500)
