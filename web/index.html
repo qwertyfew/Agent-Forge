@@ -4895,7 +4895,8 @@ $('wsMeta').onclick = async () => {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({path: $('ws').textContent})
   }).then(x=>x.json()).catch(e=>({ok:false,error:String(e)}));
-  if(r && !r.ok) console.warn('打开文件夹失败：', r.error);
+  // 失败必须可见：服务失联/路径校验拒绝时用户点了个寂寞，console.warn 等于没说
+  if(r && !r.ok) toast(null, '打开文件夹失败：' + (r.error || '服务未响应，请确认服务已启动'), 'bad');
 };
 
 /* ================= 消息渲染 ================= */
