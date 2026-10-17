@@ -171,16 +171,10 @@ class Config:
     # 由一个本地决策模型把请求拆成【语义独立】的任务、指派执行 agent、维护共享进度，
     # 任务在 agent 之间接力流转。模型不可用或输出无法解析时自动回退到规则拆解。
     dispatcher_enabled: bool = True
-    # goal 保真核查（dispatcher.missing_deliverables）：拆分完成后程序比对——用户原文
-    # 点名的交付物（文件名 / 路径 / 引号内容）是否都出现在某个 goal 里；缺了先拒收
-    # 重拆一次，仍缺就程序化补进最相关任务的 goal 并记缺口台账。
-    # 治「通读素材并覆盖写入 outline.md 被拆成『分析素材并给结论』」这类范围缩水。
-    goal_fidelity_gate: bool = True
     # 决策/调度模型。默认 Qwen3-14B：拆解与交接能力强、中文好，Q4 量化约 9GB，
     # 16GB 显存能跑（32B 的 Q4 约 20GB，16GB 卡放不下）。可在「可用模型管理」里
     # 换成任意本地或在线模型（留空=关闭调度，回退到规则拆解）。
     dispatcher_model: str = "qwen3.5:4b"
-    dispatcher_max_tasks: int = 6
     # 独立任务并行执行（互不相关的任务同时跑，减少模型闲置）。只在「完全访问权限」
     # 下生效——并发任务各自弹审批框会互相打架。本地模型仍受 ollama.local_serial 串行约束，
     # 所以并行的收益主要在在线/付费模型上。
@@ -192,7 +186,14 @@ class Config:
     # 是否允许决策模型自己动手执行「简单对话」类任务（闲聊/解释，不碰工具不做计算）。
     # 工具/代码/数学/写作/分析这类要真本事的任务无论开关如何都不会派给决策模型。
     dispatcher_execute_simple: bool = True
-    dispatcher_synthesis: bool = True      # 收尾由决策模型把各 agent 结果汇总成一份答复
+
+    # ---- Leader 双环调度（第 47 步：七步架构更新）----
+    # 评估环轮次上限（规划→执行→判定为 1 轮）。Leader 上下文有固定槽位保护、
+    # 头部字节稳定可吃服务端缓存，轮次成本远低于员工执行轮，可以给多。
+    leader_max_rounds: int = 12
+    # 步骤⑤语义验收未通过后的整体重试次数（失败原因回灌重新规划）。
+    # 0 = 语义验收不过也直接放行（附系统侧声明）。
+    leader_max_retries: int = 2
 
     # ---- 工具按需下发（省固定开销，见 agentforge/toolselect.py）----
     tools_lazy: bool = True            # True = 只下发核心 + 关键词命中的工具
@@ -313,17 +314,22 @@ class Config:
 
         d = a.get("dispatcher", {}) or {}
         cfg.dispatcher_enabled = bool(d.get("enabled", cfg.dispatcher_enabled))
-        # goal 保真核查：拆分后比对交付物名词，丢了先重拆一次、再程序化补进 goal
-        cfg.goal_fidelity_gate = bool(d.get("goal_fidelity_gate", cfg.goal_fidelity_gate))
         cfg.dispatcher_model = str(d.get("model", cfg.dispatcher_model))
-        cfg.dispatcher_max_tasks = int(d.get("max_tasks", cfg.dispatcher_max_tasks))
         cfg.dispatcher_parallel = bool(d.get("parallel", cfg.dispatcher_parallel))
         cfg.dispatcher_translate = bool(d.get("translate", cfg.dispatcher_translate))
         cfg.dispatcher_bridge_threshold = int(
             d.get("bridge_threshold", cfg.dispatcher_bridge_threshold))
         cfg.dispatcher_execute_simple = bool(
             d.get("execute_simple", cfg.dispatcher_execute_simple))
-        cfg.dispatcher_synthesis = bool(d.get("synthesis", cfg.dispatcher_synthesis))
+
+        # ---- Leader 双环调度（第 47 步：七步架构更新）----
+        # 评估环：每轮「规划→执行→判定+规划+精简」算一轮，轮次可以给多——
+        # 员工的执行才是 token 大头，Leader 自身的上下文有固定槽位保护不膨胀。
+        ld = raw.get("leader", {}) or {}
+        cfg.leader_max_rounds = max(1, int(ld.get("max_rounds", cfg.leader_max_rounds)))
+        # 失败重试：语义验收未通过后带着失败原因重新规划的整体重试次数。
+        # 2 与任务级闸门的「至多三次执行」约定同口径。
+        cfg.leader_max_retries = max(0, int(ld.get("max_retries", cfg.leader_max_retries)))
 
         t = raw.get("tools", {}) or {}
         cfg.tools_lazy = bool(t.get("lazy", cfg.tools_lazy))

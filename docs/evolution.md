@@ -1827,3 +1827,158 @@ skillAdminList、paidProvider）；本次已把审计做成脚本化检查，回
    后台；快照回来按服务端真相重渲染，失败才回滚重渲染。真机复测：填充与提示
    均在 **14ms** 内出现（150 倍）。「应用」按钮等一次性动作仍等确认后再提示（语义
    不同：那是批量落盘，需要真实结果）。
+
+## 第 45 步：付费实测的时机收敛 + 计数字号统一（2026-10-16）
+
+1. **条目集计数与栏目名同款**：`.sec-count` 从 11px 灰字改为 13px / 650 字重 / 正文色，
+   与 h4 栏目名完全一致——对齐侧栏「任务(11)」计数与标题融为一体的关系，
+   七个条目集（记忆/模型/技能/工具/缺口/评测集/报告）一并生效。
+
+2. **付费模型实测只在进入「模型管理」时跑一次**：原来是渲染出勾选框就测 + 5 分钟 TTL
+   缓存，页面一加载就抢连接。改为 `showView('models')` 里 epoch++ 并清空 `paidTest`，
+   `ensurePaidTests` 双重护栏（`view === 'models'` + epoch 未跑过）——退出重进才重测，
+   旧 epoch 的迟到结果直接作废。实测中显示「测试中」徽标（`.badge.testing`，
+   与维度 chip「上下文 88」同款 `--ink2` 字色）、勾选框禁用；通过则标签整体消失，
+   不通过维持 ⊘ 无法勾选。
+
+3. **实测不过自动取消勾选**：之前勾着、进页实测却没通过的付费模型，前端把 enabled
+   置 false 并立即 POST 全量 enable ids 落盘，弹橙色提示；勾选框恢复未勾的正常表现。
+   与第 41 步 best_combo 排除不可用模型形成前后端双保险。
+
+4. **实测与本地勾选彻底解耦**：测试请求只在模型管理页内、每轮一次，不再在首屏/切页
+   时排队；本地模型勾选继续走乐观更新（14ms），实测的慢往返不再吃掉浏览器的连接池。
+
+回归：test_models_view.mjs 29 项全过（原 20 项 + 新增 T1-T9：每轮只测一次、
+页外不测、测试中禁勾、通过标签消失、退出重进重测、实测不过自动取消勾选、
+不影响本地勾选）。
+
+### 第 45 步补记：前端文案与现行记忆/技能规则对齐（2026-10-16）
+
+`_AUTONOTE_OFF` 短路后有两处文案还在描述已停用的行为，全部如实化：
+
+- **记忆**：pane 说明与问号卡片不再说「明说『记住/以后』由规则直接收录、收尾再提炼」，
+  改为「写入由确认驱动：补充信息弹窗先问是否存入、＋手动添加、任务里模型可用
+  remember 工具写入（自动判重）；收尾不做自动沉淀」。空态文案同步。
+- **技能**：核对发现 `_AUTONOTE_OFF` 连带停用了技能自动提炼（pick_extractor 被短路，
+  autoskill 线程不再启动）——pane 说明、问号卡片、空态均改为「以安装得到为主，
+  收尾自动提炼当前已停用」。侧栏两个 nav 的 title 去掉「任务自动沉淀」字样。
+- 死路径注释如实化（memKnownCount/checkMemoryGrew/checkSkillGrew 保留为兜底旁路变化，
+  done 里的 20s 二次补查删除）。SSE skill/memory 事件处理保留：恢复提炼开关后无需改前端。
+
+### 第 45 步补记二：落地页布局重锚（2026-10-16）
+
+新建任务界面三条要求：hero 与发送框上移、发送框加号（上传按钮）中心 = 页面水平
+中线（50vh）、发送框等比放大几乎占满页面（hero 标题仍居中、字号不变）。
+
+- **锚定方式**：放弃「hero 与 composer-wrap 各占一半 flex、交汇于中线」的旧方案，
+  改为 hero 固定高度 `calc(50vh - 144px)`（= 50vh − 92px 加号偏移 − 52px 顶栏），
+  把发送框顶到 50vh − 92px，加号中心正好落在 50vh。92 = 卡片边框 1 + 内边距 14 +
+  输入框 min-height 62 + 按钮半高 15。
+- **宽度**：落地态 `main.land .composer{max-width:none;margin:0}`——坑：flex 容器里
+  水平 auto 外边距优先于 stretch，会把发送框压成按钮行的内容宽（实测 540px），
+  margin 归零才恢复满宽（左右各留 wrap 的 24px 边距）。
+- 真机验证（Edge headless + CDP，`tools/verify_landing_layout.py`）：中线偏差 1px、
+  左右边距 24px、标题居中且 30px，三项全过。窗口过矮时 hero 有 96px 下限兜底。
+
+### 第 45 步补记三：上下文圈双卡片 + 回看贴底 + 402 收尾（2026-10-16）
+
+1. **圈悬停的双卡片**：圆角卡片（全局悬停引擎）与原生 title 方角气泡同屏——
+   引擎要 1.5s 延迟，浏览器原生气泡 ~1s 就冒出来；任务执行中每轮 stats 重渲染
+   还会让元素带新 title 反复触发。改挂 `data-tip`（引擎同样认、原生气泡永不出现）；
+   `cursor:help` 改 default——help 光标自带跟随鼠标的问号（第 44 步同款坑）。
+
+2. **点进任务自动落最后一行**：`threadPinned`（回看标志）会从上一个画面残留、
+   隐藏对话区时排队的滚动恢复 RAF 会把旧位置写回——普通 scrollBottom 被 早退/覆盖。
+   新增 `forceScrollBottom()`（清 pinned + 清恢复 RAF + 本帧/下一帧各贴底一次），
+   `enterTaskView` 与 openTask 的运行中早退路径改用它。真机验证：进入与
+   「向上翻过再进入」两种路径 bottomGap 均 0px（tools/verify_ctx_scroll.py）。
+
+3. **402 中断后圈与压缩按钮消失**：实证台账——该任务 history 为空、无任何 stats，
+   402 打在**第一次模型调用**上（决策模型欠费）：圈的数据源是每轮调用的实测
+   prompt_tokens，没有一轮成功就无圈可画；压缩按钮有历史才出现。属数据缺席非显示
+   bug。顺带把 error 事件分支补上 `endLiveTask('error')`——与 stopped/done 同口径，
+   当场收「任务执行中」状态条，不再等 5s 轮询兜底。
+
+回归：test_models_view.mjs 29 项全过（C3/C4 改读 data-tip 并加无原生 title 断言）。
+
+### 第 46 步补记：docs/internals/ 关键细节存档（2026-10-17）
+
+新增 `docs/internals/` 文件夹，记录「代码里实际怎么做」级别的机制细节，与
+evolution（演进叙事）互补。首批两篇：
+
+- **01-意图识别**：核实并记录意图识别全程零 LLM——`_worth_dispatch` =
+  `needs_plan`（池≥2 且规则切分≥2 段）`or len(message) >= 60`；REA 任务是
+  命中「≥60 字符」分支判定的。
+- **02-第一次调用输入**：逐字记录调度调用（拆分+分配）的完整输入——messages
+  只有 system（DISPATCH_SYSTEM 渲染后 2310 字符 ≈825 tokens，含一行模型目录）
+  + user（用户原文 1098 字符），temperature 0.2 / num_predict 2048 / 无工具；
+  整次 ≈1200 tokens。附复现方式。
+
+### 第 46 步补记二：调度提示词约束清单（2026-10-17）
+
+internals 新增 03 篇：DISPATCH_SYSTEM 17 条约束逐条列表 + 4 个误导风险点
+（「宁可多拆」无对冲是成本放大器、单模型池下仍强制拆、goal 整段抄原文、
+复制示例死重量）+ 两层化简方案。**仅分析未改动**，第二层涉及第 42 步
+「宁可多拆」的用户决策，等拍板。
+
+## 第 47 步：Leader 双环架构（七步架构更新，2026-10-17）
+
+用户口述新执行逻辑并逐条确认，取代旧「决策模型一次拆完 → 拓扑排序跑完 → synthesize
+汇总」的多 agent 路径。旧七步心智模型的 ②③④⑤⑥ 重构，①（意图识别，纯规则）与
+⑦（输出）不变；README「核心设计」的多任务并行**保留**。
+
+### 新流程（run_leader，agentforge/leader.py + orchestrator.py）
+
+1. **步骤①不变**：entries/能力表由架构给出，零 LLM；
+2. **步骤② 规划**：Leader（决策模型）每轮只规划【下一批 1~N 个小步骤】，仅相互
+   独立的才可同批；每个小步骤须能概括为六类能力（coding/inspect/writing/math/
+   analysis/general）中**一类且仅一类**；小步骤提示词两条边界——必须自包含操作
+   信息（路径/文件/期望产出/交付物/验证命令原样保留）、不含任务总目标叙事；
+3. **步骤③ 执行**：员工并行执行（各起一线程、事件带 task_id 流式），内环是多轮
+   工具调用的完整 agent 循环，但用户消息只有 Leader 的小步骤提示词——员工上下文
+   不再背【总任务】全文（旧 AGENT_TASK_TEMPLATE 的膨胀源移除）；任务级程序闸门
+   （验证命令亲跑/交付物核查/修正轮）前置到每个小步骤收尾；
+4. **步骤④ 评估环**：一次 Leader 调用同时完成「完成判定（对照原文逐项）+ 规划
+   下一批 + 精简历史（note 滚动覆盖）」；失败原因由 Leader 给出，累积保留最近
+   K=3 条；本批执行结果全量进 Leader 不截断，"更新完再压缩"；
+5. **步骤⑤ 双轨验收**：程序裁定照旧（_verify_gate：验证命令、交付物 mtime 快照、
+   修正轮 ≤2）+ Leader 语义判定（只看 原文+拟回答，判是否覆盖原文要求）；不过则
+   失败原因压入槽位重新执行②-④，重试 ≤2 次，到限放行并附系统侧声明（不 死循环）。
+
+### Leader 上下文固定槽位（架构级保护，不是提示词约定）
+
+```
+[system] [任务原文·不可变] [失败原因·最近K条] [历史摘要·滚动] [本批全量·只活一轮]
+```
+
+精简/替换只发生在摘要槽——原文与失败原因压缩器根本碰不到；头部字节级稳定，
+DeepSeek 等服务端上下文缓存可完整命中（第 46 步诊断的「缓存被架构性击穿」由此
+根治）。轮次上限 12 / 重试上限 2 为默认值，前端「模型管理」底部两个数字框直接改
+（set_leader 动作 + _write_leader 落盘 + 热更新）。
+
+### 退役与保留
+
+- **退役**：dispatcher 的 plan/_llm_plan/_rules_plan/goal 保真/missing_deliverables/
+  SharedState 黑板/synthesize/DISPATCH_SYSTEM/SYNTH_SYSTEM；orchestrator 的
+  run_multi_agent/_topo_order/_ready_batch/_produced_files；配置 goal_fidelity_gate/
+  dispatcher_max_tasks/dispatcher_synthesis；tools/test_goal_fidelity.py。
+- **语义去向**：goal 保真 → Leader 提示词硬约束 + 步骤⑤语义验收；接力简报 →
+  Leader 滚动摘要；复制任务验证声明（f4）→ 程序侧 declare_copy_check 照旧对批次
+  步骤补强。
+- **保留复用**：Dispatcher._resolve 指派全语义（决策模型不接重活、点名偏弱改派、
+  原因如实播报）、_chat/translate（能力桥接）、两级程序闸门、_verify_gate、
+  ReadCache、本地串行闸门、并行线程池事件汇聚。
+
+### 事件兼容
+
+dispatch/plan/assign/subtask/task_done/artifacts/complete 全部保留原负载形状
+（前端计划卡每批一张，滚动追加）；新增 leader_round 事件（每轮规划/判定结论，
+前端胶囊播报，滚动规划对用户可见）。
+
+### 回归
+
+- tools/test_leader.py 新增 33 项（槽位保护/全量进 Leader/原因 K 条裁剪/parse
+  容错/提示词硬约束在位）全过；
+- test_planner / test_toolselect / test_resume 全过（test_planner 的提示词断言
+  随提示词更替同步）；webui 导入与语法过；test_models_view.mjs 29 项全过。
+- 待办：真机端到端跑一条真实任务验证事件流与成本曲线（需模型余额）。

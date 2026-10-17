@@ -168,10 +168,11 @@ def test_kind_contract() -> None:
 
 
 def test_dispatcher_prompt_lists_every_kind() -> None:
-    """调度提示里得把每种 kind 都告诉决策模型，否则它永远拆不出这一类。"""
-    from agentforge.dispatcher import DISPATCH_SYSTEM, NOT_SIMPLE_KINDS
-    for k in KIND_LABEL:
-        check(f"调度提示写到「{k}」", k in DISPATCH_SYSTEM)
+    """Leader 规划提示里得把每种 kind 都告诉决策模型，否则它永远拆不出这一类。"""
+    from agentforge.leader import LEADER_PLAN_SYSTEM, KINDS
+    from agentforge.dispatcher import NOT_SIMPLE_KINDS
+    for k in KINDS:
+        check(f"Leader 提示写到「{k}」", k in LEADER_PLAN_SYSTEM)
     for k in ("coding", "writing", "analysis", "math", "inspect"):
         check(f"「{k}」算重活（不交给只会调度的小模型）", k in NOT_SIMPLE_KINDS)
 
@@ -223,9 +224,12 @@ def test_short_title() -> None:
     src = _inspect.getsource(_d)
     check("dispatcher 里不再有 goal[:26] 这种硬切", "goal[:26]" not in src, "还有硬切")
     check("dispatcher 用的是 planner.short_title", "short_title" in src)
-    # 同上：光有 resolve_kind 这个函数不算数，采纳调度模型的 kind 时必须真的过它
-    check("dispatcher 采纳调度模型的 kind 时过了规则复核",
-          "resolve_kind(" in src, "没接上 resolve_kind")
+    # 同上：光有 kind_of 这个函数不算数，Leader 采纳批次条目的 kind 时必须真的过它
+    # （第 47 步起 kind 采纳点从旧 dispatcher.plan 移到了 leader.parse_batch）
+    from agentforge import leader as _l
+    lsrc = _inspect.getsource(_l)
+    check("Leader 采纳批次 kind 时过了规则复核（kind_of 兜底）",
+          "kind_of(" in lsrc, "没接上 kind_of")
 
 
 def main() -> None:

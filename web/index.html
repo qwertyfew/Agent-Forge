@@ -208,12 +208,17 @@
   .ctx-ring .fg.hot{stroke:var(--err)}
   /* 第 42 步：每模型上下文占用圈 */
   .ctx-rings{display:flex;align-items:center;gap:5px}
-  .ctx-ring-wrap{display:inline-flex;cursor:help}
+  /* cursor 用 default 不用 help：help 光标自带一个跟着鼠标走的问号（第 44 步同款坑）；
+     悬停说明交给全局悬停卡片引擎（data-tip），不再挂原生 title——原生 title 的
+     方角气泡和圆角卡片会同时出现（双卡片），重渲染时还会闪 */
+  .ctx-ring-wrap{display:inline-flex;cursor:default}
   /* 规则7：模型勾选=橙色填充（与发送框「完全访问权限」开启时同色系） */
   /* 规则7：勾选的模型整个卡片淡橙填满（与「完全访问权限」开启同色）。
      注意要填 .aitem——它是带底色的可见卡片，填在 .it-body 上会被它盖住。 */
   .it-row.m-on .aitem{background:var(--orange-soft);border-color:var(--orange)}
   .badge.blocked{color:var(--err);border-color:var(--err)}
+  /* 付费模型连接实测中：与维度 chip（如「上下文 88」）同款字体颜色 */
+  .badge.testing{color:var(--ink2);border-color:var(--line2)}
   .chip.top{border-color:var(--ok);color:var(--ok)}
   .mv-warn{font-size:12px;line-height:1.55;color:var(--err);background:var(--err-soft);
     border:1px solid var(--err);border-radius:9px;padding:7px 9px;margin-bottom:8px}
@@ -377,7 +382,8 @@
 
   /* ============ 栏目统一规则（第 38 步）============ */
   /* 集合头：名字 + 计数(N) + 小问号 + 右端加号 */
-  .sec-count{font-size:11px;color:var(--ink3);white-space:nowrap}
+  /* 计数与「任务(11)」同款关系：和栏目名同字号同字重同色，看起来是一个整体 */
+  .sec-count{font-size:13px;font-weight:650;color:var(--ink);white-space:nowrap}
   .sk-sec-head .sp{flex:1}
   /* 圆形小问号：悬停弹富卡片（文字 + 可点击文件路径）。
      问号用 ::after 画在圆心；整体抬到名字右上角（上标位） */
@@ -466,12 +472,14 @@
 
   /* 首页 Hero：落地态大标题。输入框节点永不搬家（防跳动类 bug 的根），
      位置只由 CSS 状态类切换：常态钉在对话页底部；落地态（main.land，由
-     isLanding 驱动）hero 与 composer-wrap 各占一半 flex——标题沉底、输入框
-     浮顶，交汇于页面中线，视觉上成组居中。各页面独立渲染互不挪节点。 */
+     isLanding 驱动）以「发送框左侧＋按钮的中心 = 页面水平中线（50vh）」为锚——
+     hero 用固定高度把发送框顶到中线上方 92px（加号中心的偏移），标题沉在
+     发送框正上方且水平居中，整组落在页面上半区。 */
   .hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 24px 8px}
   .hero h1{margin:0;font-size:30px;font-weight:650;letter-spacing:.2px}
   .hero .hint{margin-top:9px}
-  main.land .hero{justify-content:flex-end;padding-bottom:16px}
+  main.land .hero{flex:0 0 auto;height:max(96px, calc(50vh - 144px));
+    justify-content:flex-end;padding-bottom:16px}
 
   /* 对话流 */
   .thread{flex:1;overflow-y:auto;scrollbar-width:thin}
@@ -697,9 +705,14 @@
 
   /* ============ 输入区 ============ */
   .composer-wrap{padding:6px 24px 12px;flex:none}
-  /* 落地态：发送框上移到页面中部与 hero 标题成组——纯 CSS 换样式，不挪节点 */
-  main.land .composer-wrap{flex:1;display:flex;flex-direction:column;justify-content:flex-start;padding-top:0}
   .composer{max-width:760px;margin:0 auto;position:relative}
+  /* 落地态：发送框上移 + 等比放大——左侧加号（上传按钮）中心锚在页面水平中线
+     （50vh）。发送框顶到加号中心的距离 = 卡片边框1 + 内边距14 + 输入框62（min-height）
+     + 按钮半高15 = 92px，故发送框顶 = 50vh − 92px，由 hero 的固定高度顶出；
+     宽向放开 max-width 几乎占满页面（只留 wrap 的 24px 边距）。纯 CSS 换样式，不挪节点。 */
+  main.land .composer-wrap{flex:1;display:flex;flex-direction:column;justify-content:flex-start;padding-top:0}
+  /* margin 必须归零：flex 容器里水平 auto 外边距优先于 stretch，会把发送框压成按钮行的内容宽 */
+  main.land .composer{max-width:none;margin:0}
   .c-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
     box-shadow:var(--shadow);padding:14px 14px 12px}
   .c-card:focus-within{border-color:var(--line2)}
@@ -838,6 +851,8 @@
     background:var(--panel);color:var(--ink);outline:none;font-size:12.5px;min-width:230px;max-width:340px}
   .dsel .fhint{margin-top:6px;font-size:11.5px;color:var(--ink3);display:block}
   .dsel .fhint.bad{color:var(--warn,#c08000)}
+  .num-in{width:64px;height:30px;padding:0 8px;border:1px solid var(--line2);
+          border-radius:8px;background:var(--bg2);color:var(--ink);font-size:12.5px}
 
   /* 添加付费模型 */
   .addpaid{margin-top:22px;border:1px dashed var(--line2);border-radius:14px;padding:16px}
@@ -1019,7 +1034,7 @@
       </button>
       <!-- 新建任务下方的栏目：记忆管理 + 模型管理 + 技能工具，后续新栏目继续往下排 -->
       <div class="side-nav">
-        <button class="nav-item" id="navMemory" title="查看与管理任务自动沉淀的记忆">
+        <button class="nav-item" id="navMemory" title="查看与管理长期记忆">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3L2.5 8 12 13l9.5-5z"/><path d="M2.5 12.5L12 17.5l9.5-5"/><path d="M2.5 17L12 22l9.5-5"/></svg>
           <span class="nt" id="memNavLabel">记忆管理</span>
         </button>
@@ -1027,7 +1042,7 @@
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/></svg>
           <span class="nt" id="modelsNavLabel">模型管理</span>
         </button>
-        <button class="nav-item" id="navSkill" title="查看与管理任务自动沉淀的技能与可调用的工具">
+        <button class="nav-item" id="navSkill" title="查看与管理技能与可调用的工具">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19a1 1 0 0 1 1 1v13a2.5 2.5 0 0 0-2.5-2.5H6.5A2.5 2.5 0 0 1 4 12z"/><path d="M4 12a2.5 2.5 0 0 1 2.5-2.5H20"/><path d="M9 8h7M9 11h5"/></svg>
           <span class="nt" id="skillNavLabel">技能工具</span>
         </button>
@@ -1223,8 +1238,9 @@
             <div>
               <h3>记忆管理</h3>
               <p>
-                这里只存放<b>用户的长期偏好</b>：你在对话里明说「记住 / 以后 / 每次都…」的偏好由规则直接收录；
-                任务收尾时还会用最便宜的本地模型再提炼一两条。
+                这里只存放<b>用户的长期偏好</b>，写入由你掌控：出现补充信息弹窗时会先问
+                「是否存入记忆」，确认才写；也可以在下面点＋手动添加；任务里模型也可用
+                remember 工具记下你的偏好（同一份文件、自动判重）。任务收尾<b>不做自动沉淀</b>。
                 环境事实（路径、端口、版本）工具能现查，项目约定（工作方式、流程）由程序与断言保证，
                 <b>两类都不进这里</b>——写下来也只是「劝」，不如让架构强制。
               </p>
@@ -1237,7 +1253,7 @@
           <div class="sk-sec">
             <div class="sk-sec-head">
               <h4>记忆</h4>
-              <span class="sec-help" data-help="只存放用户的长期偏好：对话里明说「记住 / 以后 / 每次都…」的由规则直接收录，任务收尾时本地模型再提炼。环境事实与项目约定不进这里——写下来只是「劝」，不如让架构强制。" data-helppath=".agentforge/memory.md" data-helplabel="记忆文件"></span>
+              <span class="sec-help" data-help="只存放用户的长期偏好，写入由确认驱动：补充信息弹窗会先问「是否存入记忆」，确认才写；也可点＋手动添加；任务里模型可用 remember 工具主动写入（自动判重）。任务收尾的自动沉淀已停用。环境事实与项目约定不进这里——写下来只是「劝」，不如让架构强制。" data-helppath=".agentforge/memory.md" data-helplabel="记忆文件"></span>
               <span class="sec-count" id="memCount">(0)</span>
               <span class="sp"></span>
               <button class="mini-btn" id="btnMemAdd" title="新增一条记忆">＋</button>
@@ -1258,7 +1274,7 @@
               <p>
                 勾选哪些模型，任务池里就有哪些执行者：复合任务会被拆成<b>按能力类型分层的小步骤</b>
                 （检索 / 分析 / 编码 / 写作…），每一步交给勾选模型中该维度最强的那个。
-                本地模型勾选即用；付费模型保存时自动实测连接，<b>测不通的无法勾选</b>。
+                本地模型勾选即用；进入本页时对付费模型自动实测一次连接，<b>测不通的无法勾选</b>。
                 「自动配置」仍可一键选出覆盖最全的组合；「移除」付费模型会删掉密钥配置，
                 移除本地模型会把它从 Ollama 里真正删除（磁盘文件一并移除）。
               </p>
@@ -1282,7 +1298,8 @@
               <span class="sec-help" data-help="勾选规则：勾选即进入任务池，模型条目会以橙色填充（与发送框「完全访问权限」开启时同色），不用点开就知道勾没勾。
 本地模型串行执行是硬规则：同一时刻只跑一个本地模型，避免并发任务互相抢显存——不再提供开关，恒定生效。
 全选模式：点「全选」勾上全部模型（此时只是待选方案），可逐个调整，点「应用」一次性生效；「退出」关闭全选模式，不改动任何模型的勾选状态。
-付费模型勾选框出现时自动实测连接，测不通的模型带 ⊘ 标记、无法勾选，点条目可看失败原因。" data-helppath="models.json" data-helplabel="模型配置文件"></span>
+进入「模型管理」时自动对付费模型实测一次连接（退出重进才重测）；实测中显示「测试中」、暂不可勾选，
+通过的测试标签整体消失，测不通的带 ⊘ 标记、无法勾选——之前已勾上的会被自动取消勾选，点条目可看失败原因。" data-helppath="models.json" data-helplabel="模型配置文件"></span>
               <span class="sec-count" id="modelCount">(0)</span>
               <span class="sp"></span>
               <button class="mini-btn" id="btnModelAdd" title="新增付费模型">＋</button>
@@ -1303,10 +1320,23 @@
           <div class="routing-status sub" id="routingStatus"></div>
           <div class="dsel">
             <div class="dsel-row">
-              <label for="dispatcherModel">决策模型（多 agent 调度）</label>
-              <select id="dispatcherModel" title="负责把请求拆成小步骤、按能力指派执行 agent 并维护交接的「调度大脑」"></select>
+              <label for="dispatcherModel">决策模型（Leader）</label>
+              <select id="dispatcherModel" title="Leader：滚动规划小步骤批次、评估执行结果、语义验收——只规划与验收，不亲自执行"></select>
             </div>
             <span class="fhint" id="dispatcherStatus"></span>
+          </div>
+          <div class="dsel">
+            <div class="dsel-row">
+              <label for="leaderMaxRounds">Leader 环：评估轮次 / 失败重试</label>
+              <span class="sp"></span>
+              <input type="number" id="leaderMaxRounds" class="num-in" min="1" max="60"
+                     title="评估环上限：规划→员工执行→判定+精简 算一轮。Leader 上下文有固定槽位保护，轮次成本低，可以给多">
+              <span class="fhint">轮 /</span>
+              <input type="number" id="leaderMaxRetries" class="num-in" min="0" max="10"
+                     title="语义验收未通过后，带失败原因重新规划的整体重试次数">
+              <span class="fhint">次重试</span>
+            </div>
+            <span class="fhint" id="leaderHint"></span>
           </div>
         </div>
       </div>
@@ -1321,8 +1351,9 @@
               <h3>技能工具</h3>
               <p>
                 两个条目集。<b>技能</b>：Agent Skills 开放标准，一份带 frontmatter 的 SKILL.md，
-                任务命中触发词时正文自动注入上下文；有「提取得到」（Agent 跑完任务自己提炼沉淀）
-                与「安装得到」（放进 skills/ 目录）两个来源，每张卡片展示版本、触发边界与附带资源。
+                任务命中触发词时正文自动注入上下文；来源以「安装得到」为主——
+                把含 SKILL.md 的目录放进技能目录即可（收尾自动提炼当前已停用），
+                每张卡片展示版本、触发边界与附带资源。
                 <b>工具</b>：模型可调用的全部工具，含运行时热加载的插件工具；标「需审批」的在
                 默认权限下执行前会请求确认，切到「完全访问权限」后直接执行。
               </p>
@@ -1336,7 +1367,7 @@
           <div class="sk-sec">
             <div class="sk-sec-head">
               <h4>技能</h4>
-              <span class="sec-help" data-help="「提取得到」：任务收尾时由自检机制自动提炼；「安装得到」：把含 SKILL.md 的目录放进技能目录即可。删除会连同技能目录一起备份到 .run/。" data-helppath="skills" data-helplabel="技能目录"></span>
+              <span class="sec-help" data-help="「安装得到」：把含 SKILL.md 的目录放进技能目录即可；「提取得到」（任务收尾时自动提炼）当前已停用。删除会连同技能目录一起备份到 .run/。" data-helppath="skills" data-helplabel="技能目录"></span>
               <span class="sec-count" id="skCount">(0)</span>
             </div>
             <div class="alist" id="skillList"></div>
@@ -1539,6 +1570,16 @@ function scrollBottom(){
   const near = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 140;
   if(near || !busy) thread.scrollTop = thread.scrollHeight;
 }
+/* 点进任务（回看 / 接管运行中）必须落在最后一行。threadPinned 是「用户在回看」
+   的标志，会从上一个画面残留；隐藏对话区时排队的滚动恢复 RAF 还会把旧位置
+   写回来——两个都会让普通 scrollBottom 早退或被覆盖。进任务 = 换画面：
+   全部清掉，强制贴底（本帧 + 下一帧各一次，第二次兜住渲染后高度才长出来的情况）。 */
+function forceScrollBottom(){
+  threadPinned = false;
+  cancelAnimationFrame(threadScrollRAF);
+  threadScrollRAF = requestAnimationFrame(()=>{ thread.scrollTop = thread.scrollHeight; });
+  thread.scrollTop = thread.scrollHeight;
+}
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 /* ================= 只读接口请求（失败必须说出来）=================
@@ -1608,7 +1649,8 @@ if($('offlineRetry')) $('offlineRetry').onclick = ()=> location.reload();
 
 /* ================= 空态（落地页）=================
    输入框节点永不搬家（页面独立渲染，互不搬节点——防跳动类 bug 的根）。
-   落地态（全新空对话、零消息）hero 标题与发送框经 main.land 纯 CSS 成组居中；
+   落地态（全新空对话、零消息）hero 标题与发送框经 main.land 纯 CSS 成组：
+   发送框加号中心锚在页面水平中线（50vh），宽向几乎占满页面，标题在其上方居中；
    发出第一条消息后落地态收起，发送框回到底部——两态切换只换样式不碰 DOM 结构。
    执行中点「新建任务」与空闲时点，效果完全一致。 */
 let attachments = [];          // 已上传附件：[{name, path}]
@@ -1685,7 +1727,14 @@ function showView(v){
   $('btnMenu').classList.toggle('hide', sidePane);
   if(isSet) $('topTitle').textContent = '设置';
   else if(isMem) $('topTitle').textContent = '记忆管理';
-  else if(isModels) $('topTitle').textContent = '模型管理';
+  else if(isModels){
+    $('topTitle').textContent = '模型管理';
+    // 付费模型连接实测只在进入「模型管理」时触发，且每次进入只测这一轮；
+    // 退出重进才重测。旧结果全部作废，避免拿上一轮的缓存糊弄人。
+    paidTestEpoch++;
+    for(const k of Object.keys(paidTest)) delete paidTest[k];
+    ensurePaidTests();
+  }
   else if(isSkill) $('topTitle').textContent = '技能工具';
   else if(isGaps) $('topTitle').textContent = '能力缺口';
   else if(isEval) $('topTitle').textContent = '评测台';
@@ -2033,7 +2082,8 @@ $('btnModelApply').onclick = async ()=>{
 $('btnModelAdd').onclick = openAddPaidModal;
 
 /* ================= 记忆管理 =================
-   任务跑完会自动往工作区记忆里沉淀「用户偏好」（规则 + 本地模型提炼），
+   写入由确认驱动：补充信息弹窗确认「存入记忆」、本页＋手动添加、
+   任务里模型主动调 remember 工具；收尾的自动沉淀已在 webui 侧停用。
    这个页面负责查看、手动补充、逐条删除与整体清空。记忆不分层。 */
 function memBadge(n){
   // 栏目文字固定，不再追加条数（用户要求去掉「记忆管理(6)」里的计数）
@@ -2075,7 +2125,7 @@ function renderMemory(d){
   if(!items.length){
     if(selState.mem.on) exitSel('mem', false);   // 清空了还停在空列表：自动退出全选
     box.appendChild(el('div','task-empty',
-      '还没有记忆。任务跑完会自动沉淀偏好（你明说「记住 / 以后 / 每次」的内容一定会被收到）；也可以点集合名右侧的＋手动添加。'));
+      '还没有记忆。补充信息弹窗里确认「存入记忆」，或点集合名右侧的＋手动添加，都会写到这里。'));
     return;
   }
   for(const e of items){
@@ -2114,7 +2164,8 @@ async function loadMemory(){
     renderListError($('memList'), e, loadMemory);
   }
 }
-/* 前端记着「已知的记忆条数」，用来判断任务收尾后记忆有没有长出来 */
+/* 前端记着「已知的记忆条数」：自动沉淀停用后，收尾核对只兜旁路增长
+   （比如别的标签页手动加了记忆） */
 let memKnownCount = 0;
 function refreshMemCount(){
   fetch('/api/memory').then(r=>r.json()).then(d=>{
@@ -2122,8 +2173,8 @@ function refreshMemCount(){
     memBadge(d.count || 0);
   }).catch(()=>{});
 }
-/* 后台的记忆提炼（线程里跑）可能晚于 done 才落盘，收尾后核对一次条数，
-   有新增就补一条提示，免得「记忆悄悄多了但用户不知道」。 */
+/* 自动沉淀已停用；保留这次核对只为兜底：其它标签页手动增删记忆时，
+   有新增才补提示，平时不再弹「设为记忆」。 */
 function checkMemoryGrew(){
   fetch('/api/memory').then(r=>r.json()).then(d=>{
     const now = d.count || 0;
@@ -2150,8 +2201,9 @@ $('btnMemAdd').onclick = ()=>{
 /* 「全部清空」已由行内全选清理取代（见 selState / confirmSel） */
 
 /* ================= 技能管理 =================
-   两块：「提取得到的技能」（Agent 自检机制沉淀，frontmatter 带 auto_learned）
-   和「安装得到的技能」（放进 skills/ 目录的）。每条给出 名字 / 作用 / 时间 / 路径。 */
+   两块：「提取得到的技能」（收尾自动提炼已停用，存量卡片的 frontmatter 仍带
+   auto_learned 标记）和「安装得到的技能」（放进 skills/ 目录的）。
+   每条给出 名字 / 作用 / 时间 / 路径。 */
 let skillKnownCount = 0;
 /* 行内编辑：正在编辑的技能名（跨重渲染稳定；null = 没有在编辑的） */
 async function skillPost(body){
@@ -2268,7 +2320,7 @@ function renderSkills(d){
   const all = extracted.concat(installed);
   if(!all.length){
     box.appendChild(el('div','task-empty',
-      '还没有技能。任务里浮现出可复用的「方法论」时，收尾会自动提炼；也可以把含 SKILL.md 的目录放进技能目录。'));
+      '还没有技能。把含 SKILL.md 的目录放进技能目录即可（收尾自动提炼当前已停用）。'));
     return;
   }
   for(const s of all) box.appendChild(skillItem(s));
@@ -2385,7 +2437,8 @@ async function loadGaps(){
     renderListError($('gapList'), e, loadGaps);
   }
 }
-/* 后台模型抽取可能晚于 done 才把 skill 落盘：收尾后核对一次，有新增就提示 */
+/* 技能收尾自动提炼已随记忆自动沉淀一并停用（webui 侧 pick_extractor 短路）；
+   保留这次核对只为兜底旁路变化（别的标签页装了技能等）。 */
 function checkSkillGrew(){
   fetch('/api/skills').then(r=>r.json()).then(d=>{
     const now = d.extracted_count || 0;
@@ -2852,8 +2905,9 @@ function refreshModels(){
     catalog = data;
     renderCombo();
     renderModelList();
-    ensurePaidTests();   // 规则5：付费模型勾选框出现时自动实测连接
+    ensurePaidTests();   // 只在模型管理页里生效（进入页面时由 showView 触发本轮实测）
     renderDispatcher();
+    renderLeader();
     updatePoolHint();
     updateApplyButtons();
     // 窗口与固定开销都来自这份目录，拿到后重算一次占比（首屏时它可能还没回来）
@@ -2930,31 +2984,51 @@ function renderCombo(){
   box.appendChild(note);
 }
 
-/* ================= 模型条目（第 42 步规则 5/6/7/9） =================
+/* ================= 模型条目（第 42 步规则 5/6/7/9，第 44 步修订） =================
    条目交互与其他栏目同一套：悬停尾部左滑出「移除」、悬停头部右滑出勾选框、
    点条目开详情弹窗。差异点：普通模式下勾选框点击立即生效（其他栏目是进全选
-   模式）；付费模型渲染时自动实测连接，测不通的禁止勾选并给 ⊘ 标记。 */
+   模式）；付费模型只在进入「模型管理」时实测一次连接（退出重进才重测），
+   实测中显示「测试中」、暂不可勾选；测不通的禁止勾选并给 ⊘ 标记，
+   之前已勾上的会被自动取消勾选。实测只在模型页里跑，不拖累本地模型的勾选。 */
 const paidTest = {};                 // 模型id -> {ok:true/false/null, message, at}
-const PAID_TEST_TTL = 5 * 60 * 1000; // 实测结果缓存 5 分钟，过期重测
+let paidTestEpoch = 0;               // 每进入一次「模型管理」+1
+let paidTestEpochRan = -1;           // 已开测的 epoch；本轮只测这一次
 
 function ensurePaidTests(){
-  if(!catalog) return;
+  if(!catalog || view !== 'models') return;      // 只在模型管理页里测，别处不发测试请求
+  if(paidTestEpochRan === paidTestEpoch) return; // 本次进入已经开测过
+  paidTestEpochRan = paidTestEpoch;
   let pending = false;
   for(const m of (catalog.models || [])){
     if(m.kind !== 'paid') continue;
     const t = paidTest[m.id];
-    if(t && t.ok !== null && (Date.now() - t.at) < PAID_TEST_TTL) continue;   // 结果还新鲜
-    if(t && t.ok === null && (Date.now() - t.at) < 15000) continue;           // 测试中防重入
+    if(t && t.ok !== null) continue;             // 本轮已有结果
     paidTest[m.id] = {ok:null, message:'', at:Date.now()};
     pending = true;
-    const mid = m.id;
+    const mid = m.id, ep = paidTestEpoch;
     fetch('/api/models',{ method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({action:'test', id:mid})})
       .then(x=>x.json())
-      .then(r=>{ paidTest[mid] = {ok:!!r.ok, message:r.message || '', at:Date.now()}; renderModelList(); })
-      .catch(e=>{ paidTest[mid] = {ok:false, message:String(e), at:Date.now()}; renderModelList(); });
+      .then(r=>{
+        if(ep !== paidTestEpoch) return;         // 期间退出重进了：旧结果作废，新一轮会重测
+        paidTest[mid] = {ok:!!r.ok, message:r.message || '', at:Date.now()};
+        const m = catalog.models.find(x=>x.id===mid);
+        // 实测没过但之前勾着：自动取消勾选（本地状态 + 落盘），勾选框恢复未勾的正常表现
+        if(!r.ok && m && m.enabled){
+          m.enabled = false;
+          const ids = catalog.models.filter(x=>x.enabled).map(x=>x.id);
+          postModels({action:'enable', ids});
+          toast(null, `${m.name} 连接测试未通过，已自动取消勾选`, 'warn');
+        }
+        renderModelList();
+      })
+      .catch(e=>{
+        if(ep !== paidTestEpoch) return;
+        paidTest[mid] = {ok:false, message:String(e), at:Date.now()};
+        renderModelList();
+      });
   }
-  if(pending) renderModelList();     // 先画出「连接测试中…」占位
+  if(pending) renderModelList();     // 先画出「测试中」占位
 }
 
 function removeModel(m){
@@ -3082,7 +3156,8 @@ function renderModelList(){
   for(const m of catalog.models){
     const key = m.id;
     const tested = paidTest[m.id];
-    const testing = m.kind === 'paid' && (!tested || tested.ok === null);
+    // 「测试中」= 本轮实测已发起但还没回来（没有测试记录就当正常，不拦勾选）
+    const testing = m.kind === 'paid' && tested && tested.ok === null;
     const lockReason = m.kind === 'paid' && tested && tested.ok === false
       ? (tested.message || '连接失败') : '';
     const body = el('div','aitem');
@@ -3094,7 +3169,7 @@ function renderModelList(){
     if(m.discovered) h.appendChild(el('span','badge warn','自动发现'));
     if(m.source === '估算') h.appendChild(el('span','badge','估算分'));
     if(m.kind === 'local' && !m.available) h.appendChild(el('span','badge warn','未安装'));
-    if(testing) h.appendChild(el('span','badge','连接测试中…'));
+    if(testing) h.appendChild(el('span','badge testing','测试中'));
     if(lockReason) h.appendChild(el('span','badge blocked','⊘ 无法勾选'));
     const ctxWin = (m.spec && m.spec.num_ctx) || m.context_window || 0;
     if(ctxWin){
@@ -3121,7 +3196,8 @@ function renderModelList(){
     const cb = document.createElement('input');
     cb.type = 'checkbox'; cb.className = 'sel-cb';
     cb.checked = checked;
-    if(lockReason){ cb.disabled = true; cb.title = '连接测试未通过，无法勾选：' + lockReason; }
+    if(testing){ cb.disabled = true; cb.title = '连接测试中，测通后即可勾选'; }
+    else if(lockReason){ cb.disabled = true; cb.title = '连接测试未通过，无法勾选：' + lockReason; }
     cb.onclick = e => e.stopPropagation();
     cb.onchange = ()=>{
       if(st.on){
@@ -3517,8 +3593,33 @@ $('dispatcherModel').onchange = async function(){
   const r = await postModels({action:'set_dispatcher', model});
   if(r.error){ toast(this, r.error, 'bad'); renderDispatcher(); return; }
   catalog = r; renderDispatcher();
-  toast(this, model ? '决策模型已更新，多 agent 调度立即生效' : '已关闭多 agent 调度', 'ok');
+  toast(this, model ? '决策模型已更新，Leader 调度立即生效' : '已关闭 Leader 调度', 'ok');
 };
+
+/* ---- Leader 环轮次配置（第 47 步）：评估轮次 / 失败重试 ---- */
+function renderLeader(){
+  const r = $('leaderMaxRounds'), x = $('leaderMaxRetries'), hint = $('leaderHint');
+  if(!r || !x || !catalog) return;
+  const d = catalog.leader || {};
+  if(document.activeElement !== r) r.value = d.max_rounds ?? 12;
+  if(document.activeElement !== x) x.value = d.max_retries ?? 2;
+  if(hint){
+    hint.textContent = '默认：评估 12 轮（Leader 上下文有固定槽位保护、头部稳定可吃模型端缓存，'
+      + '轮次成本远低于员工执行）；语义验收失败重试 2 次，重试会把失败原因硬性带回下一轮规划。';
+  }
+}
+async function saveLeader(){
+  const r = $('leaderMaxRounds'), x = $('leaderMaxRetries');
+  const max_rounds = Math.min(60, Math.max(1, parseInt(r.value, 10) || 12));
+  const max_retries = Math.min(10, Math.max(0, parseInt(x.value, 10) || 0));
+  const resp = await postModels({action:'set_leader', max_rounds, max_retries});
+  if(resp.error){ toast(r, resp.error, 'bad'); return; }
+  if(resp.leader) catalog.leader = resp.leader;
+  renderLeader();
+  toast(r, `已保存：评估环 ≤${resp.leader.max_rounds} 轮，语义验收重试 ≤${resp.leader.max_retries} 次`, 'ok');
+}
+$('leaderMaxRounds').onchange = saveLeader;
+$('leaderMaxRetries').onchange = saveLeader;
 
 function updatePoolHint(){
   if(!catalog) return;
@@ -4053,7 +4154,7 @@ function enterTaskView(task, opts = {}){
     }
   }
   updateContextMeter(history, threshold);   // 实时入口的 history 是空的 → 计量归零，等事件流回填
-  scrollBottom();
+  forceScrollBottom();
 }
 
 /* 断点续跑：被中断任务回看页里的「恢复执行」入口 */
@@ -4100,7 +4201,7 @@ function openTask(id){
     if(task.status === 'running'){
       // 正在跑的任务：画面得挂上它的实时流（缓冲会重放，整段过程都补得回来）。
       // 但本标签页就是发起者时流已经在手上，重进只会把画好的内容清掉——切回视图就行。
-      if(busy && liveTask && liveTask.id === task.id){ showView('chat'); scrollBottom(); return; }
+      if(busy && liveTask && liveTask.id === task.id){ showView('chat'); forceScrollBottom(); return; }
       if(!liveTask || liveTask.id !== task.id) liveTask = liveTaskFrom(task);
       enterTaskView(task, {live: true});
       followTaskStream(task.id);
@@ -5578,7 +5679,9 @@ function renderCtxRings(){
     const cls = pct > 80 ? 'hot' : (pct >= 50 ? 'mid' : '');
     const wrap = document.createElement('span');
     wrap.className = 'ctx-ring-wrap';
-    wrap.title = `${mc.name} 的上下文占用：${Math.round(mc.used).toLocaleString()}`
+    // 说明走 data-tip（全局悬停卡片引擎认它）：原生 title 的方角气泡会和
+    // 圆角卡片同屏出现，任务执行中重渲染还会让原生气泡反复闪
+    wrap.dataset.tip = `${mc.name} 的上下文占用：${Math.round(mc.used).toLocaleString()}`
       + ` / ${mc.win ? mc.win.toLocaleString() + ' tokens' : '窗口未知'}（${pct.toFixed(1)}%）`;
     wrap.innerHTML =
       `<svg class="ctx-ring" width="16" height="16" viewBox="0 0 36 36" aria-hidden="true">`
@@ -5938,6 +6041,12 @@ function handleTaskEvent(ev, data){
       if(liveTask && data.summary) liveTask.progress = String(data.summary).slice(0, 60);
       renderRunBar();
     }
+    else if(ev === 'leader_round'){
+      // Leader 双环的每轮结论：规划/判定/重试都以胶囊提示播报，滚动规划对用户可见
+      const ph = data.phase === 'eval' ? '判定'
+               : data.phase === 'retry' ? '重试' : '规划';
+      addPillNote(`Leader ${ph}（第 ${data.round} 批）：${esc(data.note || '')}`);
+    }
     else if(ev === 'bridge'){
       // 能力桥接：调度器替弱中文模型做了翻译预处理
       addPillNote(`能力桥接：${esc(data.reason || '已为执行模型翻译输入')}`);
@@ -6142,7 +6251,8 @@ function handleTaskEvent(ev, data){
       loadTasks();
     }
     else if(ev === 'memory'){
-      // 规则抽取与模型主动 remember 都是收尾时同步落盘的，这里如实告诉用户
+      // 任务里模型主动 remember 的写入在收尾时同步落盘（规则/模型自动沉淀已停用），
+      // 这里如实告诉用户
       if(data.added){
         const first = (data.items && data.items[0]) ? String(data.items[0]) : '';
         toast(null, `已将 ${data.added} 条内容设为记忆`
@@ -6180,6 +6290,8 @@ function handleTaskEvent(ev, data){
       // 到这里才是**整条回复**的失败：连接层 / 编排层的致命错误
       closeThinking('这一步没走通，说明原因');
       dropLanes(); settleReply('error'); addError(data.message);
+      // 与 stopped / done 同口径：当场收掉「任务执行中」状态条，不等 5s 轮询兜底
+      endLiveTask('error');
     }
     else if(ev === 'stopped'){
       dropLanes();
@@ -6215,13 +6327,10 @@ function handleTaskEvent(ev, data){
       setBusy(false);
       if(liveTask && liveTask.status === 'running') endLiveTask('done');
       loadTasks();
-      // 模型提炼是后台线程，跑完会再补几条：稍后回来核对一次，
-      // 真有新增就补提示（收尾时同步那批已经在 memory 事件里提示过了）
+      // 收尾自动沉淀已停用（记忆的规则抽取/模型提炼、技能提炼都不再跑）；
+      // 这两次核对保留为兜底，只兜「别的标签页手动增删」这类旁路变化
       setTimeout(checkMemoryGrew, 6000);
-      // 技能沉淀同样在后台线程落盘，稍后核对是否自动产出了新技能
-      // （6s 一次常能赶上；大技能抽取慢，20s 再补查一次，别让用户白等）
       setTimeout(checkSkillGrew, 6000);
-      setTimeout(checkSkillGrew, 20000);
     }
     // 每条事件落地之后统一核对两条不变量（都问 DOM）：
     //   ① 工具条不许停在半途——下面又长出了本轮内容，就把它撤掉；
@@ -6327,7 +6436,7 @@ scrim.onclick = closeSidebar;
   });
 })();
 
-/* 首屏：空态落地页，标题与发送框成组居中（main.land） */
+/* 首屏：空态落地页，发送框加号锚在页面水平中线（main.land），标题在其上方居中 */
 renderAttach();
 showView('chat');
 </script>

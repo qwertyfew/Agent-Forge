@@ -1010,6 +1010,11 @@ class _Handler(BaseHTTPRequestHandler):
         }
         # 决策/调度模型（多 agent 的 Dispatcher）当前指向谁、能不能用
         snap["dispatcher"] = self._dispatcher_snapshot()
+        # Leader 双环的轮次配置（第 47 步：评估环上限 / 语义验收重试上限）
+        snap["leader"] = {
+            "max_rounds": int(getattr(self.cfg, "leader_max_rounds", 12)),
+            "max_retries": int(getattr(self.cfg, "leader_max_retries", 2)),
+        }
         snap.update(self._prompt_budget())
         return snap
 
@@ -1135,6 +1140,53 @@ class _Handler(BaseHTTPRequestHandler):
                             final.append(f"  {key}: {_fmt(keys.get(key, missing[key]))}")
                             missing.pop(key, None)
             out = final
+        p.write_text("\n".join(out) + "\n", encoding="utf-8")
+        return True
+
+    def _write_leader(self, max_rounds: int, max_retries: int) -> bool:
+        """把 Leader 双环轮次写回配置文件（leader: 块），尽量不动其它内容。"""
+        p = getattr(self.cfg, "source_path", None)
+        if not p:
+            return False
+        p = Path(p)
+        keys = {"max_rounds": int(max_rounds), "max_retries": int(max_retries)}
+        text = p.read_text(encoding="utf-8") if p.exists() else ""
+        lines = text.splitlines()
+        missing = dict(keys)
+        out: list[str] = []
+        in_block = False
+        for ln in lines:
+            m = re.match(r'^(\s*)leader\s*:\s*(.*)$', ln)
+            if m:
+                in_block = True
+                out.append(ln)
+                continue
+            if in_block:
+                km = re.match(r'^(\s{2})([\w-]+)\s*:\s*(.*)$', ln)
+                if km and km.group(2) in keys:
+                    out.append(f"{km.group(1)}{km.group(2)}: {keys[km.group(2)]}")
+                    missing.pop(km.group(2), None)
+                    continue
+                if ln.strip() and not ln.startswith('  '):
+                    in_block = False
+            out.append(ln)
+        if missing:
+            if any(re.match(r'^leader\s*:', ln) for ln in out):
+                final = []
+                for ln in out:
+                    final.append(ln)
+                    if re.match(r'^leader\s*:', ln):
+                        for key in ("max_rounds", "max_retries"):
+                            if key in missing:
+                                final.append(f"  {key}: {missing[key]}")
+                                missing.pop(key, None)
+                out = final
+            else:
+                if out and out[-1].strip():
+                    out.append("")
+                out.append("leader:")
+                for key in ("max_rounds", "max_retries"):
+                    out.append(f"  {key}: {keys[key]}")
         p.write_text("\n".join(out) + "\n", encoding="utf-8")
         return True
 
@@ -1334,6 +1386,26 @@ class _Handler(BaseHTTPRequestHandler):
                 spec = self.cfg.models.get(entry.key)
                 ok, msg = self.cli.hub.ping_spec(spec) if spec else (False, "模型配置缺失")
                 self._json({"ok": ok, "message": msg, "snapshot": self._models_snapshot()})
+                return
+
+            elif action == "set_leader":
+                # Leader 双环轮次配置：写回配置文件 + 热更新运行中的 cfg
+                mr = int(req.get("max_rounds") or 0)
+                mr = min(60, max(1, mr)) if mr else None
+                xr = int(req.get("max_retries") or 0)
+                xr = min(10, max(0, xr)) if req.get("max_retries") is not None else None
+                if mr is not None:
+                    self.cfg.leader_max_rounds = mr
+                if xr is not None:
+                    self.cfg.leader_max_retries = xr
+                ok = self._write_leader(
+                    self.cfg.leader_max_rounds, self.cfg.leader_max_retries)
+                self._json({
+                    "ok": ok,
+                    "leader": {"max_rounds": self.cfg.leader_max_rounds,
+                               "max_retries": self.cfg.leader_max_retries},
+                    "snapshot": self._models_snapshot(),
+                })
                 return
 
             elif action == "set_scores":

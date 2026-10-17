@@ -25,7 +25,11 @@ from typing import Any, Iterator
 
 from pathlib import Path
 
-from .dispatcher import Dispatcher, SharedState, TaskSpec
+from .dispatcher import Dispatcher, TaskSpec, _catalog_text, _extract_json
+from .leader import (
+    LEADER_EVAL_SYSTEM, LEADER_PLAN_SYSTEM, LEADER_SEMANTIC_SYSTEM,
+    LeaderContext, StepResult, parse_batch, parse_eval,
+)
 from .loop import Agent
 from .planner import (
 
@@ -216,20 +220,6 @@ def _file_records(paths: list[str], root) -> list[dict]:
         recs.append({"path": str(p), "action": "created", "via": "tool",
                      "certain": True, "exists": Path(p).exists()})
     return artifact.describe(recs, root)
-
-
-def _produced_files(state: "SharedState") -> tuple[list[str], dict[str, str]]:
-    """汇总所有子任务的产出文件路径，并返回 路径→子任务标题 的映射。"""
-    paths: list[str] = []
-    seen: set[str] = set()
-    path_title: dict[str, str] = {}
-    for r in state.results.values():
-        for p in (r.files or []):
-            if p and p not in seen:
-                seen.add(p)
-                paths.append(p)
-                path_title.setdefault(p, r.title)
-    return paths, path_title
 
 
 def _read_artifact(path: str, cap: int = 2500) -> str | None:
@@ -545,24 +535,6 @@ def _verify_gate(agent, message: str, holder: dict,
         holder["convo"] = convo
 
 
-def _topo_order(tasks: list[TaskSpec]) -> list[TaskSpec]:
-    """按依赖关系排执行顺序（同批任务保持原序）；依赖缺失/成环时直接放行，避免卡死。"""
-    remaining = list(tasks)
-    done: set[str] = set()
-    ordered: list[TaskSpec] = []
-    guard = 0
-    while remaining and guard < 1000:
-        guard += 1
-        ready = [t for t in remaining if all(d in done for d in t.depends_on)]
-        if not ready:
-            ready = [remaining[0]]
-        for t in ready:
-            remaining.remove(t)
-            ordered.append(t)
-            done.add(t.id)
-    return ordered
-
-
 def _is_local_model(agent, model_key: str) -> bool:
     try:
         return getattr(agent.cfg.model(model_key), "kind", "local") == "local"
@@ -580,196 +552,147 @@ def _ready_batch(tasks: list[TaskSpec], done: set[str]) -> list[TaskSpec]:
     return ready or [tasks[0]]
 
 
-def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
-                    message: str, dispatcher: Dispatcher,
-                    stop_check=None, auto_approve: bool | None = None,
-                    file_log: list | None = None) -> Iterator[dict[str, Any]]:
-    """多 agent 编排：决策模型拆解 → 共享黑板 → 任务在 agent 之间流转。
+def run_leader(agent, store, entries: list[dict], history: list[dict],
+               message: str, dispatcher: Dispatcher,
+               stop_check=None, auto_approve: bool | None = None,
+               file_log: list | None = None) -> Iterator[dict[str, Any]]:
+    """Leader 双环编排（第 47 步：七步架构更新，取代旧 run_multi_agent）。
 
-    调度模型先把请求拆成若干【语义独立】的任务并指派执行 agent，每个 agent 都
-    拿到「共享进度简报」，因此后面的 agent 不会从头开始。执行分两种：
+    外环（Leader）：每轮只规划【下一批】小步骤（仅相互独立的才同批）→ 员工执行 →
+    一次调用完成「完成判定 + 规划下一批 + 精简历史」→ 全部完成后出「拟回答」→
+    步骤⑤验收（程序裁定 + Leader 语义判定）。语义不过则把失败原因压回固定槽位
+    重新规划，重试上限由配置 leader.max_retries 控制；评估环轮次上限由
+    leader.max_rounds 控制。
 
-    - 串行接力（默认）：一个任务跑完再跑下一个，上下文一路继承。
-    - 并行（dispatcher_parallel 且处于完全访问权限）：同一批就绪的**互不相关**
-      任务同时跑，各自一个 agent 实例、各自一路流式输出（事件带 task_id，前端按
-      task 分行渲染）。本地模型受两道闸约束——llm 层的请求锁 + 这里的「本地闸门」
-      （local_serial 打开时同一时刻只有一个本地模型任务在跑），在线模型不受影响。
+    内环（员工）：每个小步骤仍是一个完整 Agent 循环（多轮工具调用），但用户提示词
+    只有 Leader 写的小步骤提示词——自包含操作信息、不含任务总目标叙事。
 
-    冲突处理：并行任务写同一个文件时由 permissions.claim_write 排队写入；跑完
-    一批再检出重叠写入并发 conflict 事件提醒用户核对。
+    上下文固定槽位（架构级保护）：任务原文与失败原因放独立槽位，历史精简只替换
+    摘要槽，最新一批执行结果全量进 Leader 不截断——头部字节稳定，服务端上下文
+    缓存可完整命中。
 
-    事件与单模型路径兼容（plan/assign/subtask/delta/…），另加 dispatch / task_done /
-    bridge / conflict。
+    事件与旧多 agent 路径兼容（dispatch/plan/assign/subtask/…/complete），
+    另加 leader_round（每轮的规划/评估结论，前端以胶囊提示播报）。
     """
     stopped = stop_check or (lambda: False)
-    plan = dispatcher.plan(message, entries)
-    ordered = _topo_order(plan.tasks)
-    if not ordered:
-        return
-    total = len(ordered)
-    # 让 index 与真实执行顺序一致（拓扑排序可能打乱原计划次序），前端计划卡
-    # 与 assign 事件才能对上号
-    for i, t in enumerate(ordered):
-        t.index = i + 1
+    cfg = agent.cfg
+    max_rounds = max(1, int(getattr(cfg, "leader_max_rounds", 12)))
+    max_retries = max(0, int(getattr(cfg, "leader_max_retries", 2)))
 
-    # 并行前提：① 配置允许；② 完全访问权限——默认权限下每次写文件/执行命令都要
-    # 人工确认，多路同时弹确认会互相打架，所以退回串行接力。
     full_access = auto_approve is True or bool(getattr(agent.guard, "auto_approve_all", False))
-    parallel_on = bool(getattr(agent.cfg, "dispatcher_parallel", True)) and full_access
-
-    yield {
-        "type": "dispatch",
-        "tasks": [t.as_dict() for t in ordered],
-        "rationale": plan.rationale,
-        "source": plan.source,
-        "dispatcher": plan.dispatcher_name,
-        "multi": total >= 2,
-        "parallel": parallel_on and total >= 2,
-        "local_serial": bool(getattr(agent.cfg, "local_serial", True)),
-    }
-    if total >= 2:
-        yield {"type": "plan", "subtasks": [t.as_dict() for t in ordered],
-               "summary": plan.summary()}
-
-    state = SharedState(message)
-    state.register(ordered)
-
-    # 产物核查的起点快照：任务书声明交付文件的 mtime 在此刻定格，收尾时
-    # 拿它判断「本轮是否真的更新过」——上一轮的旧文件糊弄不了这关。
-    snap = verify_gate.snapshot_artifacts(message, agent.cfg.workspace_root)
-
-    # 整任务共享的只读调用缓存：所有泳道/子任务 + 收尾修正轮共用一份。
-    # REA 二测里 t2/t3/t4 各自 list_dir docs、各读一遍 HANDOFF.md——
-    # 各泳道私有缓存互相看不见，同参数只读调用被白跑多遍。写类工具执行后
-    # 缓存全量作废（在 loop.py 里做），所以共享是安全的。
-    read_cache = ReadCache()
-
-    weak_cn = {e["key"]: int((e.get("scores") or {}).get("chinese", 100)) for e in entries}
-    translate_on = bool(getattr(agent.cfg, "dispatcher_translate", True))
-    cn_threshold = int(getattr(agent.cfg, "dispatcher_bridge_threshold", BRIDGE_CN_THRESHOLD))
-
-    base_convo = list(history)
-    # 本地闸门：开启「本地串行」时，同一时刻至多一个本地模型任务在跑，避免两个
-    # 本地模型同时驻留显存互相拖累。在线模型不受影响，真正并行。
-    local_gate = threading.Semaphore(1) if getattr(agent.cfg, "local_serial", True) else None
+    parallel_on = bool(getattr(cfg, "dispatcher_parallel", True)) and full_access
+    local_gate = threading.Semaphore(1) if getattr(cfg, "local_serial", True) else None
 
     shared_log: list = file_log if file_log is not None else []
     log_lock = threading.Lock()
-    sink: dict[str, dict] = {}          # task_id -> {"files": [...], "failed": bool, "convo": [...]}
-    hist_holder: dict = {"convo": base_convo}   # 串行接力时最后一份完整历史
-    exhausted_cmds: set = set()         # 任务级闸门拦到上限仍失败的验证命令
+    sink: dict[str, dict] = {}      # step_id -> {"files","failed","summary"}
+    read_cache = read_cache or ReadCache()
 
-    def spawn_agent():
-        """给并行任务起一个独立的 Agent：Agent 持有 per-run 可变状态，不能共用。"""
-        return Agent(agent.cfg, agent.client, agent.registry, agent.guard,
+    weak_cn = {e["key"]: int((e.get("scores") or {}).get("chinese", 100)) for e in entries}
+    translate_on = bool(getattr(cfg, "dispatcher_translate", True))
+    cn_threshold = int(getattr(cfg, "dispatcher_bridge_threshold", 55))
+
+    root = cfg.workspace_root
+    snap = verify_gate.snapshot_artifacts(message, root)
+
+    ctx = LeaderContext(message)
+    catalog = _catalog_text(entries)
+    exhausted_cmds: set = set()     # 任务级闸门拦到上限仍失败的命令，汇总级不重跑
+    system_notes: list[str] = []    # 系统侧声明（轮次到顶/语义验收未过等），随答复如实附出
+    all_steps: list[TaskSpec] = []
+    owner_task = runcontrol.current_task()
+
+    def spawn():
+        return Agent(cfg, agent.client, agent.registry, agent.guard,
                      agent.router, skill_registry=agent.skills, hub=agent.hub)
 
-    def one_task(t: TaskSpec, ag, convo_in: list[dict]) -> Iterator[dict]:
-        """跑一个任务；事件原样产出，结果写进 sink。串行直用，也可在线程里跑。"""
-        # 模型可能刚从设置里被删掉，退回池内第一个可用模型
-        if t.model_key not in agent.cfg.models:
-            t.model_key = entries[0]["key"]
-            t.model_name = entries[0]["name"]
+    def _join(msgs: list[dict]) -> str:
+        return "\n\n".join(m["content"] for m in msgs)
 
-        yield {
-            "type": "assign",
-            "index": t.index, "total": total,
-            "model_key": t.model_key, "model_name": t.model_name,
-            "kind": t.kind, "kind_label": KIND_LABEL.get(t.kind, t.kind),
-            "reason": t.reason, "title": t.title, "score": t.score,
-            "multi": total >= 2, "task_id": t.id,
-            "reassigned": bool(getattr(t, "reassigned", False)),
-            "role": f"{KIND_LABEL.get(t.kind, t.kind)} agent",
-            "capability": t.capability,
-            "depends_on": list(t.depends_on),
-            "handoff": t.handoff,
-        }
+    def _fallback_step(rno: int) -> TaskSpec:
+        """Leader 规划不可用时的保底：原文整段交给该维度最强的员工直做。"""
+        kind = kind_of(message)
+        dim = KIND_DIM.get(kind, "reasoning")
+        best = max(entries, key=lambda e: (e["scores"].get(dim, 0), e.get("total", 0)))
+        return TaskSpec(
+            id=f"lf{rno}", goal=message, kind=kind, title=_short(message),
+            model_key=best["key"], model_name=best["name"], model_id=best["id"],
+            score=int(best["scores"].get(dim, 0)),
+            reason="Leader 规划不可用，退回原文整段直做（该维度最强模型）")
 
-        state.start(t.id)
-        brief = state.brief(t)
-
-        # 能力桥接：执行模型中文很弱、任务又需要中文时，先把输入译成英文
-        goal = t.goal
+    # ---------- 员工执行（内环）：一个小步骤一个完整 agent 循环 ----------
+    def run_one(t: TaskSpec, ag, batch_total: int) -> Iterator[dict]:
+        nonlocal_round = ctx.round
+        yield {"type": "assign", "index": t.index, "total": batch_total,
+               "model_key": t.model_key, "model_name": t.model_name,
+               "kind": t.kind, "kind_label": KIND_LABEL.get(t.kind, t.kind),
+               "reason": t.reason, "title": t.title, "score": t.score,
+               "multi": True, "task_id": t.id, "round": nonlocal_round,
+               "reassigned": bool(getattr(t, "reassigned", False)),
+               "role": f"{KIND_LABEL.get(t.kind, t.kind)} 员工"}
+        # 能力桥接（沿用旧语义）：执行模型中文很弱、步骤又是中文时先译成英文
+        prompt = t.goal
         bridged = False
-        if (translate_on and _has_cjk(goal)
+        if (translate_on and _has_cjk(prompt)
                 and weak_cn.get(t.model_key, 100) < cn_threshold):
-            en = dispatcher.translate(goal, "English")
-            if en and en != goal:
-                goal = en
+            en = dispatcher.translate(prompt, "English")
+            if en and en != prompt:
+                prompt = en
                 bridged = True
                 yield {"type": "bridge", "task_id": t.id, "to": "English",
-                       "reason": f"{t.model_name} 中文能力较弱，调度器已把任务译成英文"}
-
-        prompt = AGENT_TASK_TEMPLATE.format(
-            message=message, index=t.index, total=total, title=t.title,
-            goal=goal, capability=t.capability or "（未特别指定）",
-            handoff=t.handoff or "（无）", brief=brief,
-            bridged=BRIDGE_NOTE if bridged else "",
-        )
-        yield {"type": "subtask", "index": t.index, "total": total,
-               "text": t.goal, "task_id": t.id}
-
+                       "reason": f"{t.model_name} 中文能力较弱，已把步骤译成英文"}
+        yield {"type": "subtask", "index": t.index, "total": batch_total,
+               "text": t.goal, "task_id": t.id, "round": nonlocal_round}
         ag.set_model(t.model_key)
         local = _is_local_model(agent, t.model_key)
         gate = local_gate if (local and local_gate is not None) else None
         if gate is not None:
-            gate.acquire()          # 本地模型排队；在线模型直接过
-
+            gate.acquire()
         local_log: list = []
         summary = ""
         failed = False
-        convo = list(convo_in)
+        convo: list[dict] = []
         try:
             for ev in ag.run(convo, prompt, auto_route=False, stop_check=stopped,
                              auto_approve=auto_approve, file_log=local_log,
                              read_cache=read_cache):
                 k = ev.get("type")
                 if k in ("user", "route"):
-                    continue                       # 用户气泡本地渲染；路由由编排层决定
+                    continue
                 if k == "assistant":
                     convo = ev["history"]
                     summary = (ev.get("content") or "").strip()
                 if k == "error":
-                    # 子任务自己的失败只属于这个子任务。往上换一个事件名（subtask_error），
-                    # 别让外层把它当成「整条回复失败」——外层的 error 是终态：界面会立刻
-                    # 收尾（把复制工具条挂在回答中途）、台账会把整条任务记成 error，
-                    # 而这个子任务失败在设计上明确「不该拖垮同批其它任务」。
+                    # 员工自己的失败只属于这个步骤，不拖垮同批其它步骤
                     failed = True
                     yield {"type": "subtask_error", "task_id": t.id,
                            "message": ev.get("message") or ""}
                     continue
                 if k == "stopped":
-                    yield {"type": "history", "messages": ev.get("history") or convo}
-                    yield {"type": "stopped", "steps": t.index, "total": total,
+                    yield {"type": "history",
+                           "messages": ev.get("history") or convo}
+                    yield {"type": "stopped", "steps": nonlocal_round,
+                           "total": max_rounds,
                            "reason": ev.get("reason") or "用户停止"}
                     return
-                if k in ("delta", "thinking", "tool_start", "tool_result", "stats", "step"):
+                if k in ("delta", "thinking", "tool_start", "tool_result",
+                         "stats", "step"):
                     ev = {**ev, "task_id": t.id}
                 yield ev
         finally:
             if gate is not None:
                 gate.release()
-
-        # 任务级闸门（流程第 6 步：依次验证每个任务的结果）：子任务一收尾，
-        # 系统就亲自核验它任务书（goal）里声明的验证命令与交付物——失败当场
-        # 拦截，把真实输出回灌给同一个 agent 继续做（初次执行 + 至多
-        # _VERIFY_BLOCK_ROUNDS 次修正 = 至多三次执行，到限仍失败则放行并附
-        # 系统侧报告，汇总时如实带出），不等全部任务跑完再算总账。调度器被
-        # 明确要求把交付物与验证命令原样写进对应任务的 goal（见 dispatcher
-        # 提示词），这里照着 goal 核对；总任务级的声明仍由最后的汇总闸门把守。
+        # 程序裁定前置到每个小步骤收尾（步骤⑤的程序部分）：任务书 = Leader 的
+        # 小步骤提示词；验证命令亲跑、交付物核查，失败当场拦回同一员工修正
         if not failed:
-            task_book = t.goal or t.title or message
-            task_snap = verify_gate.snapshot_artifacts(
-                task_book, agent.cfg.workspace_root)
-            task_holder = {"summary": summary or _last_assistant(convo),
-                           "convo": convo}
+            task_snap = verify_gate.snapshot_artifacts(prompt, root)
+            holder = {"summary": summary or _last_assistant(convo), "convo": convo}
             task_files = _file_records(
-                [r.get("path") for r in local_log if r.get("path")],
-                agent.cfg.workspace_root)
-            for ev in _verify_gate(ag, task_book, task_holder,
-                                   auto_approve=auto_approve, stop_check=stopped,
-                                   read_cache=read_cache, snapshot=task_snap,
-                                   exhausted=exhausted_cmds, files=task_files):
+                [r.get("path") for r in local_log if r.get("path")], root)
+            for ev in _verify_gate(ag, prompt, holder, auto_approve=auto_approve,
+                                   stop_check=stopped, read_cache=read_cache,
+                                   snapshot=task_snap, exhausted=exhausted_cmds,
+                                   files=task_files):
                 k = ev.get("type")
                 if k == "assistant":
                     convo = ev["history"]
@@ -778,78 +701,52 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
                          "stats", "step", "verify"):
                     ev = {**ev, "task_id": t.id}
                 yield ev
-            exhausted_cmds.update(task_holder.get("exhausted_cmds") or ())
-
-        # 桥接后把结果译回中文，保证给用户的是中文
         if bridged and summary and not _mostly_chinese(summary):
             zh = dispatcher.translate(summary, "Chinese")
             if zh:
                 summary = zh
-
-        new_files: list[str] = []
+        files_out: list[str] = []
         for rec in local_log:
             p = str(rec.get("path") or "")
-            if p and p not in new_files:
-                new_files.append(p)
+            if p and p not in files_out:
+                files_out.append(p)
         if local_log:
-            with log_lock:                  # 各任务的产出文件合并进总台账
+            with log_lock:
                 shared_log.extend(local_log)
-        final_line = summary or _last_assistant(convo)
-        state.finish(t.id, final_line, new_files, status="error" if failed else "done")
-        sink[t.id] = {"files": new_files, "failed": failed, "convo": convo}
-        hist_holder["convo"] = convo
-        yield {"type": "task_done", "task_id": t.id, "index": t.index, "total": total,
-               "status": "error" if failed else "done", "title": t.title,
-               "summary": final_line, "files": new_files}
+        sink[t.id] = {"files": files_out, "failed": failed,
+                      "summary": summary or _last_assistant(convo)}
+        yield {"type": "task_done", "task_id": t.id, "index": t.index,
+               "total": batch_total, "status": "error" if failed else "done",
+               "title": t.title, "summary": sink[t.id]["summary"],
+               "files": files_out, "round": nonlocal_round}
 
-    def conflict_events(batch: list[TaskSpec]):
-        """一批并行任务都改了同一个文件时明确告警（写入已被排队，但结果要核对）。"""
-        owner: dict[str, str] = {}
-        name_of = {t.id: t.title for t in ordered}
-        for t in batch:
-            for p in (sink.get(t.id, {}).get("files") or []):
-                if p in owner and owner[p] != t.id:
-                    yield {"type": "conflict", "path": p,
-                           "tasks": [name_of.get(owner[p], owner[p]),
-                                     name_of.get(t.id, t.id)],
-                           "note": "两个并行任务都改了同一个文件，已按先后顺序串行写入，请核对最终内容"}
-                else:
-                    owner[p] = t.id
-
-    def run_parallel(wave: list[TaskSpec]) -> Iterator[dict]:
-        """同一批就绪任务并行跑：各自 agent 实例，事件经队列汇聚后按到达顺序产出。"""
+    # ---------- 一批的执行：并行（各任务一线程）或串行 ----------
+    def run_wave(wave: list[TaskSpec]) -> Iterator[dict]:
         q: queue.Queue = queue.Queue()
         done_marker = object()
-        # 泳道跑在独立线程里，threading.local 不会继承调用方线程的 current_task；
-        # 不补设的话 remember / task_notes 会把记忆记到「adhoc」——「清空时按任务
-        # 精确删除」对并行子任务失效。串行路径跑在调用方线程里天然带着归属，
-        # 这里在进入线程前取一次、进线程后补设，两条路口径一致。
-        owner_task = runcontrol.current_task()
 
         def worker(t: TaskSpec) -> None:
             runcontrol.set_current_task(owner_task)
             try:
-                ag = spawn_agent()
-                for ev in one_task(t, ag, base_convo):
+                ag = spawn()
+                for ev in run_one(t, ag, len(wave)):
                     q.put(ev)
-            except Exception as e:  # noqa: BLE001  单个任务崩了不该拖垮同批其它任务
-                # 同样是「子任务级失败」：事件名不能叫 error，否则外层会收尾整条回复
+            except Exception as e:  # noqa: BLE001  单个步骤崩了不拖垮同批
                 q.put({"type": "subtask_error", "task_id": t.id,
                        "message": f"{t.title}：{type(e).__name__}: {e}"})
-                sink.setdefault(t.id, {"files": [], "failed": True})
+                sink.setdefault(t.id, {"files": [], "failed": True, "summary": ""})
             finally:
                 runcontrol.clear_current_task()
                 q.put(done_marker)
 
         for t in wave:
             threading.Thread(target=worker, args=(t,), daemon=True).start()
-
         pending = len(wave)
         stopping = False
         while pending > 0:
             if stopping:
                 try:
-                    ev = q.get(timeout=0.2)     # 停止后只收尾，不再转发
+                    ev = q.get(timeout=0.2)
                 except queue.Empty:
                     continue
             else:
@@ -863,128 +760,207 @@ def run_multi_agent(agent, store, entries: list[dict], history: list[dict],
             if not stopping:
                 yield ev
 
-    def run_serial() -> Iterator[dict]:
-        convo = base_convo
-        remaining = list(ordered)
-        done_ids: set[str] = set()
-        while remaining:
-            if stopped():
-                yield {"type": "history",
-                       "messages": convo or [{"role": "user", "content": message}]}
-                yield {"type": "stopped", "steps": len(done_ids), "total": total,
-                       "reason": "用户停止"}
-                return
-            t = _ready_batch(remaining, done_ids)[0]
-            remaining = [x for x in remaining if x is not t]
-            for ev in one_task(t, agent, convo):
-                if ev.get("type") == "assistant":
-                    convo = ev["history"]
-                yield ev
-                if ev.get("type") == "stopped":
-                    return
-            done_ids.add(t.id)
-            if sink.get(t.id, {}).get("failed"):
-                return                          # 接力链上一步失败，后面的不再硬跑
+    def conflict_events(wave: list[TaskSpec]):
+        owner: dict[str, str] = {}
+        for t in wave:
+            for p in (sink.get(t.id, {}).get("files") or []):
+                if p in owner and owner[p] != t.id:
+                    yield {"type": "conflict", "path": p,
+                           "tasks": [owner[p], t.title],
+                           "note": "两个并行步骤都改了同一个文件，已按先后顺序串行写入，请核对最终内容"}
+                else:
+                    owner[p] = t.id
 
-    if not parallel_on or total == 1:
-        yield from run_serial()
-    else:
-        remaining = list(ordered)
-        done_ids: set[str] = set()
-        while remaining:
-            if stopped():
-                yield {"type": "history",
-                       "messages": base_convo or [{"role": "user", "content": message}]}
-                yield {"type": "stopped", "steps": len(done_ids), "total": total,
-                       "reason": "用户停止"}
-                return
-            wave = _ready_batch(remaining, done_ids)
-            remaining = [x for x in remaining if x not in wave]
-            if len(wave) > 1:
-                yield from run_parallel(wave)
+    def _round_note(base: str, rno: int, batch, results) -> str:
+        """Leader 没产出摘要时的程序兜底：把本批压成几行要点追加进摘要槽。"""
+        lines = [base] if base else []
+        for t, r in zip(batch, results):
+            st = "失败" if r.failed else "完成"
+            extra = ("；产出：" + "、".join(r.files[:5])) if r.files else ""
+            reply = (r.reply or r.error or "").replace("\n", " ")[:200]
+            lines.append(f"- 第{rno}批·{t.title}（{st}）{extra}：{reply}")
+        return "\n".join(lines)[-4000:]
+
+    # ================= 主循环：外环重试（步骤⑤）× 内轮评估环（步骤④） =================
+    attempts = 0
+    accepted = False
+    final_answer = ""
+    while True:                                  # 步骤⑤失败重试环
+        done_answer = ""
+        first_batch = ctx.round == 0
+        # ---------- 步骤④：评估环（规划 → 执行 → 判定+规划+精简） ----------
+        while ctx.round < max_rounds:
+            ctx.add_round()
+            round_no = ctx.round
+            # ---- 步骤②：Leader 规划本批 ----
+            try:
+                raw = dispatcher._chat(
+                    LEADER_PLAN_SYSTEM.format(catalog=catalog),
+                    _join(ctx.plan_messages()),
+                    num_predict=2048, temperature=0.2)
+                batch, rationale = parse_batch(_extract_json(raw), entries,
+                                               resolver=dispatcher._resolve,
+                                               start_index=len(all_steps) + 1)
+            except Exception as e:  # noqa: BLE001  Leader 挂了不拖垮任务
+                batch, rationale = [], ""
+                yield {"type": "leader_round", "round": round_no, "phase": "plan",
+                       "note": f"Leader 规划调用失败（{type(e).__name__}: {e}），本批退回原文整段直做"}
+            if not batch:
+                if not rationale:
+                    pass
+                batch = [_fallback_step(round_no)]
+                yield {"type": "leader_round", "round": round_no, "phase": "plan",
+                       "note": "Leader 未能产出可解析的批次规划，本批退回原文整段直做"}
+            # 复制/备份类步骤的程序侧补强（f4 教训兜底，与旧路径同一道工序）
+            for t in batch:
+                note = verify_gate.declare_copy_check(t.goal)
+                if note:
+                    t.goal += note
+            # 模型可能刚从设置里被删：退回池内第一个可用模型
+            for t in batch:
+                if t.model_key not in cfg.models:
+                    e0 = entries[0]
+                    t.model_key, t.model_name, t.model_id = e0["key"], e0["name"], e0["id"]
+                    t.reason = "原指派模型已被移除，改用池内第一个可用模型"
+            all_steps.extend(batch)
+            # ---- 事件：首轮 dispatch（并行泳道靠它），每轮 plan 卡 ----
+            if first_batch:
+                yield {"type": "dispatch",
+                       "tasks": [t.as_dict() for t in batch],
+                       "rationale": rationale, "source": "llm",
+                       "dispatcher": dispatcher.name, "multi": True,
+                       "parallel": parallel_on and len(batch) > 1,
+                       "local_serial": bool(getattr(cfg, "local_serial", True))}
             else:
-                for ev in one_task(wave[0], agent, base_convo):
-                    yield ev
-                    if ev.get("type") == "stopped":
-                        return
-            yield from conflict_events(wave)
-            done_ids.update(t.id for t in wave)
-            # 这批里某个任务失败不影响别的批（它们彼此独立），交给收尾汇总时如实说明
-
-    # 完整历史：串行接力时最后一份 convo 已包含全部；并行时各任务历史相互独立，
-    # 需要按任务顺序把各自新增的部分拼回去（否则下一次对话会丢掉它们做过的事）。
-    if parallel_on and total > 1:
-        final_convo = list(base_convo)
-        for t in ordered:
-            c = sink.get(t.id, {}).get("convo") or []
-            if len(c) > len(base_convo):
-                final_convo.extend(c[len(base_convo):])
-    else:
-        final_convo = hist_holder["convo"]
-
-    # 汇总层（方案 B）：读取各子任务产出文件的内容，交给协调者据此核对，
-    # 先清掉小步骤标记——执行已结束，此后的缺口记录源都显式带步骤
-    gaps.clear_step()
-    # 避免「答案写在文件里、汇总却漏掉关键事实」（w3 那类系统性丢事实）。
-    # 同时把产出文件描述交给诚实守卫与前端：诚实守卫据此判定产物真实性，
-    # 前端据此把文件卡片挂在汇总结果下方，保证「汇总 ↔ 文件」对得上。
-    agg_paths, path_title = _produced_files(state)
-    root = agent.cfg.workspace_root
-    file_records = _file_records(agg_paths, root)
-    artifacts = []
-    for p in agg_paths:
-        content = _read_artifact(p)
-        if content is None:
-            continue
-        rel = artifact.rel_to_root(root, p) or str(p)
-        artifacts.append({"title": path_title.get(p, ""), "rel": rel, "content": content})
-
-    # 收尾：决策模型把各 agent 的结果汇总成一份答复（多任务时才做）
-    final = ""
-    if total >= 2 and getattr(agent.cfg, "dispatcher_synthesis", True):
-        final = dispatcher.synthesize(message, state.result_items(), artifacts) or ""
-    if final:
-        # 输出边界的语言闸门：整合模型也可能是英文倾向的弱模型，而桥接执行的
-        # 子任务摘要常常整段英文。用户记忆里「回复一律中文」这类偏好不能只靠
-        # 提示词自觉——最后这里程序化兜底，不是中文就强制回译。
-        if not _mostly_chinese(final):
-            zh = dispatcher.translate(final, "Chinese")
+                yield {"type": "leader_round", "round": round_no, "phase": "plan",
+                       "note": rationale or "继续规划下一批"}
+            yield {"type": "plan", "subtasks": [t.as_dict() for t in batch],
+                   "summary": f"Leader 第 {round_no} 批"
+                              + (f"：{rationale}" if rationale else "")}
+            # ---- 步骤③：员工执行（并行/串行） ----
+            if parallel_on and len(batch) > 1:
+                yield from run_wave(batch)
+            else:
+                for t in batch:
+                    for ev in run_one(t, agent, len(batch)):
+                        yield ev
+                        if ev.get("type") == "stopped":
+                            return
+            yield from conflict_events(batch)
+            if stopped():
+                yield {"type": "history",
+                       "messages": history or [{"role": "user", "content": message}]}
+                yield {"type": "stopped", "steps": round_no, "total": max_rounds,
+                       "reason": "用户停止"}
+                return
+            # ---- 步骤④：Leader 评估（判定 + 规划 + 精简，一次调用） ----
+            results = []
+            for t in batch:
+                s = sink.get(t.id, {})
+                results.append(StepResult(
+                    title=t.title, kind=t.kind, prompt=t.goal,
+                    reply=s.get("summary") or "",
+                    files=s.get("files") or [],
+                    failed=bool(s.get("failed")),
+                    error="（执行失败）" if s.get("failed") else ""))
+            parsed: dict = {}
+            try:
+                raw = dispatcher._chat(
+                    LEADER_EVAL_SYSTEM.format(catalog=catalog),
+                    _join(ctx.eval_messages(results)),
+                    num_predict=4096, temperature=0.2)
+                parsed = parse_eval(_extract_json(raw))
+            except Exception as e:  # noqa: BLE001
+                parsed = {"done": False, "answer": "", "note": "",
+                          "reasons": [f"Leader 评估调用失败：{type(e).__name__}: {e}"],
+                          "raw_batch": None}
+            if not parsed:
+                parsed = {"done": False, "answer": "", "note": "",
+                          "reasons": ["Leader 评估输出无法解析"], "raw_batch": None}
+            # 槽位更新（架构级）：历史→note 滚动替换；失败原因累积保留最近 K 条
+            if parsed.get("note"):
+                ctx.set_note(parsed["note"])
+            else:
+                ctx.set_note(_round_note(ctx.note, round_no, batch, results))
+            ctx.add_reasons(parsed.get("reasons"))
+            if parsed.get("done"):
+                done_answer = parsed.get("answer") or ""
+                break
+            reason_head = (parsed["reasons"][0] if parsed.get("reasons") else "继续")
+            yield {"type": "leader_round", "round": round_no, "phase": "eval",
+                   "note": f"判定未完成：{reason_head[:120]}"}
+        if not done_answer:
+            system_notes.append(
+                f"已达到 Leader 评估环上限（{max_rounds} 批），任务可能未全部完成；"
+                "以下为当前进展汇总。")
+            done_answer = ctx.note or "（在轮次上限内未产出可汇总的进展）"
+        # ---------- 步骤⑤：程序裁定 + Leader 语义验收 ----------
+        # 语言闸门在前（沿用旧口径）：拟回答不是中文就强制回译
+        if done_answer and not _mostly_chinese(done_answer):
+            zh = dispatcher.translate(done_answer, "Chinese")
             if zh:
-                final = zh
-        # 收尾验证闸门在语言闸门之后：附上的系统侧报告随最终答复一起出去
-        holder = {"summary": final, "convo": final_convo}
-        yield from _verify_gate(agent, message, holder,
-                                auto_approve=auto_approve, stop_check=stopped,
-                                read_cache=read_cache, snapshot=snap,
-                                exhausted=exhausted_cmds, files=file_records)
-        final = holder["summary"]
-        final_convo = holder["convo"]
-        final_convo = [*final_convo, {"role": "assistant", "content": final}]
-        yield {"type": "assistant", "content": final, "history": final_convo}
-    else:
-        # 没做汇总（单任务、关掉 synthesis，或 synthesize() 返回空）时同样要过
-        # 闸门：拿最后一份历史的末条助手正文当总结。第四轮评测实测（c3/f1
-        # 静默的根因）：原本这里只在 total>=2 且 synthesis 开启时才进来，而
-        # synthesize() 返回空时 if final 不成立、外层 else 又配不上——两处
-        # 收尾闸门全部被跳过，谎报与假产出静默溜过。
-        holder = {"summary": _last_assistant(final_convo), "convo": final_convo}
-        yield from _verify_gate(agent, message, holder,
-                                auto_approve=auto_approve, stop_check=stopped,
-                                read_cache=read_cache, snapshot=snap,
-                                exhausted=exhausted_cmds, files=file_records)
-        if holder["summary"] and holder["summary"] != _last_assistant(final_convo):
-            final_convo = holder["convo"]
-            yield {"type": "assistant", "content": holder["summary"],
-                   "history": final_convo}
-        else:
-            final_convo = holder["convo"]
+                done_answer = zh
+        final_answer = done_answer
+        # 程序裁定：总任务原文作任务书——验证命令亲跑、交付物核查、修正轮
+        convo5 = [{"role": "user", "content": message},
+                  {"role": "assistant", "content": final_answer}]
+        holder = {"summary": final_answer, "convo": convo5}
+        yield from _verify_gate(agent, message, holder, auto_approve=auto_approve,
+                                stop_check=stopped, read_cache=read_cache,
+                                snapshot=snap, exhausted=exhausted_cmds)
+        final_answer = holder["summary"]
+        # Leader 语义判定：只看 原文 + 拟回答，判语义完成度
+        sem_pass, sem_reasons = True, []
+        try:
+            raw = dispatcher._chat(
+                LEADER_SEMANTIC_SYSTEM,
+                f"【任务原文】\n{message}\n\n【拟回答】\n{final_answer}",
+                num_predict=1024, temperature=0.2)
+            sj = _extract_json(raw) or {}
+            sem_pass = bool(sj.get("pass"))
+            sem_reasons = [str(r).strip() for r in (sj.get("reasons") or [])
+                           if str(r).strip()]
+        except Exception as e:  # noqa: BLE001  验收调用失败不拦回答，如实附一句
+            system_notes.append(f"语义验收调用失败（{type(e).__name__}: {e}），"
+                                "本轮仅通过程序验证。")
+        if sem_pass:
+            accepted = True
+            break
+        attempts += 1
+        if attempts > max_retries:
+            system_notes.append(
+                "Leader 语义验收未通过，已达重试上限，如实附上未完成原因：\n- "
+                + "\n- ".join(sem_reasons))
+            accepted = True
+            break
+        # 失败原因压入固定槽位，重新执行步骤②到④
+        ctx.add_reasons(["语义验收未通过：" + r for r in sem_reasons]
+                        or ["语义验收未通过：回答未覆盖原文全部要求"])
+        yield {"type": "leader_round", "round": ctx.round, "phase": "retry",
+               "note": f"语义验收未通过（第 {attempts}/{max_retries} 次重试）："
+                       + (sem_reasons[0][:120] if sem_reasons else "未覆盖原文要求")}
 
-    # 产出文件卡片：把本轮所有产出文件（带 rel/exists）随最终答复送前端，
-    # 前端 addFilesCard 渲染成可点击展开的图标，保证汇总结果和文件对上。
+    # ---------- 收尾：文件卡片、台账历史、complete ----------
+    gaps.clear_step()
+    agg_paths: list[str] = []
+    path_title: dict[str, str] = {}
+    for t in all_steps:
+        for p in (sink.get(t.id, {}).get("files") or []):
+            if p not in agg_paths:
+                agg_paths.append(p)
+                path_title[p] = t.title
+    file_records = _file_records(agg_paths, root)
+
+    final_convo = list(history)
+    if not final_convo or final_convo[-1].get("role") != "user":
+        final_convo.append({"role": "user", "content": message})
+    if system_notes:
+        final_answer = final_answer.rstrip() + "\n\n---\n" + "\n\n---\n".join(system_notes)
+    final_convo.append({"role": "assistant", "content": final_answer})
+    yield {"type": "assistant", "content": final_answer, "history": final_convo}
     if file_records:
         yield {"type": "artifacts", "files": file_records}
-
-    yield {"type": "complete", "steps": total, "multi": total >= 2}
+    yield {"type": "complete", "steps": ctx.round, "multi": True}
 
 
 # 多路径尝试：失败后让当前模型拟几条互不相同的实现路径，再逐条试。
@@ -1147,7 +1123,7 @@ def run_task(
         except Exception:  # noqa: BLE001
             disp = None
         if disp is not None and disp.available():
-            yield from run_multi_agent(
+            yield from run_leader(
                 agent, store, entries, history, message, disp,
                 stop_check=stop_check, auto_approve=auto_approve, file_log=file_log,
             )
@@ -1375,4 +1351,4 @@ def run_task(
     yield {"type": "complete", "steps": total, "multi": multi}
 
 
-__all__ = ["run_task", "run_multi_agent"]
+__all__ = ["run_task", "run_leader"]

@@ -1,107 +1,26 @@
-"""多 agent 调度：由一个本地「决策模型」把请求拆成任务、指派执行者、并维护共享进度。
+"""模型指派与 Leader 通信层（第 47 步后瘦身）。
 
-这是把「单 agent 架构」升级成「多 agent 架构」的核心：
+一次性「拆完再跑」的规划机器（plan/_llm_plan/_rules_plan/goal 保真/SharedState
+黑板/synthesize）已由 agentforge/leader.py 的 Leader 双环取代并退役。本模块保留：
 
-    单 agent      一个模型从头干到尾
-    多 agent      调度模型把请求拆成若干【按能力类型分层】的小步骤任务，各派给
-                  该维度最强的 agent，任务在 agent 之间接力流转；调度方维护一份
-                  共享进度（做过什么、产出在哪、需要什么能力），后面的 agent
-                  接着干而不是从头开始。
-
-三件事由这一层负责：
-
-    1. 拆解   按能力类型分层：检索 / 代码分析 / 编码 / 数学 / 写作各自成任务，
-              各配该维度最强的模型（第 42 步起，「同一件事的步骤捆成一个任务」废弃）
-    2. 指派   每个任务要什么能力 → 交给哪个 agent（模型）；必要时调度方自己做翻译桥接
-    3. 交接   把前置任务的「进度 + 产出文件 + 注意事项」整理成简报递给下一个 agent
-
-拆解与指派优先交给本地决策模型完成（见 config 的 agent.dispatcher.model）；
-模型不可用或输出无法解析时，自动回退到 planner 的规则拆解——保证「没有调度模型也能干活」。
+    1. TaskSpec        一批小步骤的载体（事件负载与前端计划卡共用它的 as_dict）
+    2. is_simple_chat  决策模型只接简单对话的判定
+    3. Dispatcher      与决策模型对话（_chat）、指派（_resolve：防自派/防重活）、
+                       能力桥接翻译（translate）
+    4. _catalog_text / _extract_json   候选模型目录与 JSON 提取的共用工具
 """
 
 from __future__ import annotations
 
 import json
 import re
-import threading
 from dataclasses import dataclass, field
 
 from .config import Config
-from . import gaps
-from . import verify as verify_gate
-from .planner import KIND_DIM, KIND_LABEL, kind_of, resolve_kind, short_title, split_task
-
-# 决策模型不该“脑补”出候选里没有的模型名，所以提示词里给白名单并要求留空表示交给系统。
-DISPATCH_SYSTEM = """你是 AgentForge 的任务调度器（Dispatcher）。你的职责是把用户请求拆成若干
-【按能力类型分层】的小步骤任务，并为每个任务指出所需能力与最合适的执行者。
-
-拆解原则（核心：**每个任务 = 一种能力类型的小步骤**）：
-- 模型不是用来处理整句话或整个任务的，而是用来处理任务的一小步的。拆解的粒度是
-  **能力类型**：检索 / 代码分析 / 编码改动 / 数学计算 / 文案写作各自是一种能力类型。
-- **不同能力类型的步骤必须拆成不同任务**，各自交给该维度最强的执行模型——
-  这样才能最大限度发挥组合模型的作用。
-  例：「分析 git 上的 REA 项目并生成报告」= 3 个任务：
-    ① 检索/获取仓库信息（交给检索、抓取维度强的模型）
-    ② 分析代码（交给编码/推理维度强的模型）
-    ③ 写报告（交给写作维度强的模型，以 ② 的产出为输入，depends_on=[②]）
-      「先分析代码，再基于分析写报告」= **2 个任务**（分析是 coding/reasoning，
-      写报告是 writing——捆在一个任务里，就只能给一个模型，浪费了组合）。
-- **只有同一种能力类型内的连续动作才合并**：读取 main.py 后改掉里面的登录函数，
-  两步都是 coding，合成 1 个任务；「改代码并顺手写发布说明」必须拆成 2 个
-  （coding / writing）。
-- **宁可多拆也不错配**：拿不准两个步骤是否同一能力类型时，拆开——拆开各配最强
-  模型的收益，大于合并省下的交接开销。
-- **每个任务的 goal 仍须自包含、可独立执行**：执行者只看这一条 goal 就能干活；
-  前置产出通过 depends_on + handoff 交接，不要指望执行者去看别的任务的上下文。
-- **绝不缩小任务范围**：用户明确要求的产物（文件名、路径、格式、写入还是回复里给出）
-  必须**原样**出现在对应任务的 goal 里。不许把「通读素材并覆盖写入 outline.md」
-  简化成「分析素材并给结论」——那等于偷偷把交付物删了，执行者是照 goal 干活的，
-  goal 里没写的它不会做。
-- 用户任务里写明的验证命令（如「验证：python tools/x.py」）要**原样保留**在对应任务
-  的 goal 里——系统会在任务收尾时亲自运行它核对结果，删掉它等于拆掉验收。
-- **复制 / 备份类任务要在 goal 里写死手段与验证**：goal 必须写明「用复制命令完成
-  （Windows：copy /y，跨平台：cp），禁止读取后用 write_file 重写——文本往返会丢
-  换行符」，并附一行逐字节比对的验证声明，例：
-  验证：python -c "import sys,pathlib;a=pathlib.Path('源文件').read_bytes();b=pathlib.Path('目标文件').read_bytes();sys.exit(0 if a==b else 1)"
-  （源/目标换成任务里的真实文件名。系统收尾时会亲自运行这条命令。）
-- depends_on **只在「后一个任务必须拿到前一个任务的产出文本或文件才能开始」时才填**。
-  只是主题相关、措辞上提到对方，都不算依赖——那种情况留空，让它们并行跑。
-  能并行的任务 depends_on 留空；拿不准是否需要依赖时，**留空**。
-
-对每个任务给出：
-- goal        自包含的执行指令（执行者只看这一条就能干活）
-- kind        coding / inspect / writing / math / analysis / general
-              （inspect = 要先看现场才知道答案的活：列目录、看有哪些文件、读现有实现）
-- capability  完成任务所需的关键能力（一句话）
-- needs_chinese  产出是否必须是中文（true/false）
-- model       只在某个候选模型**明显更合适**时才填它的名字；不确定就留空（由系统按能力挑）。
-              **不要因为你自己是某个模型就把任务都派给自己**——留空时系统会挑该维度最强的。
-              **你自己（调度器）体量小，只负责拆解、指派、交接和几句简单对话**；凡是要调工具、
-              读写字、写代码、做数学的任务，一律留空交给系统挑最强的执行模型，绝不能自己上。
-- depends_on  依赖的任务 id 列表（没有就空数组）
-- handoff     给执行者的交接说明（前置产出、注意点、已有结论）
-
-候选模型（只能从这些名字里选）：
-{catalog}
-
-只输出一个 JSON 对象，不要任何解释与代码块围栏：
-{{"tasks":[{{"id":"t1","goal":"...","kind":"coding","capability":"...","needs_chinese":true,"model":"","depends_on":[],"handoff":"..."}}],"rationale":"一句话说明为什么这样拆"}}
-"""
+from .planner import KIND_DIM, KIND_LABEL, short_title
 
 TRANSLATE_SYSTEM = "你是翻译器。把用户给出的内容准确翻译成{target}，只输出译文本身，不要任何解释、前缀或代码块。"
 
-SYNTH_SYSTEM = """你是 AgentForge 的主协调者。下面是一个总任务被拆成多个子任务、分别由不同 agent
-执行后的结果清单。请把它们整合成一份给用户的中文答复：
-- 只保留用户真正关心的结论与产出（改了哪些文件、得到什么结果），不要复述过程；
-- 子任务之间有先后关系的，按最终状态叙述，不要罗列中间态；
-- 不要编造清单里没有的事实；
-- 【读产出文件】如果下面附带了「产出文件内容」，必须据此核对：文件里真正写了什么
-  关键结果（数字 / 日期 / 结论 / 要点），就要写进答复；不得只回一句「已生成 X」而把
-  文件里的关键事实漏掉——用户要看的是文件内容，不是一句回执。
-- 【对上文件名】凡答复涉及某个产出文件，请明确写出它的文件名（如「见 report.md」），
-  让用户能把汇总结论和前端对应的文件卡片对上。
-- 【语言】即使子任务结果、工具输出或摘要里有英文，答复也必须全部用简体中文
-（用户长期偏好如此，专有名词和代码除外）。"""
 
 
 # 调度模型点名的执行模型，在该任务维度上比场上最强者低这么多分时就不采纳。
@@ -173,69 +92,6 @@ _FILE_TOK_RX = re.compile(
 _QUOTE_TOK_RX = re.compile(r"[「『\"']([^「』\"'\n]{2,40})[」』\"']")
 
 
-def deliverable_tokens(message: str, cap: int = 12) -> list[str]:
-    """用户原文里点名的交付物 token（去重保序限量）。"""
-    txt = str(message or "")
-    out: list[str] = []
-    seen: set[str] = set()
-    for m in _FILE_TOK_RX.finditer(txt):
-        t = m.group(0).rstrip(".,;、。")
-        k = t.lower().replace("\\", "/")
-        if k and k not in seen:
-            seen.add(k)
-            out.append(t)
-            if len(out) >= cap:
-                return out
-    for m in _QUOTE_TOK_RX.finditer(txt):
-        t = m.group(1).strip()
-        k = t.lower()
-        if len(t) >= 2 and k not in seen:
-            seen.add(k)
-            out.append(t)
-            if len(out) >= cap:
-                return out
-    return out
-
-
-def missing_deliverables(message: str, tasks: list["TaskSpec"]) -> list[str]:
-    """原文点名的交付物里，哪些没出现在任何 goal 里（归一后比对，\\ 与 / 等价）。"""
-    if not tasks:
-        return []
-    hay = "\n".join(str(t.goal or "") for t in tasks)
-    hay = hay.lower().replace("\\", "/")
-    miss = []
-    for t in deliverable_tokens(message):
-        k = t.lower().replace("\\", "/")
-        if k not in hay:
-            miss.append(t)
-    return miss
-
-
-def _fidelity_retry_text(message: str, missing: list[str]) -> str:
-    """点名丢失的交付物，让决策模型重拆一次（一轮修正）。"""
-    return (str(message) + "\n\n【系统侧拆解核查 · 必须重拆】上面的原始请求里有这些"
-            "用户明确要求的交付物，上一次拆分把它们弄丢了："
-            + "、".join(f"「{t}」" for t in missing)
-            + "。重新拆分：每个交付物必须原样出现在对应任务的 goal 里"
-            "（文件名、路径、引号内容一字不改），不许缩小任务范围，"
-            "不许把交付物改成别的形式。")
-
-
-def _sentence_of(text: str, tok: str) -> str:
-    """token 在原文里所在的句子（用于挑「最相关」的 task 补写）。"""
-    for s in re.split(r"[。！？\n；;]", str(text or "")):
-        if tok.lower() in s.lower():
-            return s
-    return tok
-
-
-def _bigram_overlap(a: str, b: str) -> int:
-    """字符 bigram 交集数（粗粒度相关性，够挑任务即可）。"""
-    sa = {a[i:i + 2] for i in range(max(0, len(a) - 1))} if a else set()
-    sb = {b[i:i + 2] for i in range(max(0, len(b) - 1))} if b else set()
-    return len(sa & sb)
-
-
 @dataclass
 class TaskSpec:
     """一个待执行的 agent 任务。"""
@@ -282,91 +138,6 @@ class TaskSpec:
         }
 
 
-@dataclass
-class DispatchPlan:
-    tasks: list[TaskSpec]
-    rationale: str = ""
-    source: str = "rules"          # llm | rules
-    dispatcher_name: str = ""
-
-    def summary(self) -> str:
-        used = []
-        for t in self.tasks:
-            if t.model_name and t.model_name not in used:
-                used.append(t.model_name)
-        if not self.tasks:
-            return ""
-        return f"{len(self.tasks)} 个任务 → {len(used)} 个 agent（{'、'.join(used)}）"
-
-
-@dataclass
-class TaskResult:
-    task_id: str
-    title: str
-    status: str = "pending"        # pending | running | done | error
-    summary: str = ""
-    files: list[str] = field(default_factory=list)
-
-
-class SharedState:
-    """多 agent 共享的任务状态（黑板）。
-
-    调度方与各 agent 都读写它：agent 完成后写入摘要与产出文件，下一步的 agent
-    通过 brief() 拿到「前面做了什么、产出在哪」，从而不必从头开始。
-    """
-
-    def __init__(self, message: str):
-        self.message = message
-        self.results: dict[str, TaskResult] = {}
-        # 并行执行时多个 agent 线程会同时读写，所有访问都在锁内。
-        self._lock = threading.Lock()
-
-    def register(self, tasks: list[TaskSpec]) -> None:
-        with self._lock:
-            for t in tasks:
-                self.results[t.id] = TaskResult(task_id=t.id, title=t.title or short_title(t.goal))
-
-    def start(self, task_id: str) -> None:
-        with self._lock:
-            if task_id in self.results:
-                self.results[task_id].status = "running"
-
-    def finish(self, task_id: str, summary: str, files: list[str] | None = None,
-               status: str = "done") -> None:
-        with self._lock:
-            r = self.results.setdefault(task_id, TaskResult(task_id=task_id, title=task_id))
-            r.status = status
-            r.summary = (summary or "").strip()
-            if files:
-                for f in files:
-                    if f and f not in r.files:
-                        r.files.append(f)
-
-    def brief(self, task: TaskSpec) -> str:
-        """给某个任务生成「前置进度简报」。"""
-        with self._lock:
-            rows: list[str] = []
-            for dep in task.depends_on:
-                r = self.results.get(dep)
-                if not r:
-                    continue
-                line = f"- [{r.title}] {r.summary or '（已完成）'}"
-                if r.files:
-                    line += "\n    产出文件：" + "、".join(r.files[:8])
-                rows.append(line)
-            # 没有显式依赖时，把已完成的任务也简要带上（接力语义：默认继承前序成果）
-            if not rows:
-                for r in self.results.values():
-                    if r.status == "done" and r.summary:
-                        line = f"- [{r.title}] {r.summary}"
-                        if r.files:
-                            line += "\n    产出文件：" + "、".join(r.files[:8])
-                        rows.append(line)
-        return "\n".join(rows) if rows else "（无前置任务，从头开始）"
-
-    def result_items(self) -> list[tuple[str, str]]:
-        with self._lock:
-            return [(r.title, r.summary) for r in self.results.values()]
 
 
 def _catalog_text(entries: list[dict]) -> str:
@@ -474,149 +245,6 @@ class Dispatcher:
         )
         return (res.content or "").strip()
 
-    # ---------------------------------------------------------- 拆解 / 指派
-    def plan(self, message: str, entries: list[dict]) -> DispatchPlan:
-        """产出执行计划：优先让决策模型拆，失败则退回规则拆解。"""
-        if self.available():
-            p = self._llm_plan(message, entries)
-            if p is not None:
-                self._augment_copy_checks(p.tasks)
-                if getattr(self.cfg, "goal_fidelity_gate", True):
-                    p = self._enforce_goal_fidelity(message, p, entries, allow_retry=True)
-                return p
-        p = self._rules_plan(message, entries)
-        self._augment_copy_checks(p.tasks)
-        if getattr(self.cfg, "goal_fidelity_gate", True):
-            # 规则拆解的 goal 是原文切片，交付物按构造保留；万一 split 重写丢了，
-            # 只程序化补进 goal（没有 LLM 可重拆）。
-            p = self._enforce_goal_fidelity(message, p, entries, allow_retry=False)
-        return p
-
-    def _enforce_goal_fidelity(self, message: str, p: DispatchPlan,
-                               entries: list[dict], allow_retry: bool = True) -> DispatchPlan:
-        """goal 保真（程序比对 + 一轮修正）：用户点名的交付物不得在拆分中丢失。
-
-        1. 比对：原文的文件名 / 路径 / 引号内容是否都出现在某个 goal 里；
-        2. 缺了且允许重试 → 点名丢失项让决策模型重拆一次，两版取缺得少的；
-        3. 仍缺 → 程序化把缺的交付物补进最相关任务的 goal（补写声明，同
-           _augment_copy_checks 的既有模式），并记缺口台账。
-        """
-        missing = missing_deliverables(message, p.tasks)
-        if not missing:
-            return p
-        if allow_retry:
-            retry = self._llm_plan(_fidelity_retry_text(message, missing), entries)
-            if retry is not None:
-                self._augment_copy_checks(retry.tasks)
-                still = missing_deliverables(message, retry.tasks)
-                if len(still) < len(missing):
-                    p, missing = retry, still
-        if missing:
-            self._augment_missing_deliverables(p.tasks, message, missing)
-            gaps.record("goal_fidelity", "shrunk",
-                        "拆分丢失交付物，已程序化补进 goal：" + "、".join(missing),
-                        self.cfg, step=message)
-        return p
-
-    def _augment_missing_deliverables(self, tasks: list[TaskSpec],
-                                      message: str, missing: list[str]) -> None:
-        """把丢失的交付物补进最相关任务的 goal；挑不出就放链上最后一个任务
-        （依赖链末端通常是最终交付者）。"""
-        if not tasks:
-            return
-        for tok in missing:
-            sent = _sentence_of(message, tok)
-            best, best_score = None, 0
-            for t in tasks:
-                score = _bigram_overlap(sent, t.goal)
-                if score > best_score:
-                    best, best_score = t, score
-            target = best or tasks[-1]
-            target.goal += (f"\n【系统侧范围保全】用户原文明确要求交付「{tok}」，"
-                            "本任务必须覆盖这一交付物：文件名 / 路径 / 内容形式原样照做，"
-                            "不得省略或替换成别的形式。")
-
-    def _augment_copy_checks(self, tasks: list[TaskSpec]) -> None:
-        """给复制/备份类任务的 goal 补逐字节比对验证声明（f4 教训）。
-
-        决策模型不一定记得提示词里的复制规矩（本地小模型指令跟随弱），
-        程序按 verify.declare_copy_check 的保守判据兜底补写——goal 补强后
-        执行模型与任务级闸门看到的是同一份任务书。
-        """
-        for t in tasks:
-            note = verify_gate.declare_copy_check(t.goal)
-            if note:
-                t.goal += note
-
-    def _llm_plan(self, message: str, entries: list[dict]) -> DispatchPlan | None:
-        max_tasks = int(getattr(self.cfg, "dispatcher_max_tasks", 6) or 6)
-        system = DISPATCH_SYSTEM.format(catalog=_catalog_text(entries))
-        try:
-            raw = self._chat(system, message, num_predict=2048, temperature=0.2)
-        except Exception:  # noqa: BLE001  决策模型挂了不该拖垮整个任务
-            return None
-        obj = _extract_json(raw)
-        if not obj or not isinstance(obj.get("tasks"), list):
-            return None
-
-        valid_names = {e.get("name") for e in entries}
-        tasks: list[TaskSpec] = []
-        for i, item in enumerate(obj["tasks"][:max_tasks]):
-            if not isinstance(item, dict):
-                continue
-            goal = str(item.get("goal") or "").strip()
-            if not goal:
-                continue
-            # 调度模型给的 kind 要过一遍规则复核（见 planner.resolve_kind）：
-            # 它把「修改思维链输出机制…总结成一句话」这条改代码的活标成了 writing，
-            # 于是按写作维度挑模型，模型就去"写一段说明""记下您的偏好"，一个文件没碰。
-            kind = resolve_kind(goal, item.get("kind"))
-            model = str(item.get("model") or "").strip()
-            if model not in valid_names:
-                model = ""                    # 模型瞎报名字时忽略，交给系统按能力挑
-            deps = item.get("depends_on") or []
-            if not isinstance(deps, list):
-                deps = []
-            tasks.append(TaskSpec(
-                id=str(item.get("id") or f"t{i + 1}"),
-                goal=goal,
-                kind=kind,
-                capability=str(item.get("capability") or "").strip(),
-                needs_chinese=bool(item.get("needs_chinese", True)),
-                model=model,
-                depends_on=[str(d) for d in deps],
-                handoff=str(item.get("handoff") or "").strip(),
-                # 决策模型愿意给短标题就用它的；没给则 _resolve 用 short_title 兜底，
-                # 不把「标题好不好」押在模型身上。
-                title=str(item.get("title") or "").strip(),
-            ))
-        if not tasks:
-            return None
-        self._resolve(tasks, entries)
-        return DispatchPlan(
-            tasks=tasks,
-            rationale=str(obj.get("rationale") or "").strip(),
-            source="llm",
-            dispatcher_name=self.name(),
-        )
-
-    def _rules_plan(self, message: str, entries: list[dict]) -> DispatchPlan:
-        """回退路径：复用 planner 的规则拆解，把片段串成有依赖链的任务。"""
-        parts = [p for p in split_task(message) if p.strip()]
-        if not parts:
-            parts = [message]
-        tasks: list[TaskSpec] = []
-        for i, part in enumerate(parts):
-            tasks.append(TaskSpec(
-                id=f"t{i + 1}",
-                goal=part,
-                kind=kind_of(part),
-                depends_on=[f"t{i}"] if i > 0 else [],   # 串成接力链，保持既有语义
-            ))
-        self._resolve(tasks, entries)
-        return DispatchPlan(tasks=tasks, rationale="规则拆解（决策模型不可用时的回退）",
-                            source="rules", dispatcher_name=self.name())
-
     # ---------------------------------------------------------- 指派
     def _resolve(self, tasks: list[TaskSpec], entries: list[dict]) -> None:
         """为每个任务确定执行 agent（模型）：优先用调度模型点名的，否则按能力挑最强。
@@ -704,36 +332,6 @@ class Dispatcher:
         return out or text
 
     # ---------------------------------------------------------- 收尾汇总
-    def synthesize(self, message: str, items: list[tuple[str, str]],
-                   artifacts: list[dict] | None = None) -> str:
-        """把各 agent 的结果整合成一份给用户的答复（决策模型完成）。
-
-        artifacts（方案 B）：本轮各子任务的产出文件内容，每项是
-        {title, rel, content}。协调者据此把文件里的关键结果带进答复，
-        并写出文件名，使汇总结果与前端文件卡片对上。
-        """
-        if not self.available() or not items:
-            return ""
-        listing = "\n".join(f"[{title}] {summary}" for title, summary in items if summary)
-        if not listing.strip():
-            return ""
-        user = f"【总任务】\n{message}\n\n【各 agent 的结果】\n{listing}"
-        # 方案 B：把产出文件内容塞给协调者，让它据此核对、把关键事实带进答复
-        if artifacts:
-            blocks = []
-            for a in artifacts:
-                rel = a.get("rel") or a.get("path") or ""
-                title = a.get("title") or ""
-                content = a.get("content") or ""
-                head = f"产出文件：{rel}" + (f"（来自子任务「{title}」）" if title else "")
-                blocks.append(f"{head}\n<文件内容>\n{content}\n</文件内容>")
-            if blocks:
-                user += "\n\n【产出文件内容（必须据此核对，关键结果要写进答复）】\n" \
-                        + "\n\n".join(blocks)
-        try:
-            return self._chat(SYNTH_SYSTEM, user, num_predict=3072, temperature=0.3)
-        except Exception:  # noqa: BLE001
-            return ""
 
 
-__all__ = ["Dispatcher", "DispatchPlan", "TaskSpec", "SharedState", "TaskResult"]
+__all__ = ["Dispatcher", "TaskSpec"]
