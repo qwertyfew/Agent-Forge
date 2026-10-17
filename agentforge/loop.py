@@ -16,7 +16,14 @@ from .context import Compressor, measure
 from .llm import OllamaClient, parse_text_tool_calls
 from .memory import MemoryStore
 from .llm import GenerationStopped
-from .permissions import OUTSIDE_OK, Guard, PermissionDenied, claim_write
+from .permissions import (
+    OUTSIDE_OK,
+    OUTDIR_CTX,
+    WRITE_ALLOW,
+    Guard,
+    PermissionDenied,
+    claim_write,
+)
 from .pricing import cost_of, is_free
 from .providers import ClientHub
 from .router import Router
@@ -103,10 +110,10 @@ OUTDIR_RULE = """
 ## 产出与中间文件
 - 本任务的产出目录（相对工作区根目录）：**{outdir}**（目录名即任务发起时间）
 - 你要新建的文件——分析报告、草稿、提取的数据、临时脚本、生成的文档等
-  中间产物与最终产物——**一律创建在上述产出目录里**，不要散落在工作区根目录
-  或仓库其他位置。
-- 唯一例外：该文件**必须放在特定位置才能生效**（改项目源码/配置、被验证命令
-  按固定路径读取的交付物等）——这类按需放置，并在最终回复里注明实际路径。
+  中间产物与最终产物——**一律创建在上述产出目录里**。
+- 这是**架构保证**：write_file 的相对路径会被自动重定向进产出目录，写偏了
+  系统会告诉你实际落点。例外通道：任务书里明确点名的路径（按任务书写），
+  或绝对路径（显式意图，受工作区边界约束）。
 - 引用产出时在回复里给出相对工作区的完整路径，方便用户直接打开。
 """
 
@@ -493,6 +500,16 @@ class Agent:
         full = auto_approve is True or bool(getattr(self.guard, "auto_approve_all", False))
         self.permission_label = "完全访问权限" if full else "默认权限"
         self.full_access = full
+
+        # 写入放行名单：任务书（user_text）里点名的带目录层的相对路径。
+        # 这些路径不受「强制落产出目录」重定向——那是「必须放特定位置才能
+        # 生效」的例外通道（如任务书点名要交付到 evals/ 的报告）。只认带
+        # 目录层的路径（含 ./ 前缀）：裸文件名一律进产出目录，那正是根目录
+        # 违规写入的形态。绝对路径不走名单，本身就不受重定向。
+        allow: set[str] = set()
+        for m in re.finditer(r"(?:\./|(?:[\w.\-]+/)+)[\w.\-]+\.[A-Za-z0-9]{1,8}", user_text or ""):
+            allow.add(m.group(0).replace("\\", "/").lstrip("./"))
+        self._write_allow = frozenset(allow)
 
         # auto_route 已停用：旧的信号词粗分（classify）选的是不存在的语义 key，
         # 实际永远落到 fallback，属于死逻辑；真正的路由在编排层
@@ -882,6 +899,9 @@ class Agent:
         # 判据与 run() 里的 full 保持一致：显式 auto_approve，或 Guard 全局自动批准。
         # 只放开「读写」；命令黑名单不随之放开（见 Guard.check_command）。
         token = OUTSIDE_OK.set(auto_approve is True or bool(getattr(self.guard, "auto_approve_all", False)))
+        # 产出目录 + 放行名单随调用注入：写类工具据此把相对路径强制落进产出目录
+        ot = OUTDIR_CTX.set(self.outdir or None)
+        wt = WRITE_ALLOW.set(getattr(self, "_write_allow", frozenset()))
         try:
             with claim_write(claim_key):
                 out = str(tool.run(**(args or {})))
@@ -893,6 +913,8 @@ class Agent:
             return f"[错误] 工具 {name} 执行异常：{type(e).__name__}: {e}"
         finally:
             OUTSIDE_OK.reset(token)
+            OUTDIR_CTX.reset(ot)
+            WRITE_ALLOW.reset(wt)
 
         # 记下这次调用改动的文件（任务台账据此展示「任务产出」，并在清空时可选删除）
         if file_log is not None:

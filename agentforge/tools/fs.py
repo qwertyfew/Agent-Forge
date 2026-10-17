@@ -82,7 +82,11 @@ def build_fs_tools(guard, cfg):
 
     # ---------- write_file ----------
     def write_file(path: str, content: str) -> str:
-        p = guard.resolve(path)
+        # 产出目录的架构级保证：任务设有产出目录时，相对路径强制落进去
+        # （resolve_for_write；任务书点名的路径与绝对路径走例外通道）。
+        rfw = getattr(guard, "resolve_for_write", None)
+        p = rfw(path) if rfw else guard.resolve(path)
+        redirected = p != guard.resolve(path)
         existed = p.exists()
         old = p.read_text(encoding="utf-8", errors="replace") if existed else ""
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -96,7 +100,8 @@ def build_fs_tools(guard, cfg):
         
         action = "覆盖" if existed else "新建"
         diff = "" if not existed else f"（原 {len(old)} 字符 → 现 {len(content)} 字符）"
-        return f"已{action}文件 {p} {diff}"
+        note = "（相对路径已按产出规则自动写入产出目录）" if redirected else ""
+        return f"已{action}文件 {p} {diff}{note}"
 
     # ---------- edit_file ----------
     def edit_file(path: str, old_text: str, new_text: str) -> str:

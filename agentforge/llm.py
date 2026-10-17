@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from typing import Any, Iterator
 
 import requests
+
+# 服务端错误（5xx）与网络抖动的自动重试：复测里 14 个子任务死于同一形态的
+# Ollama 500——生成正常完成后响应处理阶段崩，同一 prompt 再请求往往就过
+# （Leader 的失败重排反复证明了这一点）。重试只发生在**还没吐出任何增量**
+# 的阶段（状态行被拒/连接失败），流中途断掉的不重试（无法保证不重复）。
+LLM_RETRIES = 2          # 额外重试次数
+LLM_RETRY_BACKOFF = 2.0  # 指数退避基数（秒）：2s, 4s
 
 
 class ToolCall:
@@ -240,6 +248,32 @@ class OllamaClient:
         self.keep_alive = keep_alive
         self.timeout = timeout
 
+    def _post_chat(self, payload: dict, *, stream: bool):
+        """POST /api/chat，带 5xx/网络错误指数退避重试。
+
+        只覆盖「响应还没开始消费」的阶段：状态行被拒（raise_for_status）、
+        连接建立失败、超时。流已经吐出增量后的中断不在重试范围——那无法
+        保证不重复内容。4xx（模型名错、参数错）重试无意义，直接抛。"""
+        last: Exception | None = None
+        for attempt in range(1 + LLM_RETRIES):
+            try:
+                resp = requests.post(
+                    f"{self.host}/api/chat", json=payload,
+                    stream=stream, timeout=self.timeout,
+                )
+                resp.raise_for_status()
+                return resp
+            except requests.HTTPError as e:
+                code = e.response.status_code if e.response is not None else None
+                if code is not None and code < 500:
+                    raise                       # 参数/模型名错：重试无意义
+                last = e
+            except (requests.ConnectionError, requests.Timeout) as e:
+                last = e
+            if attempt < LLM_RETRIES:
+                time.sleep(LLM_RETRY_BACKOFF * (2 ** attempt))   # 2s, 4s
+        raise last  # type: ignore[misc]
+
     def ping(self) -> bool:
         try:
             r = requests.get(f"{self.host}/api/tags", timeout=5)
@@ -329,10 +363,7 @@ class OllamaClient:
         if serial:
             _LOCAL_LOCK.acquire()
         try:
-            with requests.post(
-                f"{self.host}/api/chat", json=payload, stream=True, timeout=self.timeout
-            ) as resp:
-                resp.raise_for_status()
+            with self._post_chat(payload, stream=True) as resp:
                 for line in resp.iter_lines(decode_unicode=True):
                     if not line:
                         continue

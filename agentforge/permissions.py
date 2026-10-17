@@ -16,6 +16,18 @@ OUTSIDE_OK: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
     "af_outside_ok", default=False
 )
 
+# 产出目录（架构级写入保证）：任务设有产出目录时，write_file 的相对路径
+# 一律强制重定向进该目录——不依赖模型自觉。随每次工具调用注入（与
+# OUTSIDE_OK 同一模式），泳道线程各自持有，互不串扰。
+OUTDIR_CTX: "contextvars.ContextVar[str | None]" = contextvars.ContextVar(
+    "af_outdir", default=None
+)
+# 写入放行名单：任务书里点名的相对路径（编排层从任务文本提取）。
+# 命中名单的路径按原样解析——这是「必须放特定位置才能生效」的例外通道。
+WRITE_ALLOW: "contextvars.ContextVar[frozenset]" = contextvars.ContextVar(
+    "af_write_allow", default=frozenset()
+)
+
 
 class PermissionDenied(Exception):
     pass
@@ -53,6 +65,25 @@ class Guard:
                 f"路径越出工作区，已拒绝：{p}\n工作区根目录：{root}"
             )
         return p
+
+    def resolve_for_write(self, raw: str | Path) -> Path:
+        """写类工具的路径解析：产出目录的**架构级保证**。
+
+        任务设有产出目录（OUTDIR_CTX）时，相对路径一律强制落进该目录——
+        「中间文件进产出目录」由代码保证，不再赌提示词。放行通道只有两个：
+        - 任务文本里点名的相对路径（WRITE_ALLOW，编排层从任务书提取）；
+        - 绝对路径（模型显式表达了意图，工作区边界规则照常生效）。
+        已经落在产出目录里面的路径（比如模型写了「out 目录/子路径」）不二次
+        嵌套，按原样解析。"""
+        p = Path(str(raw))
+        outdir = OUTDIR_CTX.get()
+        if outdir is None or p.is_absolute():
+            return self.resolve(raw)
+        allow = WRITE_ALLOW.get() or frozenset()
+        norm = str(raw).strip().replace("\\", "/").lstrip("./")
+        if norm in allow or norm == outdir or norm.startswith(outdir.rstrip("/") + "/"):
+            return self.resolve(raw)
+        return self.resolve(Path(outdir) / str(raw))
 
     # ---------- 命令 ----------
     def check_command(self, command: str) -> None:

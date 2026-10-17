@@ -517,7 +517,24 @@
   .msg-ai .body pre code{background:none;padding:0;font-size:inherit}
   .msg-ai .body code{background:var(--code);border:1px solid var(--line);border-radius:5px;padding:.5px 5px;
     font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.88em}
-  .msg-ai .body h2,.msg-ai .body h3{margin:12px 0 2px;font-size:1em;font-weight:650}
+  .msg-ai .body h2,.msg-ai .body h3,.msg-ai .body h4{margin:12px 0 2px;font-size:1em;font-weight:650}
+  /* Markdown 正文（对齐 WorkBuddy 阅读体验）：段落有间距、列表缩进、
+     表格成真表格。md() 输出紧凑无残留换行，间距全部由这里的 margin 提供。 */
+  .msg-ai .body h2{font-size:1.06em}
+  .msg-ai .body h4{font-size:.96em}
+  .msg-ai .body p{margin:0 0 9px;line-height:1.72}
+  .msg-ai .body ul,.msg-ai .body ol{margin:2px 0 9px;padding-left:22px}
+  .msg-ai .body li{margin:3px 0;line-height:1.68}
+  .msg-ai .body li>ul,.msg-ai .body li>ol{margin:3px 0 2px}
+  .msg-ai .body hr{border:none;border-top:1px solid var(--bar);margin:12px 0}
+  .msg-ai .body .mdtable{overflow-x:auto;margin:10px 0;border:1px solid var(--bar);border-radius:10px}
+  .msg-ai .body .mdtable table{border-collapse:collapse;width:100%;font-size:12.5px;line-height:1.55}
+  .msg-ai .body .mdtable th,.msg-ai .body .mdtable td{padding:7px 12px;text-align:left;
+    border-bottom:1px solid var(--bar);vertical-align:top}
+  .msg-ai .body .mdtable thead th{background:color-mix(in srgb,var(--bar) 45%,transparent);
+    font-weight:650;white-space:nowrap}
+  .msg-ai .body .mdtable tbody tr:last-child td{border-bottom:none}
+  .msg-ai .body .mdtable tbody tr:hover{background:color-mix(in srgb,var(--bar) 18%,transparent)}
 
   /* 回复底部工具条：复制 / 重新回答 / 朗读 + 右侧预估消耗与模型 */
   .msg-foot{display:flex;align-items:center;gap:1px;margin-top:6px;flex-wrap:wrap}
@@ -5584,14 +5601,86 @@ function addError(msg){
   scrollBottom();
 }
 
+/* Markdown 渲染：对齐 WorkBuddy 的阅读体验——表格成真表格、列表成列表、
+   <br> 字面量当换行、段落有间距、标题有层级。策略：先占位保护代码块与
+   行内码，再做块级结构（表格→标题→分隔线→列表→段落），加粗在表格之前
+   套好（单元格内容一并生效），最后还原占位。
+   输出保持**紧凑**（标签间不留空白文本节点）：.body 是 pre-wrap，任何
+   残留换行都会在页面上多出一行。 */
 function md(s){
-  return String(s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/```(\w*)\n?([\s\S]*?)```/g,(m,l,c)=>'<pre><code>'+c.replace(/\n$/,'')+'</code></pre>')
-    .replace(/`([^`\n]+)`/g,'<code>$1</code>')
-    .replace(/^### (.+)$/gm,'<h3>$1</h3>')
-    .replace(/^## (.+)$/gm,'<h2>$1</h2>')
-    .replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
+  let t = String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const blocks = [], inls = [];
+  t = t.replace(/```(\w*)\n?([\s\S]*?)```/g,(m,l,c)=>{
+    blocks.push('<pre><code>'+c.replace(/\n$/,'')+'</code></pre>');
+    return '\u0000B'+(blocks.length-1)+'\u0000';
+  });
+  t = t.replace(/`([^`\n]+)`/g,(m,c)=>{
+    inls.push('<code>'+c+'</code>');
+    return '\u0000I'+(inls.length-1)+'\u0000';
+  });
+  t = t.replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>');
+  // 表格：头行 + 分隔行（含 - 与 :）+ 若干数据行。
+  // 数据行写成「换行+行内容」的形式——匹配不吞最后一行的换行符，
+  // 否则紧随其后的段落会因丢掉空行而粘进表格段，包不进 <p>。
+  t = t.replace(/^[ \t]*\|[^\n]*\n[ \t]*\|[\s:|-]+\|?[^\n]*(?:\n[ \t]*\|[^\n]*)*/gm, m=>{
+    const rows = m.trim().split('\n').map(r=>r.trim());
+    const cells = r => r.replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>c.trim());
+    let h = '<div class="mdtable"><table><thead><tr>'
+          + cells(rows[0]).map(c=>'<th>'+c+'</th>').join('') + '</tr></thead><tbody>';
+    for(let i=2;i<rows.length;i++)
+      h += '<tr>'+cells(rows[i]).map(c=>'<td>'+c+'</td>').join('')+'</tr>';
+    return h + '</tbody></table></div>';
+  });
+  // 字面 <br> → 真换行（模型爱在表格单元格里用它）——放在表格之后，
+  // 免得把单元格拆散；转换同时修好刚生成的表格 HTML 里的字面量。
+  t = t.replace(/&lt;br\s*\/?&gt;/gi,'<br>');
+  t = t.replace(/^#### (.+)$/gm,'<h4>$1</h4>')
+       .replace(/^### (.+)$/gm,'<h3>$1</h3>')
+       .replace(/^## (.+)$/gm,'<h2>$1</h2>')
+       .replace(/^# (.+)$/gm,'<h2>$1</h2>');
+  t = t.replace(/^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/gm,'<hr>');
+  // 列表：连续的 - / * / • 或 1. / 1) 行；两格以上缩进视为上一项的子列表。
+  // 有序/无序混排时按标记类型切段（各成一支列表，不互相并项）；
+  // 末行同样不吞换行符（理由同表格）。
+  t = t.replace(/(?:^[ \t]*(?:[-*•]|\d+[.)]) [^\n]*\n)*[ \t]*(?:[-*•]|\d+[.)]) [^\n]*/gm, m=>{
+    let h = '', run = null, runOrd = false;
+    const flush = ()=>{
+      if(!run || !run.length) return;
+      const w = runOrd ? ['<ol>','</ol>'] : ['<ul>','</ul>'];
+      h += w[0] + run.map(it=>{
+        let s = '<li>'+it.t;
+        if(it.sub) s += w[0] + it.sub.map(x=>'<li>'+x+'</li>').join('') + w[1];
+        return s+'</li>';
+      }).join('') + w[1];
+      run = null;
+    };
+    for(const ln of m.split('\n')){
+      const im = ln.match(/^([ \t]*)([-*•]|\d+[.)]) (.*)$/);
+      if(!im) continue;
+      const ord = /^\d/.test(im[2]);
+      if(!run || ord !== runOrd){ flush(); run = []; runOrd = ord; }
+      const it = {t: im[3]};
+      if(im[1].length >= 2 && run.length){
+        const last = run[run.length-1];
+        (last.sub || (last.sub = [])).push(im[3]);
+      }else run.push(it);
+    }
+    flush();
+    return h;
+  });
+  // 段落：空行分段；段内单换行 → <br>（聊天语境里单换行就是想断行）。
+  // 块级闭合标签后若只隔了单个换行，先补一个空行再分——否则后面的正文
+  // 会粘在表格/列表段里包不进 <p>。
+  t = t.replace(/(<\/(?:div|table|ul|ol|pre|h\d)>)[ \t]*\n(?! *\n)/g,'$1\n\n');
+  t = t.split(/\n{2,}/).map(seg=>{
+    const x = seg.trim();
+    if(!x) return '';
+    if(/^<(h\d|ul|ol|table|pre|hr|div|blockquote)/.test(x) || /^\u0000B\d+\u0000$/.test(x)) return x;
+    return '<p>'+x.replace(/\n/g,'<br>')+'</p>';
+  }).join('');
+  t = t.replace(/\u0000I(\d+)\u0000/g,(m,i)=>inls[+i])
+       .replace(/\u0000B(\d+)\u0000/g,(m,i)=>blocks[+i]);
+  return t;
 }
 
 /* ================= 上下文指示 ================= */
@@ -6211,7 +6300,11 @@ function handleTaskEvent(ev, data){
       }
       const ln = laneOf(data.task_id);
       if(ln){
+        const box = ln.think;
         closeLaneThinking(ln, '决定调用工具 ' + data.name);
+        // 空壳/一句话的思考块不占行：它的全部信息（要调什么工具）紧随其后的
+        // 工具组头会说，折叠行只会成为刷屏的重复——这正是过程流丑的主因。
+        if(box && box.text.trim().length < 20) box.d.remove();
         ln.cur = null;
         ln.tool = addTool(data.name, data.args, ln.body);
       }else{
