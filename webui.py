@@ -753,6 +753,32 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             bus.unsubscribe(q)
 
+    def _task_folder(self, task: dict) -> str:
+        """任务「实际存放的路径」：右键「打开文件夹」的目标。
+
+        三级推断，取第一个命中的：
+        1. 台账产出文件里最常见的父目录（任务把东西写哪了，就打开哪）；
+        2. 按发起时间命名的产出目录（第 48 步的 outdir 约定）；
+        3. 工作区根目录兜底。"""
+        root = Path(self.cfg.workspace_root).resolve()
+        counts: dict[str, int] = {}
+        for f in task.get("files") or []:
+            try:
+                p = Path(str(f.get("path") or ""))
+                if not p.is_absolute():
+                    p = root / p
+                d = p.resolve().parent
+                d.relative_to(root)          # 工作区外的产出（完全访问权限）不参与
+            except (ValueError, OSError):
+                continue
+            counts[str(d)] = counts.get(str(d), 0) + 1
+        if counts:
+            return max(counts.items(), key=lambda kv: kv[1])[0]
+        outdir = root / time.strftime("%Y%m%d-%H%M%S", time.localtime(task.get("created_at") or 0))
+        if outdir.is_dir():
+            return str(outdir)
+        return str(root)
+
     def _handle_tasks_get(self):
         query = urlparse(self.path).query
         tid = ""
@@ -778,10 +804,14 @@ class _Handler(BaseHTTPRequestHandler):
                     f["size"] = p.stat().st_size
                 except OSError:
                     f["size"] = None
+            task["folder"] = self._task_folder(task)
             self._json({"task": task})
             return
+        tasks = self.tasks.list()
+        for t in tasks:
+            t["folder"] = self._task_folder(t)
         payload = {
-            "tasks": self.tasks.list(),
+            "tasks": tasks,
             "running": self.tasks.running_count(),
             # 算力闸门容量：前端据此判断「还有没有空闲算力」
             "max_running": self.max_running,
@@ -857,6 +887,27 @@ class _Handler(BaseHTTPRequestHandler):
                         "note": "已请求停止，当前这轮生成结束后即退出。"
                                 if ok else "该任务不在执行中（可能已结束）"})
             return
+
+        if action == "rename":
+            tid = str(req.get("id") or "")
+            title = str(req.get("title") or "").strip()
+            if not tid or not title:
+                self._json({"error": "缺 id 或 title"}, 400)
+                return
+            ok = self.tasks.rename(tid, title)
+            self._json({"ok": ok} if ok else {"error": "没有找到该任务"}, 404 if not ok else 200)
+            return
+
+        if action == "delete":
+            tid = str(req.get("id") or "")
+            ok = self.tasks.remove(tid)
+            if ok:
+                # 台账条目删了，正在回看它的视图不能再留着一个悬空的 openTaskId
+                self._json({"ok": True})
+            else:
+                self._json({"error": "任务不存在，或仍在执行/排队中（先停止再删）"}, 409)
+            return
+
         self._json({"error": f"未知动作 {action}"}, 400)
 
     def _do_clear(self, req: dict) -> None:

@@ -378,6 +378,33 @@ class TaskStore:
             self._save()
             return before - len(self._tasks)
 
+    def rename(self, tid: str, title: str) -> bool:
+        """重命名任务。只改侧栏标签（title），prompt 原文一字不动——
+        原文是回看时的提问气泡，用户改的只是自己给这条任务起的名字。"""
+        title = (title or "").strip()
+        if not title:
+            return False
+        with self._lock:
+            t = self._find(tid)
+            if t is None:
+                return False
+            t.title = title[:120]
+            self._save()
+        return True
+
+    def remove(self, tid: str) -> bool:
+        """删除一条任务记录（台账条目本身）。
+
+        边界：在跑/排队的任务不删（先停止再删）；磁盘上的产出文件不动——
+        「删记录」和「删产出」是两件事，后者走清理弹窗由用户逐项勾选。"""
+        with self._lock:
+            t = self._find(tid)
+            if t is None or t.status in ("running", "queued"):
+                return False
+            self._tasks.remove(t)
+            self._save()
+        return True
+
     # ---------- 读 ----------
     def list(self, limit: int = 80) -> list[dict]:
         with self._lock:

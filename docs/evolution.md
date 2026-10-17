@@ -2098,3 +2098,25 @@ OUTSIDE_OK 同模式、泳道线程隔离）：任务设有产出目录时，wri
 
 对应关系（WorkBuddy ↔ harness）：思考过程折叠行↔think-plain；「N 次工具
 调用」胶囊组↔toolrun；正文 Markdown（表格/列表/段落）↔md()；任务卡↔plan 卡。
+
+### 第 50 步：任务右键菜单（删除 / 重命名 / 打开文件夹）（2026-10-18）
+
+侧栏任务条目支持右键，菜单为 WorkBuddy 风格浮层卡片（圆角 14px、柔和投影、
+图标+文字、悬停整行、删除为红色危险项、项前有分隔线）。
+
+- **打开文件夹**：目标目录由后端推断（webui._task_folder，随任务列表/单条
+  响应下发 folder 字段）——三级取一：台账产出文件最常见的父目录 > 按发起
+  时间命名的产出目录（第 48 步约定）> 工作区根兜底。实际打开复用
+  /api/open-folder 的统一工作区校验与前置窗口逻辑（agentforge/reveal.py）。
+- **重命名**：就地输入框（.t-rename），Enter/失焦提交、Esc 取消；只改
+  台账 title（侧栏标签），prompt 原文一字不动。
+- **删除**：危险确认弹窗（删除对话记录；**磁盘产出文件保留**——「删记录」
+  与「删产出」是两件事，后者走清理弹窗逐项勾选）。运行中/排队中的任务
+  菜单里没有删除项，后端 remove() 同样拒绝（双保险）。
+- 右键菜单为全局单例（showCtxMenu），调用方必须 stopPropagation——
+  document 上的 contextmenu 代理见到冒泡事件会先关旧菜单。
+
+后端：TaskStore.rename/remove（taskstore.py）+ _handle_tasks_post 的
+rename/delete 动作 + _task_folder 推断（webui.py）。真机验证
+tools/verify_task_menu.py 7 项全过；接线核验：folder 下发正确指向复测任务
+的产出目录，rename 不存在 id → 404，delete → 409。
