@@ -21,6 +21,7 @@ from __future__ import annotations
 import queue
 import re
 import threading
+import time
 from typing import Any, Iterator
 
 from pathlib import Path
@@ -555,7 +556,8 @@ def _ready_batch(tasks: list[TaskSpec], done: set[str]) -> list[TaskSpec]:
 def run_leader(agent, store, entries: list[dict], history: list[dict],
                message: str, dispatcher: Dispatcher,
                stop_check=None, auto_approve: bool | None = None,
-               file_log: list | None = None, read_cache: "ReadCache | None" = None) -> Iterator[dict[str, Any]]:
+               file_log: list | None = None, read_cache: "ReadCache | None" = None,
+               outdir: str = "") -> Iterator[dict[str, Any]]:
     """Leader 双环编排（第 47 步：七步架构更新，取代旧 run_multi_agent）。
 
     外环（Leader）：每轮只规划【下一批】小步骤（仅相互独立的才同批）→ 员工执行 →
@@ -603,8 +605,10 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
     owner_task = runcontrol.current_task()
 
     def spawn():
-        return Agent(cfg, agent.client, agent.registry, agent.guard,
-                     agent.router, skill_registry=agent.skills, hub=agent.hub)
+        ag = Agent(cfg, agent.client, agent.registry, agent.guard,
+                   agent.router, skill_registry=agent.skills, hub=agent.hub)
+        ag.outdir = outdir          # 产出目录规则随任务下发到每个员工
+        return ag
 
     def _join(msgs: list[dict]) -> str:
         return "\n\n".join(m["content"] for m in msgs)
@@ -1117,6 +1121,11 @@ def run_task(
     # 值得拆解（多动作或较长）时启用；决策模型不可用时自动落回下面的规则快路。
     # 只读共享缓存提前创建：Leader 员工与单路径接力共用（写类工具执行后自动作废）
     read_cache = ReadCache()
+    # 产出目录：按任务发起时间命名（如 20261017-213730），注入每个员工的系统
+    # 提示词——中间/最终产物一律进这个文件夹，除非必须放特定位置才能生效。
+    # 只对「真正动手干活」的任务设置；纯问答不占提示词字节。
+    outdir = time.strftime("%Y%m%d-%H%M%S")
+    agent.outdir = outdir
     if (auto_plan and not pinned
             and getattr(agent.cfg, "dispatcher_enabled", False)
             and _worth_dispatch(message, len(entries))):
@@ -1128,7 +1137,7 @@ def run_task(
             yield from run_leader(
                 agent, store, entries, history, message, disp,
                 stop_check=stop_check, auto_approve=auto_approve, file_log=file_log,
-                read_cache=read_cache,
+                read_cache=read_cache, outdir=outdir,
             )
             return
 

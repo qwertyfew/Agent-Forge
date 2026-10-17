@@ -663,21 +663,38 @@
     line-height:1.5;color:var(--ink);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   .fc-preview .fc-meta-line{font-size:10.5px;color:var(--ink3);margin-bottom:6px}
 
-  /* 任务计划卡片：无框流排，与思考块/工具时间线同一视觉语言，不再突兀 */
-  .plan{padding:2px 0}
-  .plan-head{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px}
-  .plan-head b{font-weight:600}
-  .plan-head .plan-sum{margin-left:auto;font-size:11.5px;color:var(--ink3)}
-  .pstep{display:flex;align-items:flex-start;gap:10px;padding:5px 0;font-size:12.5px}
-  .pstep .pidx{width:18px;height:18px;border-radius:50%;background:var(--bar);color:var(--ink2);
-    font-size:10.5px;display:flex;align-items:center;justify-content:center;flex:none;margin-top:1px}
+  /* 任务拆解卡片：WorkBuddy 风格的实体卡。头行（图标+标题+步骤数+进度），
+     摘要独立成行——原先挤在头行右侧，Leader 的规划理由一长就把标题挤糊。
+     步骤行 = 状态圆点 + 标题 + 元信息行：类型/模型做成 chip，指派原因单行
+     截断、悬停看全文（原先原因整段铺出来，模型名在「交给 X（…改派 X…）」
+     里重复两次，就是截图里最丑的那一行）。 */
+  .plan{margin:6px 0;border:1px solid var(--line);border-radius:14px;background:var(--panel);
+    padding:10px 14px 6px;box-shadow:var(--shadow)}
+  .plan-head{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600}
+  .plan-head .pico{color:var(--accent);display:flex}
+  .plan-cnt{font-size:11px;color:var(--ink3);font-weight:500;background:var(--bar);
+    border-radius:999px;padding:1px 9px;line-height:1.6}
+  .plan-prog{margin-left:auto;font-size:11.5px;color:var(--ink3);font-weight:550;
+    font-variant-numeric:tabular-nums}
+  .plan-note{font-size:12px;color:var(--ink3);margin:2px 0 4px;line-height:1.6}
+  .pstep{display:flex;align-items:flex-start;gap:10px;padding:7px 0;font-size:12.5px}
+  .pstep + .pstep{border-top:1px solid var(--line)}
+  .pstep .pidx{width:20px;height:20px;border-radius:50%;background:var(--bar);color:var(--ink2);
+    font-size:11px;display:flex;align-items:center;justify-content:center;flex:none;margin-top:2px;
+    transition:background .2s,color .2s,box-shadow .2s}
   .pstep .pbody{min-width:0;flex:1}
-  .pstep .ptitle{color:var(--ink)}
-  .pstep .pmeta{font-size:11.5px;color:var(--ink3);margin-top:1px}
-  .pstep .pmodel{color:var(--ink2);font-weight:550}
-  .pstep.running .pidx{background:var(--accent);color:#fff}
+  .pstep .ptitle{color:var(--ink);font-weight:550;line-height:1.55}
+  .pstep .pmeta{display:flex;align-items:center;gap:6px;min-width:0;
+    font-size:11px;color:var(--ink3);margin-top:2px}
+  .pchip{display:inline-flex;align-items:center;flex:none;font-size:10.5px;line-height:1.6;
+    padding:0 8px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--ink2)}
+  .pchip.kind{background:var(--accent-soft);border-color:transparent;color:var(--accent);font-weight:600}
+  .pchip.model{font-weight:600}
+  .pstep .preason{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pstep.running .pidx{background:var(--accent);color:#fff;box-shadow:0 0 0 3px var(--accent-soft)}
   .pstep.done .pidx{background:var(--ok);color:#fff}
   .pstep.error .pidx{background:var(--err);color:#fff}
+  .pstep.error .ptitle{color:var(--err)}
 
   /* 并行任务：互不相关的任务各占一列，流式输出互不串行。
      列本身不加框——泳道只是分栏布局，不是卡片，框起来喧宾夺主。
@@ -5099,43 +5116,69 @@ function addPillNote(html, warn){
   scrollBottom();
 }
 
-/* 任务计划卡片 */
+/* 任务拆解卡片（WorkBuddy 风格实体卡：头行 + 摘要行 + 步骤清单） */
 let planEl = null, planSteps = [];
 function addPlan(subtasks, summary){
   closeThinking(); hideShimmer();
   takeAIHead(log);               // 计划卡可能是本轮回复的第一个元素，头像行在最顶
   // 拆解本身就是「这一轮思考落到了什么动作」，正好是思考行该写的那句话。
-  // 计划卡此时还没 append，所以这一行会落在它上面（一行一句话 + 一张清单，
-  // 说的是同一件事，但一个给「在干什么」、一个给「要做几件事」）。
   if(subtasks.length) noteAction(`将任务拆解为 ${subtasks.length} 步，先做：${subtasks[0].title || ''}`);
   planEl = el('div','plan');
   const head = el('div','plan-head');
-  head.appendChild(el('b','','任务拆解'));
-  head.appendChild(el('span','muted', subtasks.length + ' 个步骤'));
-  head.appendChild(el('span','plan-sum', summary || ''));
+  const ico = el('span','pico');
+  ico.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>';
+  head.appendChild(ico);
+  head.appendChild(el('span','','任务拆解'));
+  head.appendChild(el('span','plan-cnt', subtasks.length + ' 个步骤'));
+  head.appendChild(el('span','plan-prog','0/' + subtasks.length));
   planEl.appendChild(head);
+  if(summary){
+    const note = el('div','plan-note', summary);
+    note.title = summary;
+    planEl.appendChild(note);
+  }
   planSteps = [];
   for(const st of subtasks){
     const row = el('div','pstep');
     const idx = el('span','pidx', String(st.index));
     row.appendChild(idx);
     const body = el('div','pbody');
-    body.appendChild(el('div','ptitle', st.title));
+    body.appendChild(el('div','ptitle', st.title || ''));
     const meta = el('div','pmeta');
-    meta.innerHTML = `${st.kind_label} · 交给 <span class="pmodel">${esc(st.model_name)}</span> · ${esc(st.reason)}`;
-    body.appendChild(meta);
+    if(st.kind_label) meta.appendChild(el('span','pchip kind', st.kind_label));
+    if(st.model_name) meta.appendChild(el('span','pchip model', st.model_name));
+    if(st.reason){
+      const rs = el('span','preason', st.reason);
+      rs.title = st.reason;      // 原因全文悬停可见，行内只留一截
+      meta.appendChild(rs);
+    }
+    if(meta.childNodes.length) body.appendChild(meta);
     row.appendChild(body);
     planEl.appendChild(row);
-    planSteps.push({row, idx, title: st.title || ''});
+    planSteps.push({row, idx, id: st.id || '', title: st.title || ''});
   }
   log.appendChild(planEl);
   scrollBottom();
 }
-function markPlanStep(index, state){
-  const s = planSteps[index - 1];
+function planProgress(){
+  if(!planEl) return;
+  const p = planEl.querySelector('.plan-prog');
+  if(!p) return;
+  const fin = planSteps.filter(s=>s.row.classList.contains('done') || s.row.classList.contains('error')).length;
+  p.textContent = fin + '/' + planSteps.length;
+}
+function markPlanStep(index, state, taskId){
+  // Leader 双环的 index 跨批次全局递增（l4、l5…），而 planSteps 每批重建——
+  // 按 task_id 定位才是本批正确的那一行；旧路径事件没有 id，退回 index 对位
+  let s = taskId ? planSteps.find(x=>x.id === taskId) : null;
+  if(!s) s = planSteps[index - 1];
   if(!s) return;
-  s.row.classList.remove('running','done');
+  s.row.classList.remove('running','done','error');
   s.row.classList.add(state);
+  if(state === 'done' || state === 'error'){
+    s.idx.innerHTML = state === 'done' ? SVG.okico : SVG.errico;
+  }
+  planProgress();
 }
 
 function addDivider(text){
@@ -6006,7 +6049,7 @@ function handleTaskEvent(ev, data){
       // 也不在列头上写「运行中／模型名」——计划卡那一步会亮起来、并写着交给谁，
       // 两处都写就是同一句话说两遍（列头也不再有地方可写）。
       lastAssign = data;
-      if(data.multi) markPlanStep(data.index, 'running');
+      if(data.multi) markPlanStep(data.index, 'running', data.task_id);
       // 决策模型点的执行者被系统换掉时明确说一句——否则用户会以为小模型在硬扛
       if(data.reassigned && data.reason && !data.multi){
         addPillNote(`调度指派：<b>${esc(data.model_name||'')}</b> —— ${esc(data.reason)}`);
@@ -6025,7 +6068,7 @@ function handleTaskEvent(ev, data){
       // 走到第 2 步起，思考行上那句「在干什么」跟着推进：「执行第 2/3 步：再读文件」。
       // 标题取自计划卡（已由后端压成短标题），所以这里不必再截一次。
       if(data.index > 1){
-        const st = planSteps[data.index - 1];
+        const st = planSteps.find(x=>x.id === (data.task_id || '')) || planSteps[data.index - 1];
         noteAction(`执行第 ${data.index}/${data.total} 步${st && st.title ? '：' + st.title : ''}`);
       }
     }
@@ -6045,7 +6088,7 @@ function handleTaskEvent(ev, data){
     }
     else if(ev === 'task_done'){
       // 某个 agent 任务完成：计划卡里那一步打勾（唯一的进度展示处）
-      if(data.index) markPlanStep(data.index, data.status === 'error' ? 'error' : 'done');
+      if(data.index || data.task_id) markPlanStep(data.index, data.status === 'error' ? 'error' : 'done', data.task_id);
       const ln = laneOf(data.task_id);
       if(ln && ln.think) ln.think = null;
       if(liveTask && data.summary) liveTask.progress = String(data.summary).slice(0, 60);
@@ -6284,6 +6327,8 @@ function handleTaskEvent(ev, data){
       // 「完整回答中途冒出复制按钮」的 bug。子任务的失败不该由整条回复买单。
       const ln = laneOf(data.task_id);
       if(ln && ln.think) ln.think = null;      // 这一路不再有下文，思考块封口
+      // 计划卡里那一步立刻标红（task_done 随后会再确认一次，幂等）
+      if(data.task_id || data.index) markPlanStep(data.index, 'error', data.task_id);
       addPillNote(`子任务失败：${esc(data.message || '')}（其它任务不受影响，继续执行）`, true);
     }
     else if(ev === 'notify'){

@@ -2015,3 +2015,36 @@ stopped 路径正常。**5.07M prompt tokens 全本地 0 元**（同量在 DeepS
 100 步上限（每步 ~10 分钟）；同类失败步骤被重发 3 批才收敛。建议：步骤级
 步数上限（25-30）+ 强制 write_file 收尾 + 失败重试去重 + leader_round 事件
 透传（webui 现在静默丢弃，前端滚动规划不可见）。
+
+### 第 48 步：产出目录规则 + 任务拆解卡片重渲染（2026-10-17）
+
+**① 产出目录规则（用户口述的设计规则，落进架构）**：设计 harness 时就允许员工
+新增中间文件，但要求「生成文件尽量创建在新建的文件夹里，文件夹按任务发起时间
+命名；除非放别处才能生效」。此前这条只存在于用户脑子里，e2e 实测里员工把分析
+产物写得到处都是。落地方式：`run_task` 每次任务发起时算出
+`outdir = YYYYMMDD-HHMMSS`，经 `Agent.outdir` 注入每个员工（含 Leader 员工与
+单路径接力）的系统提示词（`OUTDIR_RULE`）——中间/最终产物一律进该目录，
+唯一例外是必须放特定位置才能生效（改项目源码/被验证命令按固定路径读取），
+且需在最终回复里注明实际路径。纯规则提示词约 200 字节，闲聊不注入。
+
+**② 任务拆解卡片重渲染（参考 WorkBuddy 输出页）**：用户发来两张截图，旧卡片
+「丑的没法看」——Leader 规划理由挤在头行右侧一长串、指派原因整段铺开且模型名
+重复两次（「交给 gpt-oss:20b（…改派 gpt-oss:20b…）」）。重画为 WorkBuddy 风格
+实体卡：头行（列表图标+任务拆解+步骤数胶囊+右侧完成进度 n/N）、Leader 理由
+独立成行（title 悬停看全文）、步骤行 = 状态圆点（序号→运行中高亮→✓/✗图标）+
+标题 + 元信息（类型 chip + 模型 chip + 原因单行截断悬停看全文）。
+
+**顺带修了一个真 bug**：Leader 双环的 `t.index` 跨批次全局递增（l4、l5…），
+而前端 `planSteps` 每批 `addPlan` 时重建——`markPlanStep(4)` 在第 2 批的卡片里
+对位到不存在的行，**第 2 批起步骤永远打不上勾**。改为按 `task_id` 定位
+（assign/task_done/subtask_error/subtask 四处事件都带 task_id），旧路径无 id
+自动退回 index 对位。真机验证 `tools/verify_plan_card.py`（Edge headless + CDP，
+模拟第 2 批 3 步骤含 done/error/running 三态）9 项全过。
+
+**③ e2e 8 次子任务失败定性（回答用户「是不是跑了两个模型」）**：复盘
+`.run/leader_e2e_events.jsonl` + `.run/ollama.log`：7×`500 Server Error` + 
+1×撞 100 步上限。500 的形态是**生成正常完成后**（print_timing 全打、
+all slots are idle）响应处理阶段才崩，串行执行下也复现——是 Ollama 服务端
+自身问题（gpt-oss harmony 工具调用解析在高危名单），**不是并发跑了两个模型**：
+`local_serial=True` 的 Semaphore(1) 全程生效，员工完成时刻互不重叠，
+ollama.log 单 slot（id 0）佐证。Leader 重规划天然消化了这些失败。

@@ -96,6 +96,20 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
 - 禁止删除工作区之外的任何东西。
 """
 
+# 产出目录规则：任务发起时由编排层按发起时间算好一个文件夹名填进 outdir，
+# 中间/最终产物一律集中放进去——工作区根目录不被散落的报告、草稿、脚本糊满，
+# 收尾清理或复盘时整个文件夹一删/一归档就是一次任务的全部产出。
+OUTDIR_RULE = """
+## 产出与中间文件
+- 本任务的产出目录（相对工作区根目录）：**{outdir}**（目录名即任务发起时间）
+- 你要新建的文件——分析报告、草稿、提取的数据、临时脚本、生成的文档等
+  中间产物与最终产物——**一律创建在上述产出目录里**，不要散落在工作区根目录
+  或仓库其他位置。
+- 唯一例外：该文件**必须放在特定位置才能生效**（改项目源码/配置、被验证命令
+  按固定路径读取的交付物等）——这类按需放置，并在最终回复里注明实际路径。
+- 引用产出时在回复里给出相对工作区的完整路径，方便用户直接打开。
+"""
+
 # 系统提示里的路径规则一句话，按权限模式二选一（渲染见 _system()）。
 # 完全访问权限放开的是「读写」工作区之外；「禁止删除工作区之外的任何东西」
 # 是安全底线，写在模板末尾，两种模式都保留。
@@ -276,6 +290,9 @@ class Agent:
         self.skills = skill_registry
         self.compressor = Compressor(cfg, client, hub=self.hub)
         self.model_key = model_key or cfg.routing_default
+        # 本任务的产出目录（相对工作区根目录的路径，按任务发起时间命名）。
+        # 编排层每次任务算好填进来；空字符串表示未设置（系统提示里就不出这条规则）。
+        self.outdir: str = ""
         # 用户是否显式指定过模型。自动路由的开关看它，而不是看「当前是不是默认模型」——
         # 默认模型本机跑不起来时会被替换成别的 key，那种情况下不该从此不再路由。
         self.model_pinned = bool(model_key)
@@ -325,6 +342,10 @@ class Agent:
             permission=self.permission_label,
             outside_rule=OUTSIDE_RULE[self.full_access],
         )
+        # 产出目录规则放在「工作环境」之后：目录名由编排层按任务发起时间算好，
+        # 员工只管往里写；不设置（普通闲聊等）就不占提示词字节。
+        if self.outdir:
+            base += OUTDIR_RULE.format(outdir=self.outdir)
         if self.skills and self.skills.skills:
             base += "\n" + self.skills.catalog() + "\n"
         # 工具索引：把没下发说明的工具名字列出来（只列名字，很便宜），
