@@ -1805,6 +1805,11 @@ class _Handler(BaseHTTPRequestHandler):
                 elif kind == "task_done":
                     # 某个 agent 任务完成，前端据此把计划里的这一步标记为完成
                     emit("task_done", {k: v for k, v in ev.items() if k != "type"})
+                elif kind == "leader_round":
+                    # Leader 双环每轮的规划/评估结论：原先是这里没分支被静默丢弃，
+                    # 前端渲染函数早就备好（plan 卡上方的胶囊播报）——滚动规划
+                    # 对用户可见就差这一行
+                    emit("leader_round", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "bridge":
                     emit("bridge", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "conflict":

@@ -37,7 +37,16 @@ def build_fs_tools(guard, cfg):
     max_out = cfg.max_tool_output_chars
 
     # ---------- read_file ----------
-    def read_file(path: str, offset: int = 1, limit: int = 800) -> str:
+    # 读取规则对齐 WorkBuddy：默认一次最多 2000 行、单行超 2000 字符截断。
+    # 真正卡脖子的其实是字符预算（max_tool_output_chars，12000 字符折算约
+    # 150-200 行代码）——员工因此拿 offset 一格格续读，读工具调用次数虚高。
+    # 动态扩限：默认读取发现文件没显示完时记住该文件，下次对它的默认读取
+    # 把字符预算翻倍（上限 4 倍）；显式给 limit 视为模型自己要小份，不动状态。
+    # 文件完整读过一遍后状态清除，恢复默认预算——预算只对「确实很大的文件」放宽。
+    read_budget: dict[str, int] = {}
+    MAX_LINE = 2000
+
+    def read_file(path: str, offset: int = 1, limit: int = 2000) -> str:
         p = guard.resolve(path)
         if not p.exists():
             return f"[错误] 文件不存在: {p}"
@@ -50,11 +59,26 @@ def build_fs_tools(guard, cfg):
         except OSError as e:
             return f"[错误] 读取失败: {e}"
         start = max(1, int(offset))
-        end = min(len(lines), start + int(limit) - 1)
         if start > len(lines):
             return f"[错误] offset {start} 超出文件行数 {len(lines)}"
-        body = "\n".join(f"{i:>6}| {lines[i-1]}" for i in range(start, end + 1))
-        return _clip(f"{p}  ({len(lines)} 行, 显示 {start}-{end})\n{body}", max_out)
+        end = min(len(lines), start + max(1, int(limit)) - 1)
+        shown = [f"{p}  ({len(lines)} 行, 显示 {start}-{end})"]
+        for i in range(start, end + 1):
+            ln = lines[i - 1]
+            if len(ln) > MAX_LINE:
+                ln = ln[:MAX_LINE] + f"…[第 {i} 行超 {MAX_LINE} 字符已截断]"
+            shown.append(f"{i:>6}| {ln}")
+        body = "\n".join(shown)
+        budget = read_budget.get(str(p), max_out)
+        if len(body) > budget:
+            body = body[:budget]
+            nxt = min(budget * 2, max_out * 4)
+            body += (f"\n...[已截断，文件未显示完。下一次不带 limit 的 read_file "
+                     f"会自动把读取预算扩大到 {nxt} 字符；也可用更大的 offset 跳读后半部分]")
+            read_budget[str(p)] = nxt
+        elif end >= len(lines):
+            read_budget.pop(str(p), None)   # 完整读过了，恢复默认预算
+        return body
 
     # ---------- write_file ----------
     def write_file(path: str, content: str) -> str:
@@ -146,7 +170,7 @@ def build_fs_tools(guard, cfg):
                 "properties": {
                     "path": {"type": "string", "description": "文件绝对路径或相对工作区的路径"},
                     "offset": {"type": "integer", "description": "起始行号，从 1 开始，默认 1"},
-                    "limit": {"type": "integer", "description": "最多读取多少行，默认 800"},
+                    "limit": {"type": "integer", "description": "最多读取多少行，默认 2000；大文件读不完时第二次会自动扩大预算"},
                 },
                 "required": ["path"],
             },

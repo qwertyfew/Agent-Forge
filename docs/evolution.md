@@ -2048,3 +2048,16 @@ all slots are idle）响应处理阶段才崩，串行执行下也复现——�
 自身问题（gpt-oss harmony 工具调用解析在高危名单），**不是并发跑了两个模型**：
 `local_serial=True` 的 Semaphore(1) 全程生效，员工完成时刻互不重叠，
 ollama.log 单 slot（id 0）佐证。Leader 重规划天然消化了这些失败。
+
+### 第 48 步补记：同题复测（read 动态扩限 + 产出目录实测，2026-10-17 深夜）
+
+同一任务原文重跑（tools/rerun_rea_task.py → .run/rerun_rea_events.jsonl，
+38m56s，12 批 29 步，报告 evals/leader-rerun-local-20261017.md）。三项改动实测：
+①产出目录规则 4/5 合规（例外条款正确适用于任务书点名的交付路径，1 次根目录
+违规）；②read_file 动态扩限生效——loop.py 902 行一次整读（旧代码约 5 次），
+扩限提示出现 9 次，最大单结果 32K 字符；③webui 事件中继实锤确认缺
+leader_round 分支（12 批结论全被静默丢弃），已补一行 emit 透传。
+
+问题排序更新：Ollama 500 升为头号成本（14/29 子任务死刑，请求级 500 恰 14 次、
+LLM 调用无内部重试）；失败重试去重仍在（learn-claude-code 同类分析被重排 5 批）；
+撞步数上限归零（滚动规划缩步幅起效，员工完成契约缺口降级）。
