@@ -555,7 +555,7 @@ def _ready_batch(tasks: list[TaskSpec], done: set[str]) -> list[TaskSpec]:
 def run_leader(agent, store, entries: list[dict], history: list[dict],
                message: str, dispatcher: Dispatcher,
                stop_check=None, auto_approve: bool | None = None,
-               file_log: list | None = None) -> Iterator[dict[str, Any]]:
+               file_log: list | None = None, read_cache: "ReadCache | None" = None) -> Iterator[dict[str, Any]]:
     """Leader 双环编排（第 47 步：七步架构更新，取代旧 run_multi_agent）。
 
     外环（Leader）：每轮只规划【下一批】小步骤（仅相互独立的才同批）→ 员工执行 →
@@ -828,7 +828,7 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                 yield {"type": "dispatch",
                        "tasks": [t.as_dict() for t in batch],
                        "rationale": rationale, "source": "llm",
-                       "dispatcher": dispatcher.name, "multi": True,
+                       "dispatcher": dispatcher.name(), "multi": True,
                        "parallel": parallel_on and len(batch) > 1,
                        "local_serial": bool(getattr(cfg, "local_serial", True))}
             else:
@@ -1115,6 +1115,8 @@ def run_task(
 
     # 多 agent：由本地决策模型拆解 → 指派 → 接力。仅在未手动指定模型、且请求
     # 值得拆解（多动作或较长）时启用；决策模型不可用时自动落回下面的规则快路。
+    # 只读共享缓存提前创建：Leader 员工与单路径接力共用（写类工具执行后自动作废）
+    read_cache = ReadCache()
     if (auto_plan and not pinned
             and getattr(agent.cfg, "dispatcher_enabled", False)
             and _worth_dispatch(message, len(entries))):
@@ -1126,6 +1128,7 @@ def run_task(
             yield from run_leader(
                 agent, store, entries, history, message, disp,
                 stop_check=stop_check, auto_approve=auto_approve, file_log=file_log,
+                read_cache=read_cache,
             )
             return
 
@@ -1165,8 +1168,8 @@ def run_task(
 
     # 展示/回看用的全量历史（一路接力，内容完整）
     hist = list(history)
-    # 单路径多步接力的只读共享缓存（跨步骤复用；写类工具执行后自动作废）
-    read_cache = ReadCache()
+    # 只读共享缓存（跨步骤/跨员工复用；写类工具执行后自动作废）——
+    # 单路径与 Leader 双环共用同一个，这里创建一次往下游传
     # 接力省法：每一步单独记「做了什么、动了哪些文件」，下一步只看这份简报
     brief_relay = bool(getattr(agent.cfg, "relay_brief", True)) and multi
     done: list[dict] = []

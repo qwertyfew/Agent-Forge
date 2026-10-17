@@ -1995,3 +1995,23 @@ display:none，flex:1 的占位一消失，发送框就被顶到页面最上方�
 判据），线程显隐改为「history 有内容 **或** 画面有内容 **或** 有运行中任务」。
 真机验证（tools/verify_sidepane_return.py）：①进 402 任务回看线程可见②模型
 配置退回记录不丢、land 不亮、发送框贴底 0px③空对话进设置退回落地态仍在。
+
+### 第 47 步补记二：Leader 双环全本地端到端实测（2026-10-17）
+
+402 那条 REA 差距清单任务原文原样重发，全程本地模型（Leader=gemma4:12b、
+员工=gpt-oss:20b），SSE 全事件采集 36 分钟（tools/run_leader_e2e.py →
+.run/leader_e2e_events.jsonl，13,408 条）。完整报告：evals/leader-e2e-local-20261017.md。
+
+**骨架成立**：滚动规划闭环（R2 起基于前批深化、R4 起自动缩批+提示词加证据
+硬要求）、防自派指派 16/16 生效、8 次子任务失败全部被隔离不拖垮批次、
+stopped 路径正常。**5.07M prompt tokens 全本地 0 元**（同量在 DeepSeek ≈20 元）。
+
+**端到端抓出并已修**：①run_leader 缺 read_cache 参数（UnboundLocalError）；
+②dispatch 负载 dispatcher.name 漏括号（方法对象序列化崩）；③webui 异常
+补 traceback 落日志；④环境教训——多服务实例并存监听 8787 时请求会被旧
+代码进程接管，重启后必须核实监听唯一。
+
+**最大架构缺口（待改）**：员工内环无完成契约，「仓库级分析」步骤全数撞
+100 步上限（每步 ~10 分钟）；同类失败步骤被重发 3 批才收敛。建议：步骤级
+步数上限（25-30）+ 强制 write_file 收尾 + 失败重试去重 + leader_round 事件
+透传（webui 现在静默丢弃，前端滚动规划不可见）。

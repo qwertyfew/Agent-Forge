@@ -1833,6 +1833,9 @@ class _Handler(BaseHTTPRequestHandler):
             # 但如果已有接管者挂在总线上（别人还在看），就别停，让它接着跑。
             if bus.subscriber_count() == 0:
                 runcontrol.request_stop(task_id)
+            # 完整堆栈进服务日志——str(e) 只有异常名，排障时定位不到行号
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             err_msg = f"{type(e).__name__}: {e}"
             try:
                 emit("error", {"message": err_msg})
