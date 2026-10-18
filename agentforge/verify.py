@@ -521,7 +521,8 @@ def find_artifact_issues(entries: list[tuple[str, bool]],
                          root: str | Path,
                          snapshot: dict[str, float] | None = None,
                          produced: bool | None = None,
-                         produced_paths: list[str] | None = None) -> list[dict]:
+                         produced_paths: list[str] | None = None,
+                         task_start_ts: float | None = None) -> list[dict]:
     """产物核查的主判定：返回问题清单，每项 {path, declared, status}。
 
     - missing  文件不存在（原 find_missing_artifacts 的行为）
@@ -538,6 +539,10 @@ def find_artifact_issues(entries: list[tuple[str, bool]],
     绝对路径匹配）：只要某个声称/声明文件在其中，即使 produced is False（典型
     如收尾闸门 convo 只有 [任务原文, 拟回答]、ran_writes 缺位）也不得误判为
     ghost——这是复测踩过的验证竞态：真实写出的交付物被当成「全程零写操作」。
+    task_start_ts 是任务开始的墙上时钟（time.time()）：声明交付物只要【当前
+    mtime 晚于任务开始】就认定本轮产出——比逐文件「开局快照 mtime」更稳，能
+    正确处理「文件任务开始前就存在、但本轮被重写」的情况，且不受「闸门抢在最终
+    写盘前检查」的竞态影响（只要写盘发生在任务开始后，闸门任意时刻复查都认）。
     """
     root = Path(root).resolve()
     produced_set: set[str] = set()
@@ -565,6 +570,24 @@ def find_artifact_issues(entries: list[tuple[str, bool]],
             issues.append({"path": p, "declared": bool(declared),
                            "status": "missing"})
             continue
+        # 执行轨迹权威记录（来自全局 file_log 的本任务真实写操作）：只要本任务
+        # 确实写出过该文件，无论 mtime 快照怎么判（stale/ghost 都源于「开局快照
+        # 早于最终写盘 / convo 缺写工具记录」的竞态），一律认定本轮产出、跳过判定。
+        # 必须放在 declared+snapshot 分支【之前】，否则声明交付物会被该分支直接
+        # continue 掉，导致本检查对声明交付物永远不可达（复测踩过的死代码坑）。
+        if target is not None and produced_set and str(target.resolve()) in produced_set:
+            continue
+        # 任务开始时间戳判定（最稳健，优先于逐文件快照）：声明交付物只要当前 mtime
+        # 晚于任务开始，即认定本轮产出——正确处理「文件任务前就存在、但本轮被重写」
+        # 的情况，且不受「闸门抢在最终写盘前检查」的竞态影响（写盘发生在任务开始后，
+        # 闸门任意时刻复查都认）。task_start_ts 为 None 时退化为逐文件快照判定。
+        if declared and task_start_ts is not None:
+            try:
+                now = target.stat().st_mtime
+            except OSError:
+                now = None
+            if now is not None and now > task_start_ts + _MTIME_EPS:
+                continue
         if declared and snapshot is not None:
             # 快照是权威：mtime 变了或任务开始时还不存在，都说明本轮动过
             m0 = snapshot.get(k)

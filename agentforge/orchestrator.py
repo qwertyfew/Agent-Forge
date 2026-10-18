@@ -307,7 +307,8 @@ def _verify_gate(agent, message: str, holder: dict,
                  snapshot: dict[str, float] | None = None,
                  exhausted: set[str] | None = None,
                  files: list[dict] | None = None,
-                 produced_paths: list[str] | None = None):
+                 produced_paths: list[str] | None = None,
+                 task_start_ts: float | None = None):
     """收尾验证闸门（系统侧强制）：模型只有解读权，没有裁定权。
 
     - 任务书里声明了验证命令（如「验证：python tools/x.py」）→ 程序亲自运行，
@@ -427,7 +428,7 @@ def _verify_gate(agent, message: str, holder: dict,
                     or verify_gate.ran_verification(convo))
         issues = verify_gate.find_artifact_issues(
             entries, cfg.workspace_root, snapshot=snapshot, produced=produced,
-            produced_paths=produced_paths)
+            produced_paths=produced_paths, task_start_ts=task_start_ts)
         if issues and not corrected:
             # 修正前先记下这些文件的 mtime：复查就看它本轮有没有真的变
             pre = {c["path"].lower(): verify_gate.path_mtime(c["path"], cfg.workspace_root)
@@ -665,6 +666,10 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
 
     root = cfg.workspace_root
     snap = verify_gate.snapshot_artifacts(message, root)
+    # 任务开始墙钟：交给收尾闸门判定声明交付物是否本轮真实写出。必须在任何写操作
+    # 之前定格——闸门据此判定「mtime 晚于任务开始即算本轮产出」，彻底修掉验证竞态
+    # （声明交付物被误判 stale：最终 convo 只有 [原文, 拟回答]、快照 mtime 与开局一致）。
+    task_start_ts = time.time()
 
     ctx = LeaderContext(message)
     catalog = _catalog_text(entries)
@@ -768,12 +773,13 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
         if not failed:
             task_snap = verify_gate.snapshot_artifacts(prompt, root)
             holder = {"summary": summary or _last_assistant(convo), "convo": convo}
-            task_files = _file_records(
-                [r.get("path") for r in local_log if r.get("path")], root)
+            step_paths = [r.get("path") for r in local_log if r.get("path")]
+            task_files = _file_records(step_paths, root)
             for ev in _verify_gate(ag, prompt, holder, auto_approve=auto_approve,
                                    stop_check=stopped, read_cache=read_cache,
                                    snapshot=task_snap, exhausted=exhausted_cmds,
-                                   files=task_files):
+                                   files=task_files, produced_paths=step_paths,
+                                   task_start_ts=task_start_ts):
                 k = ev.get("type")
                 if k == "assistant":
                     convo = ev["history"]
@@ -1028,17 +1034,22 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
         # 收集本任务真实产出的文件（权威依据），传给收尾闸门——修复验证竞态：
         # 最终 convo 只有 [任务原文, 拟回答]、ran_writes 缺位，若不告知真实产出，
         # 总结里「已写入 X」会被 find_artifact_issues 误判成 ghost（全程零写操作）。
+        # 收集本任务真实产出的文件：用【全局 file_log】(shared_log) 而非 per-step
+        # sink——最终交付物那次写入未必落在结构化步骤的 sink 里（尤其兜底整段直做/
+        # 收尾重写），但只要是写工具调用就一定进了全局 file_log。以此为权威依据，
+        # 传给收尾闸门修复验证竞态。
         agg_paths: list[str] = []
-        for t in all_steps:
-            for p in (sink.get(t.id, {}).get("files") or []):
-                if p not in agg_paths:
-                    agg_paths.append(p)
+        for rec in shared_log:
+            p = str((rec or {}).get("path") or "")
+            if p and p not in agg_paths:
+                agg_paths.append(p)
         gate_file_records = _file_records(agg_paths, root)
         yield from _verify_gate(agent, message, holder, auto_approve=auto_approve,
                                 stop_check=stopped, read_cache=read_cache,
                                 snapshot=snap, exhausted=exhausted_cmds,
                                 files=gate_file_records,
-                                produced_paths=agg_paths)
+                                produced_paths=agg_paths,
+                                task_start_ts=task_start_ts)
         final_answer = holder["summary"]
         # Leader 语义判定：只看 原文 + 拟回答，判语义完成度
         sem_pass, sem_reasons = True, []
@@ -1075,9 +1086,13 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
     gaps.clear_step()
     agg_paths: list[str] = []
     path_title: dict[str, str] = {}
+    for rec in shared_log:
+        p = str((rec or {}).get("path") or "")
+        if p and p not in agg_paths:
+            agg_paths.append(p)
     for t in all_steps:
         for p in (sink.get(t.id, {}).get("files") or []):
-            if p not in agg_paths:
+            if p and p not in agg_paths:
                 agg_paths.append(p)
                 path_title[p] = t.title
     file_records = _file_records(agg_paths, root)
@@ -1186,6 +1201,8 @@ def run_task(
     # 产物核查的起点快照：任务书声明交付文件的 mtime 此刻定格，收尾时用它
     # 判断「本轮是否真的更新过」，上一轮的旧文件糊弄不了核查
     gate_snap = verify_gate.snapshot_artifacts(book, agent.cfg.workspace_root)
+    # 任务开始墙钟：交给收尾闸门判定声明交付物是否本轮真实写出（见 run_leader 同款说明）。
+    task_start_ts = time.time()
     exhausted_cmds: set = set()         # 步骤级闸门拦到上限仍失败的验证命令
     pinned_key = (model_key or "").strip()
     pinned: dict | None = None
@@ -1353,6 +1370,10 @@ def run_task(
             yield ev
         return summary_, failed_, halted_, hist_
 
+    # 全任务真实产出清单（跨步骤累积）：收尾闸门用它修复验证竞态——new_files 每步
+    # 重置，循环后只剩最后一步的文件，单独传给收尾闸门会漏掉之前步骤的产出。
+    task_files: list[str] = []
+
     for i, st in enumerate(plan):
         if stopped():
             # 先回吐已完成部分的上下文，再报停止，界面与台账都不会丢已干的活；
@@ -1444,6 +1465,19 @@ def run_task(
                 if not failed:
                     break
 
+        # 本步真实产出的文件（来自全局 file_log 的本步增量），供步骤级闸门做
+        # 验证竞态修复依据；必须在闸门之前算出来。
+        new_files: list[str] = []
+        if file_log is not None and len(file_log) > files_before:
+            for rec in file_log[files_before:]:
+                p = str(rec.get("path") or "")
+                if p and p not in new_files:
+                    new_files.append(p)
+        # 累积进全任务清单（去重）
+        for p in new_files:
+            if p and p not in task_files:
+                task_files.append(p)
+
         # 任务级闸门（流程第 6 步）：多步任务每步一收尾就核验该步任务书
         # （st.detail）里声明的验证命令与交付物，失败当场拦截修正——真实输出
         # 回灌给同一 agent 继续做，至多三次执行。单任务不在此拦（detail 就是
@@ -1458,7 +1492,9 @@ def run_task(
             for ev in _verify_gate(agent, step_book, step_holder,
                                    auto_approve=auto_approve, stop_check=stopped,
                                    read_cache=read_cache, snapshot=step_snap,
-                                   exhausted=exhausted_cmds):
+                                   exhausted=exhausted_cmds,
+                                   produced_paths=new_files,
+                                   task_start_ts=task_start_ts):
                 k = ev.get("type")
                 if k == "assistant":
                     hist = ev["history"]
@@ -1467,12 +1503,6 @@ def run_task(
             exhausted_cmds.update(step_holder.get("exhausted_cmds") or ())
 
         # 记下这一步的摘要与产出，供下一步的简报使用
-        new_files: list[str] = []
-        if file_log is not None and len(file_log) > files_before:
-            for rec in file_log[files_before:]:
-                p = str(rec.get("path") or "")
-                if p and p not in new_files:
-                    new_files.append(p)
         done.append({
             "index": i + 1,
             "title": st.title,
@@ -1490,7 +1520,9 @@ def run_task(
     yield from _verify_gate(agent, message if multi else book, holder,
                             auto_approve=auto_approve, stop_check=stopped,
                             read_cache=read_cache, snapshot=gate_snap,
-                            exhausted=exhausted_cmds)
+                            exhausted=exhausted_cmds,
+                            produced_paths=task_files,
+                            task_start_ts=task_start_ts)
     if holder["summary"] != summary:
         summary, hist = holder["summary"], holder["convo"]
         yield {"type": "assistant", "content": summary, "history": hist}
