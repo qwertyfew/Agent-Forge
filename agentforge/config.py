@@ -337,6 +337,10 @@ class Config:
             d.get("bridge_threshold", cfg.dispatcher_bridge_threshold))
         cfg.dispatcher_execute_simple = bool(
             d.get("execute_simple", cfg.dispatcher_execute_simple))
+        # 决策模型常驻当员工（第55步 point 3）：开启后 dispatcher_model 不再被排除在
+        # 重活候选之外，规划完一轮可顺手执行小步骤。默认关，保持原行为。
+        cfg.leader_as_worker = bool(
+            d.get("leader_as_worker", cfg.leader_as_worker))
 
         # ---- Leader 双环调度（第 47 步：七步架构更新）----
         # 评估环：每轮「规划→执行→判定+规划+精简」算一轮，轮次可以给多——
