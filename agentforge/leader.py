@@ -128,8 +128,9 @@ class LeaderContext:
         self.reasons: list[str] = []       # 最近 REAS_KEEP 条，累积
         self.note = ""                     # 执行历史精简摘要（滚动覆盖）
         self.round = 0                     # 已执行的批次数
+        self.progress: list[dict] = []     # 跨批次「工作汇报」：每批完成后累积的小步骤结果
 
-    # ---- 槽位更新（架构级：只有这三条路径能改上下文）----
+    # ---- 槽位更新（架构级：只有这四条路径能改上下文）----
     def add_round(self) -> None:
         self.round += 1
 
@@ -141,9 +142,38 @@ class LeaderContext:
     def set_note(self, note: str) -> None:
         self.note = (note or "").strip()
 
+    def add_progress(self, round_no: int, results: list) -> None:
+        """把本批已完成的小步骤结果追加进「工作汇报」，供后续轮次的规划/评估复用——
+        避免 Leader 每批从零重派、不累积中间进度（rerun5 里 round4 后部分分析已写入
+        analysis.md，下轮又重派「重新提取」的根因）。本批结果在 eval 之后才 add 进来，
+        所以 eval_messages 里的汇报只含此前批次、不会和当前批次重复打印。"""
+        for r in results:
+            self.progress.append({
+                "round": round_no,
+                "title": getattr(r, "title", ""),
+                "kind": getattr(r, "kind", ""),
+                "status": "失败" if getattr(r, "failed", False) else "完成",
+                "summary": (getattr(r, "reply", "") or getattr(r, "error", "") or "")[:400],
+                "files": list(getattr(r, "files", []) or [])[:8],
+            })
+
+    def _progress_block(self) -> str:
+        if not self.progress:
+            return ""
+        lines = []
+        for p in self.progress:
+            extra = ("；产出：" + "、".join(p["files"][:6])) if p["files"] else ""
+            lines.append(f"- [第{p['round']}批] {p['title']}（{p['status']}）{extra}：{(p['summary'] or '')[:120]}")
+        return "\n".join(lines)
+
     # ---- 消息组装 ----
     def _slots(self) -> list[dict]:
         msgs = [{"role": "user", "content": f"【任务原文】\n{self.original}"}]
+        prog = self._progress_block()
+        if prog:
+            msgs.append({"role": "user", "content":
+                         "【已完成工作汇报（跨批次累积，规划时不要再重做已完成的步骤）】\n"
+                         + prog})
         if self.reasons:
             msgs.append({"role": "user", "content":
                          "【未完成原因（此前尝试的教训，规划与判定时必须规避）】\n"
@@ -154,15 +184,21 @@ class LeaderContext:
         return msgs
 
     def plan_messages(self) -> list[dict]:
-        """规划下一批的输入：原文 + 失败原因 + 历史摘要。"""
+        """规划下一批的输入：原文 + 已完成汇报 + 失败原因 + 历史摘要。"""
         msgs = self._slots()
+        hint = ""
+        if self.reasons or self.progress:
+            hint = ("优先补齐上面「未完成原因」里列出的缺口；已完成的步骤见上方工作汇报，"
+                    "不要再重复规划已经成功完成的工作。")
         msgs.append({"role": "user", "content":
-                     "请规划下一批小步骤（JSON 格式见系统提示）。"
-                     + ("优先补齐上面「未完成原因」里列出的缺口。" if self.reasons else "")})
+                     "请规划下一批小步骤（JSON 格式见系统提示）。" + hint})
         return msgs
 
     def eval_messages(self, batch: list[StepResult]) -> list[dict]:
-        """评估输入：固定槽位 + 本批全量（回复不截断——最新一轮全量进 Leader）。"""
+        """评估输入：固定槽位 + 本批全量（回复不截断——最新一轮全量进 Leader）。
+
+        _slots() 里的「工作汇报」只含【此前批次】结果（本批在 eval 之后才 add_progress），
+        所以这里不会把当前批次重复打印一遍。"""
         msgs = self._slots()
         blocks = []
         for i, r in enumerate(batch, 1):

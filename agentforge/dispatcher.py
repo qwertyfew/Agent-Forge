@@ -270,9 +270,11 @@ class Dispatcher:
             # planner.short_title 的说明。决策模型给了 title 就尊重它的。
             t.title = t.title or short_title(t.goal)
             dim = KIND_DIM.get(t.kind, "reasoning")
-            # 决策模型能不能接这一单：默认只允许它做简单对话
-            allow_disp = (bool(getattr(self.cfg, "dispatcher_execute_simple", True))
+            # 决策模型能不能接这一单：默认只允许它做简单对话；开启 leader_as_worker 后，
+            # 它作为「常驻员工」也进入可分配名单，与其它模型按维度比拼分数（规划完顺手干重活）。
+            allow_disp = ((bool(getattr(self.cfg, "dispatcher_execute_simple", True))
                           and is_simple_chat(t))
+                         or bool(getattr(self.cfg, "leader_as_worker", False)))
             cands = entries
             if disp_name and not allow_disp:
                 without_disp = [e for e in entries if e.get("name") != disp_name]

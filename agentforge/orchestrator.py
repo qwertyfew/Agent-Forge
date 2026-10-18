@@ -738,6 +738,7 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
         summary = ""
         failed = False
         convo: list[dict] = []
+        last_log_len = len(local_log)
         try:
             for ev in ag.run(convo, prompt, auto_route=False, stop_check=stopped,
                              auto_approve=auto_approve, file_log=local_log,
@@ -761,6 +762,18 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                            "total": max_rounds,
                            "reason": ev.get("reason") or "用户停止"}
                     return
+                if k == "tool_result":
+                    # 工作汇报：员工产出新文件时向 leader/前端汇报阶段成果，
+                    # 不必等整批跑完——leader 据汇报可提前收敛或只补剩余小步骤。
+                    if len(local_log) > last_log_len:
+                        new_files = [r.get("path") for r in local_log[last_log_len:]
+                                     if r.get("path")]
+                        last_log_len = len(local_log)
+                        if new_files:
+                            yield {"type": "progress", "task_id": t.id,
+                                   "round": nonlocal_round, "files": new_files,
+                                   "note": f"阶段成果（{t.title}）："
+                                           f"{', '.join(new_files[:5])}"}
                 if k in ("delta", "thinking", "tool_start", "tool_result",
                          "stats", "step"):
                     ev = {**ev, "task_id": t.id}
@@ -1009,6 +1022,9 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
             else:
                 ctx.set_note(_round_note(ctx.note, round_no, batch, results))
             ctx.add_reasons(parsed.get("reasons"))
+            # 跨批次「工作汇报」：把本批结果累积进 ctx，后续轮次规划/评估复用，
+            # leader 不再从零重派（见 leader.LeaderContext.add_progress）。
+            ctx.add_progress(round_no, results)
             if parsed.get("done"):
                 done_answer = parsed.get("answer") or ""
                 break
