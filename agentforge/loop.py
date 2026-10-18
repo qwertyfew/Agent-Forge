@@ -825,6 +825,10 @@ class Agent:
                 denied = out.startswith("[已拒绝]")
                 if failed:
                     self.fail_streak += 1
+                    # 工具执行失败记入能力缺口台账：按 (工具名) 合并计数，反复失败
+                    # 的同款工具会自然聚成一条、count 累加——这就是「哪些工具反复失败」
+                    # 的权威来源，供后续决定要不要换工具/补技能。
+                    gaps.record("tool_failed", tc.name, out[:200], self.cfg)
                     out = out + FAIL_NOTE
                     if self.fail_streak >= 2:
                         out += FAIL_REPEAT_NOTE.format(n=self.fail_streak)

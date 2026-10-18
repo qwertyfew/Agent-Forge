@@ -54,6 +54,17 @@ class GenerationStopped(Exception):
         self.result = result
 
 
+class _StreamCorrupt(Exception):
+    """流中途被服务端截断 / 吐出非法 chunk：可整轮重请求。
+
+    复测里 14 个子任务死于同一形态的 Ollama 500——生成正常完成后响应处理阶段崩，
+    流中途断了或最后丢个非 JSON 错误行。这种「响应已消费一部分」的中断不在
+    _post_chat 的（仅覆盖响应未消费阶段的）重试范围内，所以一直没被兜住。这里把
+    「流结束却没收到 done / 出现非 JSON chunk」判成可恢复错误，整轮重请求，
+    同一 prompt 往往重发就过。
+    """
+
+
 def _merge_tool_calls(acc: dict[int, dict], incoming: list[dict]) -> None:
     """Ollama 流式返回里 tool_calls 可能分片到达，按 index 合并。"""
     for i, tc in enumerate(incoming or []):
@@ -361,7 +372,14 @@ class OllamaClient:
         """产出 ("delta", str) / ("thinking", str) 增量事件，最后产出 ("result", LLMResult)。
 
         stop_check 非空时在流式循环里逐块检查：返回 True 就抛 GenerationStopped，
-        让「正在生成的那一次回复」也能被暂停按钮打断，而不是等它跑完。"""
+        让「正在生成的那一次回复」也能被暂停按钮打断，而不是等它跑完。
+
+        重试：除 _post_chat 负责的「响应未消费阶段」5xx/网络抖动外，这里再兜一层
+        「流已消费一部分却被截断」的故障——Ollama 常在生成完成后响应处理阶段崩，
+        表现为流中途出现非 JSON 行、或流正常结束却没收到 done 事件。这类按 _StreamCorrupt
+        重请求整轮（同一 prompt 重发往往就过）。每轮先把事件缓冲起来，确认成功才放出，
+        避免重试时把半截内容重复丢给调用方。
+        """
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -375,65 +393,88 @@ class OllamaClient:
         if think is not None:
             payload["think"] = bool(think)
 
-        result = LLMResult()
-        acc: dict[int, dict] = {}
-        tf = ThinkFilter()
-
-        def emit(vis: str, hid: str):
-            if vis:
-                result.content += vis
-                yield ("delta", vis)
-            if hid:
-                result.thinking += hid
-                yield ("thinking", hid)
-
-        # 本地模型串行锁：整个生成过程（含流式输出）独占，确保同一时刻只有一个
-        # 本地模型在跑。finally 保证无论是正常结束、被 stop_check 打断（抛
-        # GenerationStopped），还是调用方提前 close() 生成器，锁都会被释放。
         serial = _LOCAL_SERIAL
-        if serial:
-            _LOCAL_LOCK.acquire()
-        try:
-            with self._post_chat(payload, stream=True) as resp:
-                for line in resp.iter_lines(decode_unicode=True):
-                    if not line:
-                        continue
-                    if stop_check is not None and stop_check():
-                        raise GenerationStopped(result)
-                    try:
-                        chunk = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    msg = chunk.get("message", {}) or {}
-                    text = msg.get("content") or ""
-                    if text:
-                        vis, hid = tf.feed(text)
-                        for ev in emit(vis, hid):
-                            yield ev
-                    th = msg.get("thinking") or ""
-                    if th:
-                        result.thinking += th
-                        yield ("thinking", th)
-                    if msg.get("tool_calls"):
-                        _merge_tool_calls(acc, msg["tool_calls"])
-                    if chunk.get("done"):
-                        result.prompt_eval_count = int(chunk.get("prompt_eval_count") or 0)
-                        result.eval_count = int(chunk.get("eval_count") or 0)
-                        result.eval_duration_ns = int(chunk.get("eval_duration") or 0)
-                        result.load_duration_ns = int(chunk.get("load_duration") or 0)
-                        break
+        last_err: Exception | None = None
+        for attempt in range(1 + LLM_RETRIES):
+            result = LLMResult()
+            acc: dict[int, dict] = {}
+            tf = ThinkFilter()
+            emitted: list[tuple[str, Any]] = []
 
-            vis, hid = tf.flush()
-            for ev in emit(vis, hid):
-                yield ev
-            result.tool_calls = _finalize_tool_calls(acc)
-            yield ("result", result)
-        finally:
+            # 本地模型串行锁：整个生成过程（含流式输出）独占，确保同一时刻只有一个
+            # 本地模型在跑。finally 保证无论是正常结束、被 stop_check 打断（抛
+            # GenerationStopped），还是调用方提前 close() 生成器，锁都会被释放。
             if serial:
-                try:
-                    _LOCAL_LOCK.release()
-                except RuntimeError:
-                    pass
+                _LOCAL_LOCK.acquire()
+            try:
+                with self._post_chat(payload, stream=True) as resp:
+                    done = False
+                    for line in resp.iter_lines(decode_unicode=True):
+                        if not line:
+                            continue
+                        if stop_check is not None and stop_check():
+                            raise GenerationStopped(result)
+                        try:
+                            chunk = json.loads(line)
+                        except json.JSONDecodeError:
+                            # 流中途出现非法行：Ollama 500 常把尾部截断成一个错误体，
+                            # 整轮重请求往往就能过，所以判成可恢复错误。
+                            raise _StreamCorrupt("mid-stream non-JSON chunk")
+                        msg = chunk.get("message", {}) or {}
+                        text = msg.get("content") or ""
+                        if text:
+                            vis, hid = tf.feed(text)
+                            if vis:
+                                result.content += vis
+                                emitted.append(("delta", vis))
+                            if hid:
+                                result.thinking += hid
+                                emitted.append(("thinking", hid))
+                        th = msg.get("thinking") or ""
+                        if th:
+                            result.thinking += th
+                            emitted.append(("thinking", th))
+                        if msg.get("tool_calls"):
+                            _merge_tool_calls(acc, msg["tool_calls"])
+                        if chunk.get("done"):
+                            done = True
+                            result.prompt_eval_count = int(chunk.get("prompt_eval_count") or 0)
+                            result.eval_count = int(chunk.get("eval_count") or 0)
+                            result.eval_duration_ns = int(chunk.get("eval_duration") or 0)
+                            result.load_duration_ns = int(chunk.get("load_duration") or 0)
+                            break
+                    vis, hid = tf.flush()
+                    if vis:
+                        result.content += vis
+                        emitted.append(("delta", vis))
+                    if hid:
+                        result.thinking += hid
+                        emitted.append(("thinking", hid))
+                    result.tool_calls = _finalize_tool_calls(acc)
+                    if not done:
+                        # 流正常结束却没收到 done：Ollama 常在生成完成后响应处理阶段崩，
+                        # 同一 prompt 重请求往往就过（复测 14 个子任务同形态 500 的根因）。
+                        raise _StreamCorrupt("stream ended without done flag")
+                # 本轮成功：放出缓冲的事件
+                for kind, payload2 in emitted:
+                    yield (kind, payload2)
+                yield ("result", result)
+                break
+            except GenerationStopped:
+                raise
+            except (_StreamCorrupt, requests.ConnectionError, requests.Timeout) as e:
+                last_err = e
+                if attempt < LLM_RETRIES:
+                    time.sleep(LLM_RETRY_BACKOFF * (2 ** attempt))
+                    continue
+            finally:
+                if serial:
+                    try:
+                        _LOCAL_LOCK.release()
+                    except RuntimeError:
+                        pass
+        else:
+            raise last_err  # type: ignore[misc]
 
     def chat(
         self,
