@@ -69,33 +69,6 @@ def _venv_interpreters() -> tuple[str, str]:
     return sys.executable, sys.executable
 
 
-def _restart_command(py: str | None = None, pyw: str | None = None) -> str:
-    """重启命令行：先等 HTTP 响应发出去，再停旧的、等端口释放、拉起新的。
-
-    为什么不再 call stop.bat / start.bat（上一版事故的三个根因）：
-    1. 分离 cmd 用了 DETACHED_PROCESS，它会给每个控制台子进程开【可见】
-       窗口——stop.bat 里的 `python service.py --stop` 每次都弹窗喊
-       「服务没在运行」，用户关掉窗口杀掉的是子进程，保姆又拉起服务，
-       「关了又弹」（service.py 顶部有同样的血泪注释）；
-    2. `timeout /t /nobreak` 在无控制台输入时立即失败，响应先行的等待
-       形同虚设 → 换 ping -n 做纯网络栈延时，不依赖任何控制台；
-    3. stop.bat 末尾的 pause 靠 %cmdcmdline% 判断是否被双击启动，被
-       cmd 链 call 进来时会误判而卡住 → 绕开 bat，直接调 service.py。
-    """
-    if not (py and pyw):
-        dpy, dpyw = _venv_interpreters()
-        py, pyw = py or dpy, pyw or dpyw
-    return (
-        'ping -n 3 127.0.0.1 >nul'          # ≈2s：先让这条 HTTP 响应发出去（stop 连本服务一起停）
-        f' & "{py}" service.py --stop'
-        ' & echo [chain] STOP_EXIT=%ERRORLEVEL%'
-        ' & ping -n 4 127.0.0.1 >nul'       # ≈3s：等端口释放
-        ' & echo [chain] BEFORE_START'
-        f' & start "" "{pyw}" service.py'   # start "" 的空标题参数防止路径被当成窗口名
-        ' & echo [chain] START_EXIT=%ERRORLEVEL%'
-    )
-
-
 # 服务端重启单飞锁：重启是「会停掉本服务」的操作，HTTP 响应发出后前后端
 # 都没有兜底。同一瞬间连点两次（或多开一个标签页再点）会让两轮 stop/start
 # 链叠在一起互相残杀——上一轮弹窗风暴的放大器之一。60s 内的重复请求直接拒绝。
@@ -2168,19 +2141,18 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(ollamaguard.ensure(self.cfg, force=bool(req.get("force"))))
 
     def _handle_service_restart(self):
-        """重启本地常驻服务（service.py --stop → pythonw service.py）。仅本地可用。
+        """重启本地常驻服务（写 restart.flag，由 service.py 看门狗接管）。仅本地可用。
 
-        重启链会把本 Web 服务一起停掉，所以真正动手的是**分离的** cmd
-        进程：先 ping 等约 2s 让这条 HTTP 响应发出去，再执行停与启。
-        页面随后靠 /api/health 轮询感知「失联（红褐色）→ 恢复（绿色）」。
+        关键修复（rerun4 复盘）：此前让 web 端直接调 `service.py --restart`，而 web 服务
+        本身正是看门狗的子进程——它把旧 web 停掉的同时也把自己带走了，新实例来不及拉起，
+        于是前端永远卡在「重启中」。根因是「子进程杀父进程」：Windows 下被 terminate 的
+        父进程会连带拖死子进程。
 
-        细节（每一条都是上一次事故换来的）：
-        - CREATE_NO_WINDOW 而非 DETACHED_PROCESS：后者会给 cmd 的控制台
-          子进程开可见窗口，用户看到的就是「不停弹窗说服务没在运行」；
-        - 60s 单飞锁：连点/多标签页同时点的重复请求直接 429，不让两轮
-          stop/start 叠加互相残杀；
-        - 不经 stop.bat / start.bat：pause 误判卡链、timeout 无控制台
-          即失效、DETACHED 弹窗，三个坑都出自 bat 转发层。
+        正确做法：web 端只写一个 `restart.flag` 标记文件，然后立刻返回成功——整个过程
+        不依赖任何会随 web 服务一起死掉的子进程。真正的停/启由 service.py 看门狗
+        （父进程、不会死）在下一轮体检（≤10s）时接管：只停旧 Web 服务，循环继续，
+        发现端口空了就拉起一份全新的 Web 服务（带最新代码）。浏览器靠 /api/health
+        轮询感知「失联（红褐色）→ 恢复（绿色）」。
         """
         if not _is_local_deployment():
             self._json({"error": "云端部署：本地服务重启不可用"}, 400)
@@ -2192,26 +2164,23 @@ class _Handler(BaseHTTPRequestHandler):
         if locked:
             self._json({"error": locked}, 429)
             return
+        run = HERE / ".run"
+        run.mkdir(parents=True, exist_ok=True)
+        # 只写标记，绝不自己杀进程——接力棒交给看门狗。标记内容仅作时间戳备查。
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
         try:
-            # 链的输出落文件而非 DEVNULL：这整条链在「停自己」的语境下跑，
-            # 任何一步静默失败（尤其最后的 start）都意味着服务永远回不来、
-            # 页面干等 120s 超时。留一份现场，故障才有得查。
-            chain_log = open(HERE / ".run" / "restart_chain.log", "a",
-                             encoding="utf-8", errors="replace")
-            chain_log.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} 重启链发起 ---\n")
-            chain_log.flush()
-            subprocess.Popen(
-                _restart_command(), cwd=str(HERE), shell=True,
-                # CREATE_NO_WINDOW：隐藏控制台，子进程继承后也不再弹窗
-                # （service.py 同款教训）；NEW_PROCESS_GROUP 不被连坐。
-                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
-                stdout=chain_log, stderr=subprocess.STDOUT,
-            )
-        except Exception as e:  # noqa: BLE001
-            self._json({"error": f"重启指令发起失败：{type(e).__name__}: {e}"}, 500)
+            (run / "restart.flag").write_text(ts + "\n", encoding="utf-8")
+        except OSError as e:
+            self._json({"error": f"写入重启标记失败：{e}"}, 500)
             return
+        try:
+            with open(run / "restart_chain.log", "a", encoding="utf-8", errors="replace") as chain_log:
+                chain_log.write(f"\n--- {ts} 重启指令（写 restart.flag，交由看门狗接管）---\n")
+                chain_log.flush()
+        except OSError:
+            pass
         self._json({"ok": True,
-                    "note": "重启指令已发出：停旧服务 → 拉起新服务，页面稍候自动恢复"})
+                    "note": "重启指令已发出：看门狗将停旧服务并拉起新服务，页面稍候自动恢复"})
 
     # ---------- 打开工作区文件夹（资源管理器） ----------
     def _handle_open_folder(self):

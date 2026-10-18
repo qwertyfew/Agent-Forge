@@ -26,6 +26,16 @@ rem ===========================================================================
 setlocal EnableExtensions
 cd /d "%~dp0"
 
+rem 剥离代理变量：否则本机若设了 HTTP(S)_PROXY，新拉起的服务会把
+rem localhost:11434(Ollama) 也走代理 → 502 upstream connect failed，本地模型全挂。
+set "HTTP_PROXY="
+set "HTTPS_PROXY="
+set "http_proxy="
+set "https_proxy="
+set "ALL_PROXY="
+set "all_proxy="
+set "NO_PROXY=localhost,127.0.0.1,11434"
+
 set "PYW=.venv\Scripts\pythonw.exe"
 set "PY=.venv\Scripts\python.exe"
 set "STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"

@@ -47,6 +47,7 @@ PID_FILE = RUN / "service.pid"
 WEB_PID_FILE = RUN / "web.pid"
 WEB_LOG = RUN / "web.log"
 LOG_FILE = RUN / "service.log"
+RESTART_FLAG = RUN / "restart.flag"   # web 端重启：只写标记，由本看门狗在下轮循环接管重启
 
 
 # ---------------------------------------------------------------- 日志
@@ -297,6 +298,31 @@ def cmd_stop(port: int) -> int:
     return 0
 
 
+def _stop_web_only(port: int) -> None:
+    """只停 Web 服务（绝不碰看门狗自己），供重启标记接管用。
+
+    看门狗自己持有 PID_FILE；若这里误用 cmd_stop 会把看门狗自己也 SIGTERM 了。
+    重启链路里看门狗必须活着——只有它能在下一轮把 Web 服务拉回来。
+    """
+    web = read_pid(WEB_PID_FILE)
+    if pid_alive(web):
+        log(f"重启：停止旧 Web 服务 PID {web}")
+        try:
+            os.kill(web, signal.SIGTERM)
+        except OSError as e:
+            log(f"停止 Web 服务失败：{e}")
+    time.sleep(1.0)
+    for extra in sorted(listener_pids(port)):
+        if extra != os.getpid() and pid_alive(extra):
+            log(f"重启：停止占用 {port} 端口的进程 PID {extra}")
+            try:
+                os.kill(extra, signal.SIGTERM)
+            except OSError as e:
+                log(f"停止占用 {port} 端口的进程失败：{e}")
+    time.sleep(1.0)
+    WEB_PID_FILE.unlink(missing_ok=True)
+
+
 # ---------------------------------------------------------------- 主循环
 def loop(port: int, cfg_name: str, watch_ollama: bool) -> int:
     cfg = Config.load(cfg_name)
@@ -306,6 +332,18 @@ def loop(port: int, cfg_name: str, watch_ollama: bool) -> int:
     fails = 0
     tick = 0
     while True:
+        # —— 重启标记接管 —— web 端（run.py --web）只写标记，绝不自己杀进程，
+        # 因为它是看门狗的子进程，杀自己会连同重启链一起死（rerun4 的坑）。
+        # 这里由看门狗（父进程、不会死）在下一轮体检读到标记：只停旧 Web 服务，
+        # 然后继续循环——发现端口空了就拉起一份全新的 Web 服务（带最新代码）。
+        if RESTART_FLAG.exists():
+            RESTART_FLAG.unlink(missing_ok=True)
+            log("收到重启标记：停止旧 Web 服务，准备拉起新实例")
+            _stop_web_only(port)
+            fails = 0
+            time.sleep(1.0)
+            continue
+
         healthy = health_ok(port)
         if healthy:
             if fails:
@@ -337,6 +375,15 @@ def loop(port: int, cfg_name: str, watch_ollama: bool) -> int:
         time.sleep(delay)
 
 
+def _restart_self(port: int, cfg_name: str) -> int:  # pragma: no cover - 已弃用
+    """已弃用：原「web 调 service.py --restart」方案，根因是调用方（web 服务）本身是看门狗的
+    子进程，杀掉旧 web 之后自己也跟着死，新实例来不及拉起。改由 web 端只写 restart.flag、
+    由看门狗在循环中接管重启（见 loop() 内的标记分支 + _stop_web_only）。
+    """
+    log("忽略已弃用的 --restart：请改用 restart.flag 机制")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="service.py", description="AgentForge 常驻服务")
     ap.add_argument("--port", type=int, default=8787, help="Web 界面端口，默认 8787")
@@ -354,6 +401,8 @@ def main() -> int:
         return cmd_stop(args.port)
 
     RUN.mkdir(parents=True, exist_ok=True)
+    # 清掉上一轮可能残留的重启标记，避免看门狗刚拉起就被旧标记触发一次意外重启
+    RESTART_FLAG.unlink(missing_ok=True)
     old = read_pid(PID_FILE)
     if pid_alive(old):
         print(f"常驻服务已经在跑（PID {old}），这次不做任何事。"
