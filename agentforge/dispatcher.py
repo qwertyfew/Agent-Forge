@@ -14,10 +14,15 @@ from __future__ import annotations
 
 import json
 import re
+import sys
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .config import Config
 from .planner import KIND_DIM, KIND_LABEL, short_title
+
+ROOT = Path(__file__).resolve().parent.parent
 
 TRANSLATE_SYSTEM = "你是翻译器。把用户给出的内容准确翻译成{target}，只输出译文本身，不要任何解释、前缀或代码块。"
 
@@ -230,7 +235,7 @@ class Dispatcher:
         return spec.display if spec else ""
 
     def _chat(self, system: str, user: str, num_predict: int = 8192,
-              temperature: float = 0.2) -> str:
+              temperature: float = 0.2, validator=None) -> str:
         # num_predict 8192（原 2048）+ think=True（原 False）：调度模型换成
         # gpt-oss:20b 后暴露的两个问题——
         #   ① 2048 被它的 analysis（思考）通道吃掉大半：思考 token 与正文共享生成
@@ -243,26 +248,71 @@ class Dispatcher:
         #      通道，final 才是正文，预算也真实生效（实测 done_reason=stop）。
         # gemma 作为调度模型时 think=True 本来就是它的推荐配置（false 会把推理
         # 混进正文），两任调度模型统一 true。
+        #   ③（rerun10 复现并定因）长上下文下 analysis 思考通道会随机跑飞：模型一
+        #      头扎进分析反复斟酌，精确撞上 Ollama 对 analysis 段 ~2048 token 的隐
+        #      形预算（num_predict=8192/16384 都救不了，eval_count 恒 2046），final
+        #      通道永远没机会输出 → content 空、done_reason=length。上下文越长概率
+        #      越高——这就是「短上下文全好、长上下文必坏」的机制。对策是 gpt-oss
+        #      官方的系统提示档位 `Reasoning: low`：分析收敛，实测同一失败提示词
+        #      4/4 全部 stop、且耗时从 26-47s 降到 4-11s（调度 JSON 不需要深推理）。
+        #      对 gemma 无效无害（它不认识该指令，当普通句子忽略）。
         spec = self.spec()
         if spec is None:
             return ""
         messages = [
-            {"role": "system", "content": system},
+            {"role": "system", "content": system + "\n\nReasoning: low."},
             {"role": "user", "content": user},
         ]
         # 空响应重试：gpt-oss 偶发「analysis 生成完毕但 final 通道为空」的空回答
         # （rerun8 观测到过）。同一 prompt 重发一次通常就好了，空结果让 Leader
         # 整轮退回兜底的代价远大于这一次重试。
-        for attempt in range(2):
+        # 失败诊断落盘：rerun9/10 观测到「短上下文全好、长上下文必坏」却无法定因，
+        # 因为原始输出不落盘。现在每次空响应/疑似截断都写 .run/dispatcher_failures/
+        # （system+user 长度、done_reason、token 统计、思考与正文内容），离线可复现。
+        # validator：输出校验器（如「必须是可解析 JSON」）。校验不过视同失败——
+        # rerun10 后观测到 Reasoning: low 下仍偶发超短非 JSON 回答（38 字符），
+        # 与其让 Leader 整轮退回兜底，不如当场重试，重试命中率实测很高。
+        fail_dir = ROOT / ".run" / "dispatcher_failures"
+        out = ""
+        for attempt in range(3):
             res = self.hub.chat(
                 spec, messages, tools=None,
                 options={"temperature": temperature, "num_predict": num_predict},
                 think=True,
             )
             out = (res.content or "").strip()
-            if out:
+            bad_reason = ""
+            if not out:
+                bad_reason = "empty"
+            elif res.done_reason == "length":
+                bad_reason = "trunc"
+            elif validator is not None and not validator(out):
+                bad_reason = "invalid"
+            if not bad_reason:
                 return out
-        return ""
+            # 失败样本留档（成功但 length 结束的也留——截断的 JSON 迟早解析失败）。
+            # 文件名里的模型名含冒号（gpt-oss:20b）——Windows 会把冒号后的部分当
+            # ADS 备用数据流，主文件 0 字节（首版踩坑），必须先消毒。
+            try:
+                fail_dir.mkdir(parents=True, exist_ok=True)
+                ts = time.strftime("%Y%m%d-%H%M%S")
+                safe_name = self.name().replace(":", "_").replace("/", "_")
+                (fail_dir / f"{ts}-{safe_name}-{bad_reason}.txt").write_text(
+                    "\n".join([
+                        f"done_reason={res.done_reason}",
+                        f"attempt={attempt + 1}/3  num_predict={num_predict}  temperature={temperature}",
+                        f"prompt_chars={len(system) + len(user)}  (system {len(system)} / user {len(user)})",
+                        f"prompt_eval_count={res.prompt_eval_count}  eval_count={res.eval_count}",
+                        f"content_len={len(res.content or '')}  thinking_len={len(res.thinking or '')}",
+                        "---- content ----", res.content or "[EMPTY]",
+                        "---- thinking (head 3000) ----", (res.thinking or "")[:3000],
+                        "---- user prompt (head 4000) ----", user[:4000],
+                    ]),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+        return out
 
     # ---------------------------------------------------------- 指派
     def _resolve(self, tasks: list[TaskSpec], entries: list[dict]) -> None:

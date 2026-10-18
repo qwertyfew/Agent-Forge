@@ -916,7 +916,8 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                 raw = dispatcher._chat(
                     LEADER_PLAN_SYSTEM.format(catalog=catalog),
                     _join(ctx.plan_messages()),
-                    num_predict=2048, temperature=0.2)
+                    temperature=0.2,
+                    validator=lambda s: isinstance(_extract_json(s), dict))
                 batch, rationale = parse_batch(_extract_json(raw), entries,
                                                resolver=dispatcher._resolve,
                                                start_index=len(all_steps) + 1)
@@ -1018,7 +1019,8 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                 raw = dispatcher._chat(
                     LEADER_EVAL_SYSTEM.format(catalog=catalog),
                     _join(ctx.eval_messages(results)),
-                    num_predict=4096, temperature=0.2)
+                    temperature=0.2,
+                    validator=lambda s: isinstance(_extract_json(s), dict))
                 parsed = parse_eval(_extract_json(raw))
             except Exception as e:  # noqa: BLE001
                 parsed = {"done": False, "answer": "", "note": "",
@@ -1084,7 +1086,8 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
             raw = dispatcher._chat(
                 LEADER_SEMANTIC_SYSTEM,
                 f"【任务原文】\n{message}\n\n【拟回答】\n{final_answer}",
-                num_predict=1024, temperature=0.2)
+                temperature=0.2,
+                validator=lambda s: isinstance(_extract_json(s), dict))
             sj = _extract_json(raw) or {}
             sem_pass = bool(sj.get("pass"))
             sem_reasons = [str(r).strip() for r in (sj.get("reasons") or [])
