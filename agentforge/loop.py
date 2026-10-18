@@ -13,6 +13,7 @@ from . import gaps
 from . import verify as verify_gate
 from .artifact import FILE_TOOLS, classify_tool_write
 from .context import Compressor, measure
+from .evidence import EvidenceLedger
 from .llm import OllamaClient, parse_text_tool_calls
 from .memory import MemoryStore
 from .llm import GenerationStopped
@@ -92,6 +93,27 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
   「据搜索结果，未经核实」。对象是某个仓库 / 库 / 产品时，先 fetch_json 打它的
   官方 API（如 GitHub 仓库用 https://api.github.com/repos/<owner>/<repo>）
   拿到真实数据，再写结论。
+- 做仓库分析 / 差距清单 / 逆向报告这类「回写证据」的任务时，引用仓库内文件与代码
+  必须遵守四条证据纪律，避免「路径看似合理但读者复现不到、数字看着精确但仓库里查无此处」。
+  **其中 1/2/3 已由架构层在「写入报告」时强制校验**：引用了不存在的路径、把目录当文件
+  引用、行号超出文件实际范围——写入会被直接拒绝并退回修正（你会在 write_file 的返回里
+  看到具体哪条引用错了）。所以你只需专注第 4 条与整体质量；但引用前仍请尽量先 read_file /
+  search_code 核实，因为架构层只拦「确定错误」，拦不了「查错了文件」这类软问题：
+  1. 引用前先核实存在：任何写进回复的文件路径、类名、函数名，先用 list_dir / read_file /
+     search_code 确认它真的存在；路径是自己拼出来的、或来自别处摘要的，必须先核实再写，
+     禁止凭印象写路径（尤其目录名的大小写、连字符 / 下划线差异：`learn-claude-code`
+     不是 `learn_claude_code`，`agentforge/tools/` 是包目录不是文件）。
+  2. 区分文件还是包（目录）：写 `agentforge/tools.py` 这类名字前先确认它究竟是文件还是
+     包目录——若实际是包 `agentforge/tools/`，必须落实到具体文件如 `agentforge/tools/fs.py`；
+     别把包目录名当文件引用，读者按你写的路径去找会找不到。
+  3. 行号绑定符号而非裸行号：引用具体代码位置时，优先写稳定的符号锚点
+     （如「`class Agent` 内」「`def run()` 处」「`LeaderContext.add_progress`」），
+     不要只写 `loop.py:96-124` 这样的裸行号——行号会随代码改动漂移，符号锚点才可复现
+     （架构层会对此给软提醒，但不阻断写入）。
+  4. 二手数字不当仓库证据：清单 / 报告里引用的任何数字（star / fork / 准确率 /
+     子任务数…）必须是仓库一手证据（代码、README、注释、测试结果、官方 API 返回值）；
+     来自任务书背景或别处摘要的数字，不得当作仓库内证据写入，必须标注
+     「据…（未核实）」或直接删除（架构层在「只抓过网页却含数字」时会给软提醒）。
 - 任务完成后如实总结：改了哪些文件、验证了什么、验证是否通过。没验证的说
   「未验证」，失败或没做完的直说，禁止把没验证的东西说成已验证。
 - 加粗（**…**）克制使用：只给与用户问题直接相关的关键结论，标题、列表行首、
@@ -491,6 +513,9 @@ class Agent:
         # 每个子任务/多路径方案标更细的值（orchestrator set_step），这里只在
         # 没人标记时（CLI 直跑 / 单发对话）用任务原文兜底，不覆盖已有标记。
         gaps.ensure_step(user_text)
+        # 证据台账：本任务「实际核实过哪些文件」的唯一事实源（架构层记录，供写报告时
+        # 校验引用）。每次 run 重置，避免跨任务串味。
+        self.guard.ledger = EvidenceLedger()
         # 任务内即时验证的失败回灌计数（0-3）：每次 run 归零，跨轮次保留，
         # 防「改挂→提醒→再改挂」死循环；到顶后不再回灌，终审交给收尾闸门。
         self.iv_fails = 0
@@ -920,9 +945,67 @@ class Agent:
             OUTDIR_CTX.reset(ot)
             WRITE_ALLOW.reset(wt)
 
+        # 证据台账：成功读取 / 检索 / 抓取到的路径记进来（架构层，供写报告校验引用）。
+        # 只记成功结果（以 [错误] / [已拒绝] 开头视为失败，不记）。
+        ledger = getattr(self.guard, "ledger", None)
+        if ledger is not None and not out.startswith(("[错误]", "[已拒绝]")):
+            self._record_evidence(name, args or {}, out, ledger)
+
         # 记下这次调用改动的文件（任务台账据此展示「任务产出」，并在清空时可选删除）
         if file_log is not None:
             rec = classify_tool_write(name, args or {}, out)
             if rec:
                 file_log.append(rec)
         return out
+
+    def _record_evidence(self, name: str, args: dict, out: str, ledger: EvidenceLedger) -> None:
+        """把一次成功工具调用里出现的真实路径记入证据台账。
+
+        读取类（read_file）记成已核实文件；检索类（search_code / find_files /
+        list_dir）从结果里扒出 path:line 记成文件或目录；抓取类（fetch_url /
+        fetch_json）记成网页（二手来源标记，供规则 4 警示）。
+        """
+        if name == "read_file":
+            raw = str(args.get("path") or "")
+            if raw:
+                try:
+                    p = self.guard.resolve(raw)
+                except Exception:
+                    return
+                if p.is_dir():
+                    ledger.mark_dir(p)
+                    return
+                # 成功回显头部带「(N 行, 显示 a-b)」，顺手记下总行数供行号校验
+                m = re.search(r"\((\d+)\s*行", out)
+                n = int(m.group(1)) if m else None
+                ledger.mark_file(p, lines=n)
+            return
+
+        if name in ("search_code", "find_files"):
+            # 每行形如  path/to/file.py:LINE: 内容  —— 扒出文件路径记成已核实
+            for m in re.finditer(r"^([^\s:][^\n:]*?):\d+:\s", out, re.M):
+                try:
+                    p = self.guard.resolve(m.group(1))
+                except Exception:
+                    continue
+                if p.is_dir():
+                    ledger.mark_dir(p)
+                else:
+                    ledger.mark_file(p)
+            return
+
+        if name == "list_dir":
+            raw = str(args.get("path") or ".")
+            try:
+                p = self.guard.resolve(raw)
+            except Exception:
+                return
+            ledger.mark_dir(p)
+            return
+
+        if name in ("fetch_url", "fetch_json"):
+            url = str(args.get("url") or args.get("uri") or "")
+            if url:
+                ledger.mark_web(url)
+            return
+

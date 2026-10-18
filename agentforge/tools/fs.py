@@ -5,6 +5,7 @@ import ast
 import json
 
 from .base import SAFE, WRITE, make_tool
+from ..evidence import audit_citations
 def _syntax_check(p: Path) -> str | None:
     try:
         if p.suffix.lower() == ".py":
@@ -89,6 +90,24 @@ def build_fs_tools(guard, cfg):
         redirected = p != guard.resolve(path)
         existed = p.exists()
         old = p.read_text(encoding="utf-8", errors="replace") if existed else ""
+
+        # 引用证据架构校验：仓库分析 / 差距清单 / 逆向报告类交付物，写出前先核引用。
+        # 只校验「含 / 的反引号引用」；硬错误（路径不存在 / 目录当文件 / 行号越界）
+        # 且这是一份引用密集文档（checked>=2）时，拒绝写入并退回修正——直接卡死
+        # 「路径看似合理但读者复现不到」这类 bug，不靠提示词自觉。
+        ledger = getattr(guard, "ledger", None)
+        cit_audit = None
+        if content and "`" in content:
+            try:
+                cit_audit = audit_citations(content, guard, cfg.workspace_root, ledger)
+            except Exception:
+                cit_audit = None
+            if cit_audit is not None:
+                errors = [i for i in cit_audit.issues if i.level == "error"]
+                if errors and cit_audit.checked >= 2:
+                    detail = "\n".join(f"  - {i.token}: {i.detail}" for i in errors)
+                    return ("[错误] 引用核查未通过，文件未写入。请修正下列引用后重试：\n" + detail)
+
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8", newline="")
         
@@ -101,6 +120,11 @@ def build_fs_tools(guard, cfg):
         action = "覆盖" if existed else "新建"
         diff = "" if not existed else f"（原 {len(old)} 字符 → 现 {len(content)} 字符）"
         note = "（相对路径已按产出规则自动写入产出目录）" if redirected else ""
+        # 软警示（不阻断）：把引用核查的 warning 回传给模型，让它有机会修正
+        if cit_audit is not None:
+            warns = [i for i in cit_audit.issues if i.level == "warn"]
+            if warns:
+                note += "\n[引用核查提醒] " + "；".join(f"{i.token or '报告'}: {i.detail}" for i in warns)
         return f"已{action}文件 {p} {diff}{note}"
 
     # ---------- edit_file ----------
