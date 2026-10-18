@@ -91,6 +91,12 @@ class Config:
     # 本地模型串行执行：同一时刻只跑一个本地模型，避免两个并发任务同时压 Ollama
     # 抢 GPU/显存互相拖累。付费/在线模型不受此限制，可并行。
     local_serial: bool = True
+    # 本地模型批内并发上限（取代 local_serial 的粗开关）：leader 同批多个员工
+    # 步骤同时执行时，本地模型调用最多允许 N 个并发（1 = 完全串行，等价旧的
+    # local_serial=true）。收到 Ollama 侧的 OLLAMA_NUM_PARALLEL 与显存余量约束：
+    # 同一模型的并发请求由 Ollama 合批（权重共享，KV cache 各自增长）；不同模型
+    # 并发则各自占显存。16GB 卡建议 2，且只对小模型（≤8B）受益明显。
+    local_max_concurrent: int = 1
     # 算力闸门（任务级）：同时「执行中」的任务上限。本地显存一次只稳得住一个
     # 大模型就填 1；超出的任务登记为「排队中」，有空位自动开跑。填 2 表示
     # 跑着 A 的同时还能立刻开 B（显存够才行）。
@@ -247,10 +253,12 @@ class Config:
         cfg.ollama_host = _expand(o.get("host", cfg.ollama_host)).rstrip("/")
         cfg.keep_alive = str(o.get("keep_alive", cfg.keep_alive))
         cfg.request_timeout = int(o.get("request_timeout", cfg.request_timeout))
-        # 本地模型串行执行已升级为**硬规则**（第 42 步），不再可配置：同一时刻
-        # 只跑一个本地模型，避免并发任务互相抢显存。config 里残留的
-        # local_serial 键会被忽略（写 False 也无效），界面上的开关已移除。
+        # 本地模型串行执行已升级为**硬规则**（第 42 步），local_serial 键被忽略。
+        # 细粒度并发由 local_max_concurrent 接管（1 = 完全串行，等价旧硬规则；
+        # >1 时 leader 同批员工步骤允许 N 路本地并发，显存自负）。
         cfg.local_serial = True
+        cfg.local_max_concurrent = max(1, int(o.get("local_max_concurrent",
+                                                    cfg.local_max_concurrent) or 1))
         cfg.ollama_auto_start = bool(o.get("auto_start", cfg.ollama_auto_start))
         cfg.ollama_wait = int(o.get("auto_start_wait", cfg.ollama_wait))
         cfg.ollama_warmup_timeout = int(o.get("warmup_timeout", cfg.ollama_warmup_timeout))

@@ -653,7 +653,10 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
 
     full_access = auto_approve is True or bool(getattr(agent.guard, "auto_approve_all", False))
     parallel_on = bool(getattr(cfg, "dispatcher_parallel", True)) and full_access
-    local_gate = threading.Semaphore(1) if getattr(cfg, "local_serial", True) else None
+    # 本地模型并发闸门：local_max_concurrent 路并发（1 = 完全串行，旧硬规则）。
+    # 超过并发的本地员工调用排队等信号量；在线模型不走此闸门，始终可并行。
+    local_conc = max(1, int(getattr(cfg, "local_max_concurrent", 1) or 1))
+    local_gate = threading.Semaphore(local_conc)
 
     shared_log: list = file_log if file_log is not None else []
     log_lock = threading.Lock()
