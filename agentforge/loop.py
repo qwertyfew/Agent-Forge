@@ -322,6 +322,10 @@ class Agent:
         # 本任务的产出目录（相对工作区根目录的路径，按任务发起时间命名）。
         # 编排层每次任务算好填进来；空字符串表示未设置（系统提示里就不出这条规则）。
         self.outdir: str = ""
+        # 任务开局预热注入（agentforge/warmup.py）：编排层算好填进来，系统提示
+        # 附加项目速览（目录树/README/命中文件）。放系统提示是刻意的——
+        # _compact 只压历史、永不碰系统提示，预热块处于「免压缩区」。
+        self.warmup_block: str = ""
         # 用户是否显式指定过模型。自动路由的开关看它，而不是看「当前是不是默认模型」——
         # 默认模型本机跑不起来时会被替换成别的 key，那种情况下不该从此不再路由。
         self.model_pinned = bool(model_key)
@@ -375,6 +379,10 @@ class Agent:
         # 员工只管往里写；不设置（普通闲聊等）就不占提示词字节。
         if self.outdir:
             base += OUTDIR_RULE.format(outdir=self.outdir)
+        # 预热注入紧跟产出目录规则：同属「工作环境」段，开局就有项目地图。
+        # 不设置（闲聊/CLI 直连）就不占提示词字节。
+        if self.warmup_block:
+            base += "\n" + self.warmup_block + "\n"
         if self.skills and self.skills.skills:
             base += "\n" + self.skills.catalog() + "\n"
         # 工具索引：把没下发说明的工具名字列出来（只列名字，很便宜），

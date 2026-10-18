@@ -1,0 +1,200 @@
+"""任务开局预热注入（第 58 步）。
+
+问题：每个员工 agent 开局对工作区一无所知——目录结构、README、哪个文件在哪，
+全靠自己第一轮摸黑 list_dir / read_file 探出来。一次探索就是 1~3 轮工具调用，
+一个任务 N 个员工就重复 N 遍；小模型还常在开局摸错方向。
+
+方案：任务开局一次性扫描工作区，生成一份「项目速览」块：
+    1. 目录树（两层，剪掉依赖/产物等噪音目录）
+    2. README 摘要（项目是干什么的）
+    3. 关键词命中文件清单（按任务原文的词切出 token，对相对路径打分取 Top N）
+注入**员工 agent 的系统提示**而不是用户消息——`Agent._compact` 只压历史、
+永不碰系统提示，预热块和任务笔记一样处在「免压缩区」，开局给的地图到收尾
+都完整在场，不存在「压缩掉预热」的问题。
+
+边界：只扫 workspace_root 以内；只看路径与文件名，不读文件内容（README
+除外），整个构建在几十毫秒量级，不增加模型调用。内容体量由 warmup.max_chars
+封顶（默认 3500 字 ≈ 1~2K token，占 gemma 256K 窗口不到 1%）。
+"""
+
+from __future__ import annotations
+
+import re
+import time
+from pathlib import Path
+
+# 树与关键词扫描都跳过的目录：依赖、缓存、运行期状态、历史产出
+PRUNE_DIRS = {
+    ".git", ".agentforge", ".sessions", "__pycache__", "node_modules",
+    ".workbuddy", ".run", ".venv", "venv", "dist", "build", ".idea",
+    ".vscode", ".pytest_cache", ".mypy_cache", "debug", "temp", "tmp",
+    "history",
+}
+
+_ASCII_RX = re.compile(r"[a-zA-Z0-9_\-\.]{2,}")
+_CJK_RX = re.compile(r"[\u4e00-\u9fff]+")
+
+# 任务原文里的高频泛词：命中它们等于没命中，不参与打分
+_STOP_TOKENS = {
+    "帮我", "请帮", "一下", "这个", "那个", "任务", "项目", "文件", "代码",
+    "修改", "实现", "检查", "看看", "然后", "需要", "进行", "使用", "可以",
+    "the", "and", "for", "with", "this", "that", "from", "into", "文件",
+}
+
+
+def _task_tokens(text: str) -> set[str]:
+    """把任务原文切成匹配 token：ASCII 词（含 .py 这类带点的）+ 中文二字组。"""
+    toks: set[str] = set()
+    for m in _ASCII_RX.finditer(text):
+        t = m.group(0).lower().strip(".-")
+        if len(t) >= 2 and t not in _STOP_TOKENS:
+            toks.add(t)
+    for m in _CJK_RX.finditer(text):
+        s = m.group(0)
+        for i in range(max(1, len(s) - 1)):
+            bg = s[i:i + 2]
+            if bg not in _STOP_TOKENS:
+                toks.add(bg)
+    return toks
+
+
+def _walk(root: Path, *, max_entries: int = 4000):
+    """带剪枝的迭代遍历，产出 (相对路径, 是否目录)。条数封顶防失控。"""
+    n = 0
+    for cur, dirs, files in root.walk(top_down=True):
+        dirs[:] = sorted(d for d in dirs if d not in PRUNE_DIRS
+                         and not d.startswith("."))
+        rel = cur.relative_to(root)
+        if rel != Path("."):
+            yield rel, True
+            n += 1
+        for f in sorted(files):
+            if f.startswith("."):
+                continue
+            yield rel / f, False
+            n += 1
+        if n >= max_entries:
+            return
+
+
+def _tree_lines(root: Path, max_lines: int = 60) -> list[str]:
+    """两层目录树：目录带条目数，文件只列名字。"""
+    lines: list[str] = []
+    try:
+        top = sorted(root.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    except OSError:
+        return lines
+    for p in top:
+        if len(lines) >= max_lines:
+            lines.append("  …（更多条目已省略）")
+            break
+        name = p.name
+        if p.is_dir():
+            if name in PRUNE_DIRS or name.startswith("."):
+                continue
+            try:
+                n = sum(1 for _ in p.iterdir())
+            except OSError:
+                n = 0
+            lines.append(f"  {name}/  ({n})")
+            if n <= 24:                     # 小目录顺手展开一层
+                try:
+                    for q in sorted(p.iterdir(), key=lambda x: x.name.lower()):
+                        if len(lines) >= max_lines:
+                            break
+                        if q.name in PRUNE_DIRS or q.name.startswith("."):
+                            continue
+                        lines.append(f"    {q.name}{'/' if q.is_dir() else ''}")
+                except OSError:
+                    pass
+        else:
+            if name.startswith("."):
+                continue
+            lines.append(f"  {name}")
+    return lines
+
+
+def _readme_digest(root: Path, limit: int = 600) -> str:
+    """README 开头若干字（按行边界截断），去掉图片与链接尾巴。"""
+    for name in ("README.md", "README.rst", "README.txt", "README"):
+        p = root / name
+        if p.is_file():
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return ""
+            text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)      # 图片
+            text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)  # 链接留文字
+            cut = text[:limit]
+            if len(text) > limit:
+                cut = cut[:cut.rfind("\n")] if "\n" in cut else cut
+                cut += " …"
+            return cut.strip()
+    return ""
+
+
+def build_block(cfg, task_text: str) -> tuple[str, dict]:
+    """生成预热注入块。返回 (块文本, 统计)；开关关闭或工作区不可读返回 ("", stats)。"""
+    stats = {"chars": 0, "tree_entries": 0, "hit_files": 0}
+    if not getattr(cfg, "warmup_enabled", True):
+        return "", stats
+    root = Path(cfg.workspace_root)
+    if not root.is_dir():
+        return "", stats
+
+    max_chars = max(500, int(getattr(cfg, "warmup_max_chars", 3500)))
+    max_files = max(0, int(getattr(cfg, "warmup_max_files", 12)))
+
+    parts: list[str] = ["【项目速览 · 任务开局注入】"
+                        "（路径均相对工作区根目录，需要细节直接 read_file / list_dir）"]
+
+    tree = _tree_lines(root)
+    stats["tree_entries"] = len(tree)
+    if tree:
+        parts.append("【目录结构】\n" + "\n".join(tree))
+
+    digest = _readme_digest(root)
+    if digest:
+        parts.append("【README 摘要】\n" + digest)
+
+    if max_files:
+        toks = _task_tokens(task_text)
+        scored: list[tuple[int, str]] = []
+        for rel, is_dir in _walk(root):
+            if is_dir:
+                continue
+            s = str(rel).lower()
+            hit = sum(1 for t in toks if t in s)
+            if hit:
+                scored.append((hit, str(rel)))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        if scored:
+            hits = [f"  {p}（命中 {h} 处）" for h, p in scored[:max_files]]
+            stats["hit_files"] = min(len(scored), max_files)
+            note = f"（共 {len(scored)} 个文件命中，取前 {stats['hit_files']} 个）" \
+                if len(scored) > max_files else ""
+            parts.append("【与任务相关的文件】" + note + "\n" + "\n".join(hits))
+
+    if len(parts) <= 1:
+        return "", stats                    # 只有标题，工作区近乎是空的
+
+    block = "\n\n".join(parts)
+    if len(block) > max_chars:
+        block = block[:max_chars].rsplit("\n", 1)[0] + "\n  …（预热内容已按上限截断）"
+    stats["chars"] = len(block)
+    return block, stats
+
+
+def build_once(cfg, task_text: str, *, ttl: float = 600.0):
+    """带缓存的一次性构建：同一任务内多员工共享一份（工作区秒级不变）。
+
+    缓存挂在 cfg 对象上（跟随配置生命周期），ttl 过期或任务原文变化才重建。
+    """
+    key = "_warmup_cache"
+    cache = getattr(cfg, key, None)
+    now = time.time()
+    if cache and now - cache[0] < ttl and cache[1] == task_text:
+        return cache[2], cache[3]
+    block, stats = build_block(cfg, task_text)
+    setattr(cfg, key, (now, task_text, block, stats))
+    return block, stats

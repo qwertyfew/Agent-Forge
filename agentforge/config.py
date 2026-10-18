@@ -228,6 +228,15 @@ class Config:
     compact_summary_chars: int = 1500    # 摘要的目标长度
     compact_auto: bool = True            # 是否自动压缩
 
+    # ---- 任务开局预热注入（agentforge/warmup.py）----
+    # 任务开局扫一遍工作区，把「目录树 + README 摘要 + 任务关键词命中文件」
+    # 注进每个员工的系统提示，省掉开局摸黑的 1~3 轮探索调用。注入位置在
+    # 系统提示（免压缩区），_compact 永不碰它。体量很小：max_chars=3500 字
+    # ≈ 1~2K token，占 gemma 256K 窗口 <1%、64K 模型约 3%。
+    warmup_enabled: bool = True
+    warmup_max_chars: int = 3500         # 注入块字符上限（超出截断）
+    warmup_max_files: int = 12           # 关键词命中文件清单的条目数
+
     # ---- Skill 系统 ----
     skill_dirs: list[Path] = field(default_factory=list)
     skill_auto_load: bool = True         # 任务命中时自动注入 skill 正文
@@ -371,6 +380,11 @@ class Config:
         cfg.compact_keep_chars = int(c.get("keep_chars", cfg.compact_keep_chars))
         cfg.compact_summary_chars = int(c.get("summary_chars", cfg.compact_summary_chars))
         cfg.compact_auto = bool(c.get("auto", cfg.compact_auto))
+
+        wu = raw.get("warmup", {}) or {}
+        cfg.warmup_enabled = bool(wu.get("enabled", cfg.warmup_enabled))
+        cfg.warmup_max_chars = max(500, int(wu.get("max_chars", cfg.warmup_max_chars)))
+        cfg.warmup_max_files = max(0, int(wu.get("max_files", cfg.warmup_max_files)))
 
         sk = raw.get("skills", {}) or {}
         cfg.skill_auto_load = bool(sk.get("auto_load", cfg.skill_auto_load))

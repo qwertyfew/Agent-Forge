@@ -44,6 +44,7 @@ from . import honesty_guard
 from . import runcontrol
 from . import sources as sources_gate
 from . import verify as verify_gate
+from . import warmup as warmup_gate
 
 # 首步与后续步骤的提示词模板。都强调"只做这一步"，否则模型会越界把后面的活也干了。
 STEP_FIRST = """【总体任务】
@@ -669,6 +670,12 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
 
     root = cfg.workspace_root
     snap = verify_gate.snapshot_artifacts(message, root)
+    # 任务开局预热注入（第 58 步）：扫一遍工作区生成项目速览块，本任务所有
+    # 员工共享同一份（build_once 缓存）。进员工系统提示（免压缩区）而不是
+    # 用户消息，_compact 永不碰它。
+    warm_block, warm_stats = warmup_gate.build_once(cfg, message)
+    if warm_block:
+        yield {"type": "warmup", **warm_stats}
     # 任务开始墙钟：交给收尾闸门判定声明交付物是否本轮真实写出。必须在任何写操作
     # 之前定格——闸门据此判定「mtime 晚于任务开始即算本轮产出」，彻底修掉验证竞态
     # （声明交付物被误判 stale：最终 convo 只有 [原文, 拟回答]、快照 mtime 与开局一致）。
@@ -693,6 +700,7 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
         ag = Agent(cfg, agent.client, agent.registry, agent.guard,
                    agent.router, skill_registry=agent.skills, hub=agent.hub)
         ag.outdir = outdir          # 产出目录规则随任务下发到每个员工
+        ag.warmup_block = warm_block  # 预热注入：项目速览进每个员工的系统提示
         return ag
 
     def _join(msgs: list[dict]) -> str:
@@ -1304,6 +1312,14 @@ def run_task(
                 read_cache=read_cache, outdir=outdir,
             )
             return
+
+    # 非 Leader 路径的任务开局预热注入（Leader 路径在 run_leader 内自建，上面
+    # 早已 return）：单模型/接力执行同样先给 agent 一份项目速览。开关关闭时
+    # 置空串，不会把上一个任务残留的预热块带进本任务。
+    warm_block, warm_stats = warmup_gate.build_once(agent.cfg, message)
+    agent.warmup_block = warm_block
+    if warm_block:
+        yield {"type": "warmup", **warm_stats}
 
     # 非 Leader 路径（单模型 / 计划接力）同样过开局健康门禁：Ollama 开局不稳时
     # 在这里就被拦下，避免后续 Agent.run 直接连环 500。Leader 路径已在 run_leader

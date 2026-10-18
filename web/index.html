@@ -6337,6 +6337,11 @@ function handleTaskEvent(ev, data){
       // 能力桥接：调度器替弱中文模型做了翻译预处理
       addPillNote(`能力桥接：${esc(data.reason || '已为执行模型翻译输入')}`);
     }
+    else if(ev === 'warmup'){
+      // 任务开局预热注入：项目速览（目录树/README/命中文件）已进员工系统提示
+      addPillNote(`预热注入：项目速览（${data.tree_entries || 0} 条目录条目、`
+        + `${data.hit_files || 0} 个命中文件，约 ${data.chars || 0} 字）已注入员工系统提示`);
+    }
     else if(ev === 'conflict'){
       // 并行任务改到同一个文件：写入已排队，但最终内容需要人工核对
       addPillNote(`并行写入冲突：<b>${esc(data.path || '')}</b>`
