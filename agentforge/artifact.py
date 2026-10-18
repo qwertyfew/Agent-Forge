@@ -211,9 +211,19 @@ _INTERMEDIATE_NAME = re.compile(
 
 
 def is_intermediate(rec: dict) -> bool:
-    """这条文件记录是不是「过渡 / 中间文件」（清空任务时默认清理的那类）。"""
-    if (rec.get("via") or "scan") == "scan":
-        return True
+    """这条文件记录是不是「过渡 / 中间文件」（清空任务时默认清理的那类）。
+
+    只按**名字 / 路径模式**判定（tmp / 草稿 / cache / 命令副产物 .log/.bak/.tmp…），
+    不再把 via=scan 的文件一刀切当中间文件。
+
+    为什么不能「scan 即中间」：一次「克隆仓库 / 下载并解压」任务会让整个仓库以
+    via=scan 落进台账（扫描相减只能看出「这段时间它出现了」，看不出源头）。
+    若 scan 一律算中间文件，清空时就会把用户克隆进工作区的 learn-claude-code /
+    mini-swe-agent 整个仓库当垃圾删掉——而这些是任务真正的成果，不该被顺手清掉。
+    改成按名字判定后：真正的 tmp/draft/cache/日志/备份仍被识别为中间文件；
+    克隆来的源码（README.md、code.py、tests/、web/…）归不到中间文件，落到
+    「最终产出」一类，默认保留，用户手动勾才删。
+    """
     name = str(rec.get("rel") or rec.get("path") or "").replace("\\", "/")
     return bool(_INTERMEDIATE_NAME.search("/" + name))
 
