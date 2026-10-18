@@ -30,8 +30,9 @@ from typing import NamedTuple
 
 # 反引号包裹的引用：`` `path` `` / `` `path:line` `` / `` `path:line-line` `` / `` `dir/` ``
 _BT_RX = re.compile(r"`([^`\n]{1,220})`")
-# 圆括号包裹的引用：(path) / (path:line) / (dir/...)
-_PAREN_RX = re.compile(r"\(([^()\n]{1,220})\)")
+# 圆括号包裹的引用：(path) / (path:line) / (dir/...)；全角（…）一并收
+# （gemma 系模型写中文报告时两种括号都会用，只认半角会整份漏检——rerun9 实测）
+_PAREN_RX = re.compile(r"[(（]([^()()\n]{1,220})[)）]")
 
 # 圆括号引用要「像路径」才收：含 /、无空白、非 URL、末段是目录或带扩展名文件
 _URL_RX = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
@@ -47,6 +48,9 @@ def _paren_like(tok: str) -> bool:
     if tok.endswith("/") or tok.endswith(("...", "…")):
         return True                      # 目录引用（含 dir/... 省略写法）
     tail = tok.rstrip("/").rsplit("/", 1)[-1]
+    # 允许行号尾巴：code.py:96 / code.py:96-127（rerun9 实测：交付物里的引用
+    # 几乎全带行号，不剥尾巴会被形状校验整份拒收，审计 checked=0 等于没查）
+    tail = re.sub(r"[:：][0-9][0-9\-]*$", "", tail)
     return bool(_TAIL_FILE_RX.match(tail))
 
 
@@ -179,11 +183,17 @@ def audit_citations(
             # rerun7 实测高发：引用 external/ 下仓库文件时漏写 external/<repo>/ 前缀。
             # 自动探测：同相对路径在 external/<某仓库>/ 下存在时，给出可复现的修正。
             try:
-                for repo in (root / "external").iterdir() if (root / "external").is_dir() else ():
-                    if (repo / path_part).exists():
-                        hint = (f"（实际在 external/{repo.name}/{path_part} —— "
-                                f"引用 external/ 下的仓库文件必须带 external/<仓库名>/ 前缀）")
-                        break
+                # 形态一：首段就是仓库名（learn-claude-code/s01/... → external/learn-claude-code/s01/...）
+                # rerun9 交付物即此形态（4 处），旧探测只覆盖「漏写整段仓库名」的形态。
+                if (root / "external" / path_part).exists():
+                    hint = (f"（实际在 external/{path_part} —— "
+                            f"引用 external/ 下的仓库文件必须带 external/ 前缀）")
+                else:
+                    for repo in (root / "external").iterdir() if (root / "external").is_dir() else ():
+                        if (repo / path_part).exists():
+                            hint = (f"（实际在 external/{repo.name}/{path_part} —— "
+                                    f"引用 external/ 下的仓库文件必须带 external/<仓库名>/ 前缀）")
+                            break
             except OSError:
                 pass
             issues.append(CitationIssue(
