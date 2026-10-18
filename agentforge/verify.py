@@ -1015,11 +1015,22 @@ def _tokens_from_sentence(s: str) -> list[str]:
     return out
 
 
+# 子句分隔只用中文逗号/分号：ASCII 逗号会拆断「1,024」这类千分位数字
+_CLAUSE_SPLIT_RX = re.compile(r"[，；]")
+_PROHIBITION_RX = re.compile(r"禁止|不得|不要|严禁|不许|勿")
+
+
 def required_fact_tokens(text: str, cap: int = MAX_FACT_TOKENS) -> list[str]:
     """从任务书的要求句里提取「答复必须包含」的硬 token（去重保序限量）。
 
     只看含要求信号的句子；「验证：…」行里的数字是验收参数，不是要回显的事实，
     整行排除。宁漏勿误：没有要求句就没有 token。
+
+    子句级禁止排除（rerun7 实测教训）：「每条结论必须有证据支撑，禁止凭印象写
+    『对方如何如何』」整句含「必须」被当成要求句，否定示例里的引号内容反而成了
+    「答复必须包含」的事实，最终验收被这条假阳性拖成未通过。因此要求句内部再按
+    子句拆分——凡含禁止标记的子句一律不产出 token（禁止的是「不要写 X」，
+    X 自然不是要求项），其余子句照常提取。
     """
     txt = str(text or "")
     # 排除验证命令行：那里的数字（预期输出、退出码）是给闸门亲跑用的
@@ -1031,16 +1042,20 @@ def required_fact_tokens(text: str, cap: int = MAX_FACT_TOKENS) -> list[str]:
     for s in sents:
         if not _REQ_SENT_RX.search(s):
             continue
-        for t in _tokens_from_sentence(s):
-            if len(t) > 40:
-                continue
-            k = _fact_norm(t)
-            if not k or k in seen:
-                continue
-            seen.add(k)
-            out.append(t)
-            if len(out) >= cap:
-                return out
+        # 子句级禁止排除：含禁止标记的子句不产出要求 token（见函数 docstring）
+        clauses = [c for c in _CLAUSE_SPLIT_RX.split(s)
+                   if c.strip() and not _PROHIBITION_RX.search(c)]
+        for c in clauses:
+            for t in _tokens_from_sentence(c):
+                if len(t) > 40:
+                    continue
+                k = _fact_norm(t)
+                if not k or k in seen:
+                    continue
+                seen.add(k)
+                out.append(t)
+                if len(out) >= cap:
+                    return out
     return out
 
 
