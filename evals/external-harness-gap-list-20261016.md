@@ -1,36 +1,32 @@
-# AgentForge vs External Harnesses Gap List (2026-10-16)
+# 外部 Harness 差距清单 (2026-10-16)
 
 | 对比点 | 对方做法（附证据：仓库/文件/行号） | AgentForge 现状（附证据：文件/行号） | 可否借鉴与取舍建议 |
-| :--- | :--- | :--- | :--- |
-| agent loop 结构 | **mini-swe-agent**: 极简循环，直接从 Model 类发起 `run` 并执行任务 (src/minisweagent/__init__.py:78)。<br>**learn-claude-code**: 典型的“思考->行动->观察”递归逻辑，强调 session 持久化 (s01_agent_loop/code.py)。 | **AgentForge**: 采用复杂的 `run` 主循环，包含预算检查、自动压缩、记忆注入和确定性澄清逻辑 (agentforge/loop.py:458-664)。 | **建议借鉴**：learn-claude-code 的 session 持久化机制。目前 AgentForge虽然有 `resume.py`，但 session 的状态机隔离不如其细致。 |
-| 工具调用方式 | **mini-swe-agent**: 强类型协议定义 Environment 和 Model，工具为环境交互的抽象 (src/minisweagent/__init__.py:61-70)。 | **AgentForge**: 基于 `ToolRegistry` 的动态 Schema 注入与 `Router` 路由。支持 `tool_select` 和 `lazy_tools` (agentforge/loop.py:418-445)。 | **建议保留**：当前 AgentForge 的“工具索引”机制（在提示词中列出名字但隐藏 Schema）更适合节省上下文的策略，优于对方的强类型定义。 |
-| 上下文压缩策略 | **learn-claude-code**: 采用渐进式压缩，涵盖从简单截断到基于摘要的重新生成 (s08_context_compact/code.py)。 | **AgentForge**: 由 `Compressor` 类驱动的自动瘦身，支持摘要式压缩并记录压缩日志 (agentforge/loop.py:396-412; agentforge/context.py)。 | **建议借鉴**：learn-claude-code 中对“不同层级”信息的分类处理（如把事实、计划分别处理）。AgentForge 目前倾向于整体摘要。 |
-| TODO/任务清单机制 | **learn-claude-code**: 专门的 `todo_write` session，将子任务动态写入文件作为状态持久化 (s05_todo_write/code.py)。 | **AgentForge**: 通过 `gaps.ensure_step` 在内存中标记步骤，且有 `taskstore.py` 处理任务流，但缺乏“写入文件作为当前进度”的强一致性机制。 | **高度推荐借鉴**：将 TODO 列表持久化到外部文件是 AgentForge 目前最大的短板。建议引入类似 learn-claude-code 的 `todo_write` 操作，作为多步骤任务的“锚点”。 |
-| 子代理与上下文隔离 | **learn-claude-code**: 通过 `subagent` 会话创建独立上下文，避免子代理任务污染主任务历史 (s06_subagent/code.py)。 | **AgentForge**: 虽有 `orchestrator.py` 和并行逻辑，但在单次 run 中尚未实现物理上的“上下文隔离”沙箱。 | **建议借鉴**：在子任务启动时自动创建独立的 Session ID 和上下文快照。这对防止子代理“幻觉污染”主路径至关重要。 |
-| 权限与沙箱 | **learn-claude-code**: 独立的 `permission` session，基于权限等级控制 API 和文件读写 (s03_permission/code.py)。 | **AgentForge**: 提供 `Guard` 类和 `full_access` 开关，支持路径边界检查和命令审批 (agentforge/permissions.py; agentforge/loop.py:490-495)。 | **建议保留**：AgentForge 的 Guard 机制更成熟，支持“完全访问”模式。只需加强 learn-claude-code 中的权限层级细分即可。 |
-| 评测体系 | **mini-swe-agent**: 通过 `README.md` 指向 SWE-Bench Verified 跑分 (mini-swe-agent/README.md)。 | **AgentForge**: 拥有完善的 `evals.py` 和 `evalsdesk.py`，支持多维度评分和自动化评估框架。 | **建议保留**：AgentForge 的评测体系远比上述两个开源项目复杂且强大，无需借鉴。 |
-| 会话恢复 | **learn-claude-code**: 基于文件状态的断点续传机制 (s01_agent_loop/code.py)。 | **AgentForge**: 有 `resume.py` 处理简单的会话重连，但核心循环 `run` 对中间断点的细粒度状态恢复支持较弱。 | **建议借鉴**：learn-claude-code 的 session 序列号机制，确保从特定 Step 直接 Resume。 |
-| 记忆系统 | **learn-claude-code**: 提供独立的 `memory` session 处理长短期记忆 (s09_memory/code.py)。 | **AgentForge**: 拥有 `MemoryStore` 和基于 `remember` 工具的长期记忆注入系统 (agentforge/memory.py; agentforge/loop.py:305-361)。 | **建议保留**：AgentForge 的“用户偏好”持久化与模型提示词注入机制已非常成熟。 |
-| skill 系统 | **learn-claude-code**: 包含 `skill_loading` 会话，用于按需动态加载函数或能力 (s07_skill_loading/code.py)。 | **AgentForge**: 拥有完整的 `SkillRegistry` 和 `autoskill.py`，支持 skill 的描述注入与自动激活。 | **建议保留**：AgentForge 的 Skill 系统是核心竞争力，且比对方的逻辑更系统化。 |
+| --- | --- | --- | --- |
+| agent loop 结构 | `mini-swe-agent`: 线性循环，基于状态机切换 (src/minisweagent/agents/interactive.py)。<br>`learn-claude-code`: 递归嵌套的 goal loop (s17_goal_loop/code.py)。 | AgentForge: 基于编排器 orchestrator.py 的调度模型，支持多路径分发 (orchestrator.py:450+)。 | **可借鉴**：mini-swe-agent 的状态机对简单任务更稳定；AgentForge 目前的动态编排更适合复杂任务。 |
+| 工具调用方式 | `mini-swe-agent`: 原生 Python 函数映射 + 文本兜底 (src/minisweagent/agents/default.py)。<br>`learn-claude-code`: 基于 MCP 协议插件化 (s14_mcp_plugin/...)。 | AgentForge: 完善的 `toolselect.py` 与 `skills.py` 系统，支持多模型联合决策。 | **保留现状**：AgentForge 的 skill 系统比简单的函数映射更高级。 |
+| 上下文压缩策略 | `learn-claude-code`: 显式的滑动窗口与 token 计数压缩 (s08_context_compact/...)。 | AgentForge: 依赖模型原生上下文及基本的 `readcache.py` 处理。 | **可借鉴**：引入 learn-claude-code 的滑动窗口动态裁剪逻辑。 |
+| TODO/任务清单机制 | `learn-claude-code`: 将 todo 写入本地文件作为持久化状态 (s05_todo_write/...)。 | AgentForge: 基于内存的任务流控制，主要通过 `taskstore.py` 维护进度。 | **可借鉴**：引入“文件锚点”机制，让 Agent 在中断后能通过读写 local todo 文件快速恢复进度。 |
+| 子代理与上下文隔离 | `learn-claude-code`: 强制子代理进程隔离 (s06_subagent/...)。 | AgentForge: 目前倾向于在同一 session 内的任务拆分 (orchestrator.py)。 | **可借鉴**：引入进程级或严格上下文隔离的子代理机制，防止信息污染。 |
+| 权限与沙箱 | `learn-claude-code`: 基于文件系统的权限 ACL 模型 (s03_permission/...)。 | AgentForge: 包含 `permissions.py` 但侧重于逻辑权限核查。 | **可借鉴**：引入更严格的系统级沙箱（如 Docker 或专用隔离环境）。 |
+| 评测体系 | `mini-swe-agent`: 基于 SWE-Bench 的特定 benchmark 测试。 | AgentForge: `evals.py` 提供了通用评估框架。 | **保持现状**：AgentForge 的框架更通用，无需为了特定 benchmark 重构核心逻辑。 |
+| 会话恢复 | `learn-claude-code`: 通过持久化 session 文件实现断点续传 (s15_integrated_harness/...)。 | AgentForge: 有 `resume.py` 基础，但缺乏细粒度的任务状态持久化。 | **可借鉴**：仿照 learn-claude-code 的集成 harness 实现断点恢复。 |
+| 记忆系统 | `learn-claude-code`: 显式的长短期记忆分层 (s09_memory/...)。 | AgentForge: `memory.py` 已有基础实现，支持多模型交互中的 Context 注入。 | **保持现状**：AgentForge 的 memory 系统已具备较好的架构基础。 |
+| skill 系统 | `learn-claude-code`: 动态加载与 Skill 定义 (s07_skill_loading/...)。 | AgentForge: `skills.py` 已建立成熟的技能注册机制。 | **保持现状**：AgentForge 的 skill 设计已领先于简单的代码块拼接。 |
 
-### 按性价比排序的借鉴清单
+## 按性价比排序的借鉴清单
 
-1. **TODO 列表文件持久化（高收益，中改动）**
-   - **预期收益**：显著降低多步骤任务中的“目标漂移”，为复杂任务提供稳定的状态锚点。
-   - **预估改动面**：`agentforge/loop.py`（增加 TODO 更新逻辑）、`agentforge/taskstore.py`（增加持久化接口）。
-
-2. **子代理上下文物理隔离（高收益，高改动）**
-   - **预期收益**：彻底解决子代理生成的冗余信息污染主线任务历史的问题。
-   - **预估改动面**：`agentforge/orchestrator.py`、`agentforge/session.py`（引入独立的上下文快照机制）。
-
-3. **Session 细粒度断点恢复（中收益，中改动）**
-   - **预期收益**：提高长任务在网络波动或模型报错时的可用性。
-   - **预估改动面**：`agentforge/resume.py`、`agentforge/loop.py`（记录当前 Step 状态）。
-
-4. **多层级事实压缩策略（低收益，低改动）**
-   - **预期收益**：进一步优化长对话下的 Token 利用率。
-   - **预估改动面**：`agentforge/context.py`（细化压缩规则）。
-
-5. **权限层级细分（低收益，低改动）**
-   - **预期收益**：提供更精细的安全控制，而非简单的“全开”或“审批”。
-   - **预估改动面**：`agentforge/permissions.py`。
+1. **文件锚点 TODO 机制**
+   - 预期收益：极大提升长任务的健壮性，解决网络波动或进程崩溃导致的进度丢失。
+   - 预估改动面：修改 `taskstore.py` 与 `orchestrator.py`，增加本地文件读写逻辑。
+2. **显式上下文滑动窗口**
+   - 预期收益：降低 token 成本，提高模型处理超长历史时的注意力集中度。
+   - 预估改动面：修改 `context.py` 和 `readcache.py`。
+3. **进程级子代理隔离**
+   - 预期收益：防止复杂任务中不同子任务的中间变量/上下文互相污染。
+   - 预估改动面：修改 `orchestrator.py`，引入子进程管理逻辑。
+4. **MCP 插件化标准对齐**
+   - 预期收益：极大扩展工具链的可扩展性，兼容更多第三方生态。
+   - 预估改动面：在 `toolselect.py` 中增加 MCP 协议解析层。
+5. **断点续传持久化模型**
+   - 预期收益：支持超长周期的自动化任务运行。
+   - 预估改动面：完善 `resume.py`，对接 `taskstore.py` 的状态持久化。
