@@ -1841,6 +1841,10 @@ class _Handler(BaseHTTPRequestHandler):
                     emit("leader_round", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "bridge":
                     emit("bridge", {k: v for k, v in ev.items() if k != "type"})
+                elif kind == "warmup":
+                    # 任务开局预热注入：项目速览（目录树/README/命中文件）已进
+                    # 员工系统提示。注入本身在 orchestrator 侧完成，这里只是播报。
+                    emit("warmup", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "conflict":
                     # 并行任务写到了同一个文件：写入已排队，这里提醒用户核对结果
                     emit("conflict", {k: v for k, v in ev.items() if k != "type"})
