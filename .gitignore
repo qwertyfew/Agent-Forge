@@ -36,6 +36,11 @@ models.local.json
 .tmp_research/
 .tmp_models_test.json
 
+# 任务产出目录（orchestrator 按发起时间生成，统一收在 history/ 下）与员工自建临时目录
+history/
+debug/
+temp/
+
 # 工作区运行期状态：任务笔记、上传附件每次运行都在变，不入库。
 # 例外：长期记忆 memory.md 只有几百字节且跨机器通用，随仓库同步。
 .agentforge/*

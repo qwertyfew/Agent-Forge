@@ -750,9 +750,11 @@ class _Handler(BaseHTTPRequestHandler):
             counts[str(d)] = counts.get(str(d), 0) + 1
         if counts:
             return max(counts.items(), key=lambda kv: kv[1])[0]
-        outdir = root / time.strftime("%Y%m%d-%H%M%S", time.localtime(task.get("created_at") or 0))
-        if outdir.is_dir():
-            return str(outdir)
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(task.get("created_at") or 0))
+        # 产出目录：新任务统一在 history/ 下；旧任务直接在根（都试着找）
+        for cand in (root / "history" / stamp, root / stamp):
+            if cand.is_dir():
+                return str(cand)
         return str(root)
 
     def _handle_tasks_get(self):

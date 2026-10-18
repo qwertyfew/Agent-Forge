@@ -1281,10 +1281,11 @@ def run_task(
     # 值得拆解（多动作或较长）时启用；决策模型不可用时自动落回下面的规则快路。
     # 只读共享缓存提前创建：Leader 员工与单路径接力共用（写类工具执行后自动作废）
     read_cache = ReadCache()
-    # 产出目录：按任务发起时间命名（如 20261017-213730），注入每个员工的系统
-    # 提示词——中间/最终产物一律进这个文件夹，除非必须放特定位置才能生效。
-    # 只对「真正动手干活」的任务设置；纯问答不占提示词字节。
-    outdir = time.strftime("%Y%m%d-%H%M%S")
+    # 产出目录：统一收进 history/（如 history/20261017-213730），避免任务产出
+    # 目录散落在项目根；注入每个员工的系统提示词——中间/最终产物一律进这个
+    # 文件夹，除非必须放特定位置才能生效。只对「真正动手干活」的任务设置；
+    # 纯问答不占提示词字节。
+    outdir = "history/" + time.strftime("%Y%m%d-%H%M%S")
     agent.outdir = outdir
     if (auto_plan and not pinned
             and getattr(agent.cfg, "dispatcher_enabled", False)
