@@ -229,8 +229,20 @@ class Dispatcher:
         spec = self.spec()
         return spec.display if spec else ""
 
-    def _chat(self, system: str, user: str, num_predict: int = 2048,
+    def _chat(self, system: str, user: str, num_predict: int = 8192,
               temperature: float = 0.2) -> str:
+        # num_predict 8192（原 2048）+ think=True（原 False）：调度模型换成
+        # gpt-oss:20b 后暴露的两个问题——
+        #   ① 2048 被它的 analysis（思考）通道吃掉大半：思考 token 与正文共享生成
+        #      预算，实测规划 JSON 只吐出 428 字符就在中间被截断，_extract_json
+        #      必然失败，Leader 每轮退回兜底（rerun8 实测 8 连败、12 轮全烧在
+        #      兜底循环上）。
+        #   ② think=False 更糟：Ollama 对 gpt-oss 并不真正关闭思考——analysis
+        #      照常生成但不计入 message.content（reasoning 字段也是空的，纯烧掉），
+        #      且提前触发 done_reason=length。think=True 时 Ollama 走正常 harmony
+        #      通道，final 才是正文，预算也真实生效（实测 done_reason=stop）。
+        # gemma 作为调度模型时 think=True 本来就是它的推荐配置（false 会把推理
+        # 混进正文），两任调度模型统一 true。
         spec = self.spec()
         if spec is None:
             return ""
@@ -238,12 +250,19 @@ class Dispatcher:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
-        res = self.hub.chat(
-            spec, messages, tools=None,
-            options={"temperature": temperature, "num_predict": num_predict},
-            think=False,
-        )
-        return (res.content or "").strip()
+        # 空响应重试：gpt-oss 偶发「analysis 生成完毕但 final 通道为空」的空回答
+        # （rerun8 观测到过）。同一 prompt 重发一次通常就好了，空结果让 Leader
+        # 整轮退回兜底的代价远大于这一次重试。
+        for attempt in range(2):
+            res = self.hub.chat(
+                spec, messages, tools=None,
+                options={"temperature": temperature, "num_predict": num_predict},
+                think=True,
+            )
+            out = (res.content or "").strip()
+            if out:
+                return out
+        return ""
 
     # ---------------------------------------------------------- 指派
     def _resolve(self, tasks: list[TaskSpec], entries: list[dict]) -> None:
