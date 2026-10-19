@@ -78,3 +78,37 @@ Phase 2 扩展：`artifact`、`inject`、`steering`、`summary_replace`（Surfac
 `tools/test_tasksession.py` 22 项（Event Log 追加性/同 sid 隔离/Surface 重建/
 worker_brief/自动答复四分支/interact 钩子挂摘/依赖侦测四例/路径抽取边界）；
 leader/planner/router 单测回归全过。
+
+## 六、Phase 3：契约闸门——验证从「回合后返工」前移到「回合内自愈」（2026-10-19）
+
+rerun14 实测定性：11 步任务里「任务书点名的交付物不存在」的核查拦截反复出现
+（raw.log 中核查类消息 22 处），全部挂在**收尾**——员工分析做完、上下文里全是
+素材，却宣布完成；收尾闸门才发现文件没落盘，只能整轮返工。这正是「严格审核、
+做完以后核实返工」的形态，与 DSH「每一步四环节闭环（组装上下文→调模型→处理
+响应→执行工具→observation 立即回灌）」的根本差距。
+
+落地（commit 344828a）——契约两端：
+
+1. **开工亮标准**：`tasksession.contract_paths / contract_block`——任务书点名
+   要求**写出**、开工时不存在的文件 = 验收契约，显式写进员工 prompt。句子级
+   判定避免误伤：写入动词须在路径之前（「写入 tmp/x.txt」算；「参考
+   agentforge/loop.py」「读取上一步生成的 evals/x.json」不算，对冲词整句排除）。
+2. **收工对账**：`Agent.run` 里模型不再调工具、想给最终答复时，程序先对契约，
+   缺了**拦截**——不 yield assistant（那张「已完成」的嘴用户看不到），缺口当
+   observation 塞回上下文继续跑（Claude Code Stop hook 同款）。此刻分析内容
+   都在上下文里，补写只是落盘，不用重新分析。最多拦 2 次，拦满放行交收尾
+   闸门兜底（闸门从「主要修正机制」降级为「最后防线」）。
+3. 契约只从本步骤任务书（t.goal）提取，不掺任务现场里的缺失上游产物——
+   那是别人的欠账，不该拦本步骤收工。
+
+测试：`tools/test_contract_gate.py`（stub hub 端到端）全过；tasksession 22 /
+steering 18 / leader 33 / planner / router 回归全过。
+
+### Phase 4+（把「回合内闭环」推到底）
+
+1. **核查全面前移**：收尾闸门的其余静态核查（引用 read 硬闸、事实回显）逐个
+   变成收工拦截项——模型每次想收工，程序做全部静态核查，缺什么补什么，全过
+   才放行；收尾闸门降级为纯报告。
+2. **Follow-up**：同任务追加需求开新 Turn，复用任务现场。
+3. **Inject 队列化**：守卫打回/评测答复/澄清回灌走同一队列。
+4. **Surface 压缩**：step_end 摘要压缩成 summary_replace 事件（日志不动）。
