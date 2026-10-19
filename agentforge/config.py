@@ -227,6 +227,12 @@ class Config:
     compact_keep_chars: int = 20_000     # 压缩后至少保留的近期内容
     compact_summary_chars: int = 1500    # 摘要的目标长度
     compact_auto: bool = True            # 是否自动压缩
+    compact_keep_recent: int = 8         # T3：每轮只保留最近 N 条完整工具结果，更老的压成一行
+
+    # ---- 编排模式（T2，docs/token-economy-20261019.md）----
+    # auto = 极简单循环是默认路径，只有用户明确要并行才拆多 agent；
+    # always = 旧行为（多动作/长文即拆，评测对照用）；never = 永不拆。
+    orchestration: str = "auto"
 
     # ---- 任务开局预热注入（agentforge/warmup.py）----
     # 任务开局扫一遍工作区，把「目录树 + README 摘要 + 任务关键词命中文件」
@@ -380,6 +386,9 @@ class Config:
         cfg.compact_keep_chars = int(c.get("keep_chars", cfg.compact_keep_chars))
         cfg.compact_summary_chars = int(c.get("summary_chars", cfg.compact_summary_chars))
         cfg.compact_auto = bool(c.get("auto", cfg.compact_auto))
+        cfg.compact_keep_recent = max(2, int(c.get("keep_recent", cfg.compact_keep_recent)))
+
+        cfg.orchestration = str(raw.get("orchestration", cfg.orchestration)).lower()
 
         wu = raw.get("warmup", {}) or {}
         cfg.warmup_enabled = bool(wu.get("enabled", cfg.warmup_enabled))

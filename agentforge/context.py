@@ -289,6 +289,20 @@ class Compressor:
             return res
 
         if not force and not self.over_budget(messages, model_key):
+            # T3（token 经济）：工具结果老化**不再等预算**——只保留最近
+            # keep_recent 条完整工具结果，更早的一律压成一行。token 大头是
+            # 「老工具结果在后续每轮 prompt 里反复重发」（实测 rerun14 每轮
+            # prompt 从 8k 涨到 35k，prompt:completion≈20:1），等 6 万字符
+            # 阈值才动手已经晚了。原文逃逸通道：同参数重复调用回放全文
+            # （loop 只读缓存）、或重新 read_file。
+            keep_recent = int(getattr(self.cfg, "compact_keep_recent", 8))
+            aged = truncate_tool_results(messages, keep_recent)
+            if aged is not messages:
+                after0 = measure(aged)
+                return _done(CompactResult(
+                    aged, "truncate", before, after0,
+                    f"工具结果老化 {before} → {after0} 字（只保留最近 {keep_recent} 条完整结果）",
+                ))
             return CompactResult(messages, "none", before, before)
 
         # L1 先来一遍，便宜且立刻见效

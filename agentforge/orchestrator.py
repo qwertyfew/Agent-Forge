@@ -269,6 +269,36 @@ def _worth_dispatch(message: str, pool_size: int) -> bool:
     return needs_plan(message, pool_size) or len((message or "").strip()) >= 60
 
 
+# T2（token 经济，docs/token-economy-20261019.md）：极简单循环是**默认路径**。
+# 「多个动作 / 长文本」不再触发多 agent 拆解——编号列表不等于要并行，任务书里的
+# 「1. 逆向分析 A 2. 对比 B」让单 agent 顺序做完就行。rerun14 实测仪式开销：
+# 11 个员工各付 7–9k 固定开销 + leader 6 轮判定（每轮 15–34k prompt），而其中
+# 真正需要第二个 agent 并行的时刻为零。只有用户**明确**提出并行诉求才拆。
+_PARALLEL_ASK_RX = re.compile(
+    r"并行|同时跑|多路|分头|双agent|双agent|多agent|多agent|两个?agent|"
+    r"两个?Agent|泳道|多线程执行|分开同时", re.I)
+
+
+def _wants_parallel(message: str) -> bool:
+    """用户是否明确要求并行（唯一默认开启多 agent 的信号）。"""
+    return bool(_PARALLEL_ASK_RX.search(message or ""))
+
+
+def _orchestration_wanted(message: str, cfg) -> bool:
+    """本次请求要不要走编排（拆步 / 多 agent）。三档：
+
+    - auto（默认）：只有明确并行诉求才拆——极简单循环是默认路径；
+    - always：旧行为，多动作/长文即拆（评测对照用）；
+    - never：永不拆（单循环压测用）。
+    """
+    mode = str(getattr(cfg, "orchestration", "auto") or "auto").lower()
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    return _wants_parallel(message)
+
+
 # 停机拦截的连续上限（Claude Code Stop hook 同款机制）：验证失败最多拦这么多轮，
 # 每轮结束重新亲跑验证。Claude Code 默认 8、社区实践常用 4；本地评测批量跑，
 # 每轮拦截都是完整的 agent 循环（分钟级），取 2 兼顾纠错机会与跑批墙钟。
@@ -1352,6 +1382,7 @@ def run_task(
     agent.outdir = outdir
     if (auto_plan and not pinned
             and getattr(agent.cfg, "dispatcher_enabled", False)
+            and _orchestration_wanted(message, agent.cfg)
             and _worth_dispatch(message, len(entries))):
         try:
             disp = Dispatcher(agent.cfg, agent.hub, store)
@@ -1382,7 +1413,9 @@ def run_task(
         return
 
     plan: list[Subtask] = []
-    if auto_plan and needs_plan(message, len(entries)):
+    # T2：接力拆步（单模型顺序多步）同样只在明确并行诉求时启用——默认一个
+    # agent 从头做到尾，配合 T3 的工具结果老化与 ops_batch（PTC）控住 token。
+    if auto_plan and _orchestration_wanted(message, agent.cfg) and needs_plan(message, len(entries)):
         plan = [s for s in make_plan(message, entries) if (s.detail or "").strip()]
         # 计划循环的任务书补强：复制/备份语义落在某一步时，给那步的 detail
         # 补逐字节比对声明（prompt 与步骤级闸门都用 detail，天然同份）
