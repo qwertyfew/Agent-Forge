@@ -986,7 +986,10 @@ class Agent:
                 # 成功回显头部带「(N 行, 显示 a-b)」，顺手记下总行数供行号校验
                 m = re.search(r"\((\d+)\s*行", out)
                 n = int(m.group(1)) if m else None
-                ledger.mark_file(p, lines=n)
+                # read=True：read_file 是台账里唯一算「真读过」的通道。
+                # 交付物引用 external/ 仓库文件时，硬闸只认这个标记（rerun12 后
+                # 新增）——search_code 片段不算已读，防止片段结论直达交付物。
+                ledger.mark_file(p, lines=n, read=True)
             return
 
         if name in ("search_code", "find_files"):

@@ -57,7 +57,17 @@ def build_shell_tools(guard, cfg):
             parts.append("--- stderr ---\n" + proc.stderr.strip())
         out = "\n".join(parts)
         if len(out) > max_out:
-            out = out[: max_out // 2] + "\n...[中间已截断]...\n" + out[-max_out // 2 :]
+            # rerun12 实测：同一条全库 grep 原样重跑 3 次，每次都顶格 16K 截断，
+            # 纯烧上下文。截断时必须把「怎么缩小范围」写在结果里，而不是指望
+            # 模型自己意识到该换命令。
+            out = (
+                out[: max_out // 2]
+                + "\n...[中间已截断]...\n"
+                + out[-max_out // 2 :]
+                + f"\n[提示] 输出超过 {max_out} 字符上限已截断，原样重跑只会得到同样的截断。"
+                "请缩小范围后重试：指定更深的子目录、--include=*.py 限定文件类型、"
+                "管道接 head -n 30 限制行数。"
+            )
         return out
 
     return [

@@ -12,7 +12,10 @@ from __future__ import annotations
   - 引用路径不存在            -> 错误（架构保证，写入直接退回）
   - 把目录当文件引用          -> 错误（架构保证）
   - 行号超出文件实际行数      -> 错误（架构保证）
-  - 引用了本任务没读过的路径  -> 警示（台账比对，不阻断）
+  - 引用 external/ 仓库文件但本任务从未 read_file 过 -> 错误（阻断；
+    search_code/list_dir 片段不算已读——rerun11/12 实证片段结论产出
+    事实性错误「缺乏自动压缩」与假阴性「未发现会话恢复」）
+  - 引用其他本任务没读过的路径 -> 警示（台账比对，不阻断）
   - 裸行号缺符号锚点          -> 警示（偏好，不阻断）
   - 报告含数字却只抓过网页    -> 警示（二手来源，不阻断）
 
@@ -62,7 +65,7 @@ class EvidenceLedger:
     """
 
     def __init__(self) -> None:
-        # 解析后的绝对路径（小写）-> {"is_dir": bool, "lines": int|None}
+        # 解析后的绝对路径（小写）-> {"is_dir": bool, "lines": int|None, "read": bool}
         self._files: dict[str, dict] = {}
         self._web: set[str] = set()  # 抓过的网页 URL（二手来源标记）
 
@@ -73,8 +76,9 @@ class EvidenceLedger:
         except OSError:
             return str(p).lower()
 
-    def mark_file(self, p: Path, is_dir: bool = False, lines: int | None = None) -> None:
-        self._files[self._key(p)] = {"is_dir": is_dir, "lines": lines}
+    def mark_file(self, p: Path, is_dir: bool = False, lines: int | None = None,
+                  read: bool = False) -> None:
+        self._files[self._key(p)] = {"is_dir": is_dir, "lines": lines, "read": read}
 
     def mark_dir(self, p: Path) -> None:
         self.mark_file(p, is_dir=True)
@@ -85,6 +89,16 @@ class EvidenceLedger:
     def knows_file(self, p: Path) -> bool:
         rec = self._files.get(self._key(p))
         return bool(rec) and not rec["is_dir"]
+
+    def was_read(self, p: Path) -> bool:
+        """该文件本任务是否被 read_file 真读过（search_code/list_dir 命中不算）。
+
+        rerun12 实证：search_code 返回的 300 字符片段会被模型当成「已读」，
+        片段结论直接进交付物，产出事实性错误（「AgentForge 缺乏自动压缩」，
+        实际 context.py 有完整 compact）。所以「检索命中过」与「读过」必须分开记。
+        """
+        rec = self._files.get(self._key(p))
+        return bool(rec) and not rec["is_dir"] and bool(rec.get("read"))
 
     def knows_dir(self, p: Path) -> bool:
         rec = self._files.get(self._key(p))
@@ -223,9 +237,18 @@ def audit_citations(
                     "error", "line_range", token,
                     f"行号 {line_a} 超出文件实际范围（共 {n} 行）: {p}"))
 
-        # 以下为软警示（不阻断写入）
+        # 以下为软警示（不阻断写入）；external/ 仓库文件例外——升为硬错误
         if ledger is not None:
-            if not ledger.knows_file(p):
+            # external/ 下的仓库文件是逆向分析的任务对象，结论必须来自真实读过
+            # 的内容。检索命中（片段）/ 目录列举不算已读——rerun11/12 实证片段
+            # 结论会产出事实性错误与假阴性，这里从「警示」升级为「阻断」。
+            in_external = p.relative_to(root).as_posix().lower().startswith("external/")
+            if in_external and not ledger.was_read(p):
+                issues.append(CitationIssue(
+                    "error", "not_read", token,
+                    f"引用了本任务从未 read_file 过的文件: {p}"
+                    f"（search_code / list_dir 片段不算已读——请先 read_file 该文件核实再写结论）"))
+            elif not ledger.knows_file(p):
                 issues.append(CitationIssue(
                     "warn", "unverified", token,
                     f"该路径本任务未实际读取 / 检索过，可能是凭印象写出: {p}"))

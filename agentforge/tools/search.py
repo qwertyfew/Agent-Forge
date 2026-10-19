@@ -16,6 +16,33 @@ SKIP_DIRS = {
 def build_search_tools(guard, cfg):
     max_out = cfg.max_tool_output_chars
 
+    def _pattern_variants(pattern: str) -> list[str]:
+        """给 0 命中的检索生成命名风格变体（正则形式的转义串）。
+
+        实测教训（rerun12）：字面搜「agent loop」搜不到 `Agent(Protocol).run`——
+        检索 0 命中被当成「功能不存在」，产出假阴性结论。这里只对「纯词组」
+        pattern（无正则元字符）做 snake/camel/kebab/紧凑 四种命名风格互转；
+        正则 pattern 语义已由调用方定死，不猜。
+        """
+        if re.search(r"[\\^$.|?*+()\[\]{}]", pattern):
+            return []
+        words = [w for w in re.split(r"[\s_-]+", pattern.strip()) if w]
+        if not words or len(words) > 4:
+            return []
+        cands = [
+            "_".join(words),                            # snake_case
+            "-".join(words),                            # kebab-case
+            words[0] + "".join(w.capitalize() for w in words[1:]),  # camelCase
+            "".join(w.capitalize() for w in words),     # PascalCase
+            "".join(words),                             # 紧凑拼接
+        ]
+        seen, out = set(), []
+        for c in cands:
+            if c and c.lower() != pattern.lower() and c.lower() not in seen:
+                seen.add(c.lower())
+                out.append(re.escape(c))
+        return out[:5]
+
     def search_code(
         pattern: str,
         path: str = ".",
@@ -60,7 +87,38 @@ def build_search_tools(guard, cfg):
                 break
 
         if not hits:
-            return f"未找到匹配 /{pattern}/ （已扫描 {scanned} 个文件）"
+            msg = f"未找到匹配 /{pattern}/ （已扫描 {scanned} 个文件）"
+            # 0 命中 ≠ 功能不存在（rerun12 实证：字面「agent loop」搜不到
+            # Agent(Protocol).run，导致「未发现会话恢复」的假阴性结论）。
+            # 自动复扫命名变体，命中就把证据一并带回，省员工再猜一轮。
+            for v in _pattern_variants(pattern):
+                try:
+                    vrx = re.compile(v, re.IGNORECASE)
+                except re.error:
+                    continue
+                vhits: list[str] = []
+                for f in files:
+                    try:
+                        text = f.read_text(encoding="utf-8", errors="replace")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    for i, line in enumerate(text.splitlines(), 1):
+                        if vrx.search(line):
+                            vhits.append(f"{f}:{i}: {line.strip()[:200]}")
+                            if len(vhits) >= 5:
+                                break
+                    if len(vhits) >= 5:
+                        break
+                if vhits:
+                    return (
+                        f"未找到匹配 /{pattern}/，但命名变体 /{v}/ 命中 {len(vhits)} 处"
+                        f"（0 命中 ≠ 功能不存在，先拿这些线索继续）：\n" + "\n".join(vhits)
+                    )[:max_out]
+            return (
+                msg
+                + "\n[提示] 0 命中 ≠ 功能不存在：换同义词/上位词再搜、读 README 与入口文件"
+                "（__init__/main/index）、或用 list_dir 看目录结构后再下「未实现」结论。"
+            )[:max_out]
         body = "\n".join(hits)
         return (
             f"匹配 /{pattern}/  命中 {len(hits)} 处（扫描 {scanned} 个文件）\n{body}"

@@ -6595,6 +6595,8 @@ function handleTaskEvent(ev, data){
       settleReply('stopped');                 // 冻结头像行 + 给已生成的部分回复挂工具条
       addPillNote(`已停止：${esc(data.reason || '用户停止')}`
         + (data.total > 1 ? `（完成 ${data.steps}/${data.total} 步，已完成的产出保留在上下文里）` : ''));
+      // 系统侧停止核查：任务书点名的交付物缺失时如实标注（rerun12 虚报补丁）
+      if(data.note) addPillNote(esc(data.note));
       endLiveTask('stopped');
     }
     else if(ev === 'complete'){

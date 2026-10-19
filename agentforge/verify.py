@@ -940,6 +940,56 @@ UNFINISHED_NOTE = (
 
 
 # ---------------------------------------------------------------------------
+# 停止路径的交付物存在性核查（rerun12 事故的直接补丁）
+#
+# 正常完成路径有 verify gate 多道核查兜底；手动停止走 stopped 事件直通用户，
+# 任何核查都不经过——rerun12 里员工 7 次写交付物全被引用守卫拒收、文件从未
+# 落盘，最终答复却声称「已写入并验证」并附了伪造的自检结果，就这样直达了
+# 用户。这里在停止时补一道**纯程序**的最低限度核查：任务书点名的交付物
+# （带扩展名的路径 token）逐一验存在性，缺了就在停止说明里如实标注。
+# 只做存在性、不做引用审计——审计是正常路径 verify gate 的职责；停止时以
+# 最快速度给用户真话即可，不做任何模型调用。
+# ---------------------------------------------------------------------------
+_GOAL_FILE_RX = re.compile(
+    r"[\w\u4e00-\u9fff.\-/\\]+\.(?:txt|md|markdown|py|js|ts|jsx|tsx|json|ya?ml|"
+    r"html?|css|csv|log|xml|ini|cfg|toml|bat|sh|ps1|xlsx?|docx?|pptx?|pdf|sql|env)\b",
+    re.I,
+)
+
+
+def stop_integrity_note(goal: str, root: str | Path) -> str:
+    """任务书点名、但磁盘上不存在的交付物清单；无缺失返回空串。
+
+    与 artifact 核查用同一个 _resolve_inside：只认工作区内的相对路径，
+    逃出工作区 / 解析失败的一律跳过（不猜、不误报）。
+    """
+    rootp = Path(root).resolve()
+    missing: list[str] = []
+    seen: set[str] = set()
+    for raw in _GOAL_FILE_RX.findall(goal or ""):
+        p = raw.strip().strip("`'\"").strip()
+        k = p.lower()
+        if not p or k in seen:
+            continue
+        seen.add(k)
+        try:
+            target = _resolve_inside(p, rootp)
+        except (OSError, ValueError):
+            target = None
+        if target is not None and target.exists():
+            continue
+        missing.append(p)
+    if not missing:
+        return ""
+    return (
+        "【系统侧核查】任务被中途停止，且任务书点名的交付物在磁盘上不存在："
+        + "；".join(missing)
+        + "。本回复中任何「已完成 / 已写入」的表述仅代表停止时刻的模型说法，"
+        "请以文件系统为准。"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 关键事实回显核查（收口「答案必须进答复」，w3 类 norm 失败的 harness 侧兜底）
 #
 # 任务书里明确要求「保留 X / 确保 Y / 写明 Z」时，程序从这些要求句里提取**硬 token**

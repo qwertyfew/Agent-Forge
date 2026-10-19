@@ -30,6 +30,7 @@ from agentforge.prefs import PERMISSION_LABEL, PrefsStore
 from agentforge.resume import repair_history, resume_brief
 from agentforge.skills import write_meta
 from agentforge.taskstore import TaskStore
+from agentforge import verify as verify_gate
 
 HERE = Path(__file__).resolve().parent
 INDEX = HERE / "web" / "index.html"
@@ -1857,9 +1858,18 @@ class _Handler(BaseHTTPRequestHandler):
                     emit("artifacts", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "stopped":
                     was_stopped = True
+                    # 停止路径补最低限度程序核查：任务书点名交付物的存在性。
+                    # rerun12 事故：交付物从未落盘，答复却虚报「已写入并验证」，
+                    # 停止路径此前没有任何核查直达用户。纯程序、零模型调用。
+                    try:
+                        stop_note = verify_gate.stop_integrity_note(
+                            message, self.cfg.workspace_root)
+                    except Exception:  # noqa: BLE001
+                        stop_note = ""
                     emit("stopped", {
                         "steps": ev.get("steps", 0), "total": ev.get("total", step_total),
                         "reason": ev.get("reason", "用户停止"),
+                        **({"note": stop_note} if stop_note else {}),
                     })
                 elif kind == "complete":
                     steps = ev["steps"]
