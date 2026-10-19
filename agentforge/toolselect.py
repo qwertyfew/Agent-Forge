@@ -37,6 +37,7 @@ DEFAULT_CORE: tuple[str, ...] = (
     "edit_file",
     "search_code",
     "run_command",
+    "ops_batch",
     "remember",
     "task_notes",
     "find_tools",
