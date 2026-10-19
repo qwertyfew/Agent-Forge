@@ -489,6 +489,18 @@ def _verify_gate(agent, message: str, holder: dict,
                    "artifacts": [{"path": c["path"], "declared": c["declared"],
                                   "status": c["status"]} for c in issues]}
             notes.append(verify_gate.artifact_issue_block(issues))
+            # 未交付硬闸（rerun26 事故）：声明交付物复核后仍缺失，且整条轨迹
+            # **一次写类动作都没有**——这不是「写错地方」，是压根没动手。
+            # 旧行为只附一段声明就判成功，模型连写 7 轮「下一步计划」也能过。
+            # 只认这一种确定情形：全程零写盘 + 全部缺失，避免误伤「写了但没到位」。
+            # 不用 looks_like_change：它只认「改代码」的活，写报告类任务会判 False，
+            # 而 rerun26 恰恰就是报告任务。
+            if (getattr(cfg, "delivery_hard_gate", True)
+                    and not verify_gate.produced_possible(convo)
+                    and all(c.get("status") == "missing" for c in issues)):
+                holder["delivery_failed"] = [c["path"] for c in issues]
+                notes.append(verify_gate.delivery_failed_block(
+                    [c["path"] for c in issues]))
 
     # 第五道核查：**自己承认还没做 / 做不了**，同样不许当成交付。
     # 上面几道治的都是「声称做了但没做」；这是它的反面，一直没人管——模型如实招了
@@ -1648,6 +1660,10 @@ def run_task(
     if holder["summary"] != summary:
         summary, hist = holder["summary"], holder["convo"]
         yield {"type": "assistant", "content": summary, "history": hist}
+    # 未交付硬闸：声明交付物一件没写、复核后仍不存在。程序给出终态，
+    # 上层据此把任务标成未完成（不再由模型自己的话决定成败）。
+    if holder.get("delivery_failed"):
+        yield {"type": "delivery_failed", "missing": holder["delivery_failed"]}
 
     yield {"type": "complete", "steps": total, "multi": multi}
 

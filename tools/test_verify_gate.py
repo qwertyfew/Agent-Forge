@@ -764,6 +764,30 @@ def main() -> None:
     check("R22 端到端：verify 事件带命令",
           any(e["type"] == "verify" and "draft_backup.md" in e.get("cmd", "") for e in evs))
 
+    # ---------- F) 未交付硬闸（rerun26：7 轮只写计划、零工具调用） ----------
+    brief_f = "任务：分析两个仓库并产出差距清单，写入 out/gap.md"
+    ag = StubAgent()
+    StubAgent.corrective_calls = 0
+    holder = {"summary": "我将分三步完成：先看目录，再读源码，最后写文件。"
+                         "---\n下一步计划：1. 列目录 2. 读文件 3. 写入 out/gap.md",
+              "convo": [{"role": "user", "content": brief_f}]}
+    list(_verify_gate(ag, brief_f, holder))
+    check("F 只说不做：判为未交付", holder.get("delivery_failed") == ["out/gap.md"],
+          repr(holder.get("delivery_failed")))
+    check("F 只说不做：总结附「任务未交付」", "任务未交付" in holder["summary"],
+          holder["summary"][-300:])
+
+    # 落过盘（哪怕写的是别的文件）就不算「只说不做」——这是硬闸的唯一豁免条件，
+    # 保证它只抓「一次都没动手」，不误伤「写了但没写到同一条路径」。
+    ag = StubAgent()
+    holder = {"summary": "已完成", "convo": [{"role": "user", "content": brief_f},
+          {"role": "assistant", "content": "", "tool_calls": [
+              {"function": {"name": "ops_batch",
+                            "arguments": {"code": "call('write_file', path='out/other.md')"}}}]}]}
+    list(_verify_gate(ag, brief_f, holder))
+    check("F 写过盘：不判未交付", not holder.get("delivery_failed"),
+          repr(holder.get("delivery_failed")))
+
     print("\n全部断言通过。")
 
 

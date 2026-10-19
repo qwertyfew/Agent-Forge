@@ -1938,6 +1938,14 @@ class _Handler(BaseHTTPRequestHandler):
                         "reason": ev.get("reason", "用户停止"),
                         **({"note": stop_note} if stop_note else {}),
                     })
+                elif kind == "delivery_failed":
+                    # 未交付硬闸：任务书点名的交付物一件没写出来。任务状态落成
+                    # 未完成（err_msg 会一路带到 tasks.finish），不再按「流正常结束」
+                    # 记成 done——否则界面显示成功、磁盘上什么都没有。
+                    miss = ev.get("missing") or []
+                    err_msg = ("任务未交付：" + "、".join(str(p) for p in miss[:3])
+                               + (f" 等 {len(miss)} 个文件" if len(miss) > 3 else ""))
+                    emit("notify", {"text": err_msg})
                 elif kind == "complete":
                     steps = ev["steps"]
                     emit("complete", {"steps": ev["steps"], "multi": ev["multi"]})

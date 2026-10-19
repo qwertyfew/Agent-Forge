@@ -836,14 +836,21 @@ class Agent:
                     missing = [p for p in contract if _owe(p)]
                     if missing:
                         contract_blocks += 1
+                        # 措辞必须与工具面一致：PTC 常驻下顶层 write_file 会被守卫
+                        # 拒绝，旧文案却写「直接调用 write_file」——模型照做被拒、
+                        # 再被拦一次，白烧一轮（rerun24/25 各出现一次）。
+                        _hint = ("在 ops_batch 脚本里用 call('write_file', path=..., "
+                                 "content=...) 写入"
+                                 if getattr(self.cfg, "ptc_resident", False)
+                                 else "直接调用 write_file 把它们写成文件")
                         _push({"role": "assistant",
                                "content": result.content or "", **replay_think})
                         _push({"role": "user", "content": (
                             "【停止拦截·交付物未落盘】你宣布任务完成，但程序核对磁盘发现"
                             "任务书要求的交付物还不存在，或自本轮开始后从未更新：\n- "
                             + "\n- ".join(missing)
-                            + "\n\n你刚才的分析内容都在上文——现在直接调用 write_file "
-                              "把它们写成文件（内容不必重新分析，路径必须一字不差；已存在的"
+                            + f"\n\n你刚才的分析内容都在上文——现在{_hint}"
+                              "（内容不必重新分析，路径必须一字不差；已存在的"
                               "要重新写出，让修改时间晚于本轮开始）。"
                               "写完后给出最终答复。若你认为该文件不该由本轮写出，"
                               "请在最终答复里明确说明原因。")})
