@@ -163,6 +163,40 @@ def main() -> None:
     check("冲突场景下不再报 'has no attribute 'call''",
           "has no attribute 'call'" not in out4b, repr(out4b)[:160])
 
+    # tools 壳 __getattr__（rerun22 真实 bug）：模型 6 次写 `from tools import list_dir`
+    # / `from tools import write_file`，每次 ImportError（命中的是仓库根没有 __init__
+    # 的 tools/ 测试包），白烧 6 轮。壳补上模块级 __getattr__ 后，import 形态与
+    # call(...) 等价，不再有「模块里没这个属性」这条死路。
+    ag0.hub.script = [
+        _Res(tool_calls=[_TC("ops_batch", {"script":
+             "import tools as T\n"
+             "a = T.read_file(path='src/mod1.py')\n"
+             "print('A_OK' if 'mod1' in a else 'A_BAD')\n"
+             "from tools import read_file\n"
+             "b = read_file(path='src/mod2.py')\n"
+             "print('B_OK' if 'mod2' in b else 'B_BAD')\n"
+             "print('C_OK' if 'mod3' in T.call('read_file', path='src/mod3.py') else 'C_BAD')"})]),
+        _Res(content="import 形态可用。"),
+    ]
+    evs4c = _run(ag0, "tools 壳 __getattr__")
+    out4c = (next((e for e in evs4c if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("import tools + 属性调用可用", "A_OK" in out4c, repr(out4c)[:200])
+    check("from tools import X 不再 ImportError",
+          "B_OK" in out4c and "ImportError" not in out4c and "[脚本异常]" not in out4c,
+          repr(out4c)[:200])
+    check("tools.call 别名仍可用", "C_OK" in out4c, repr(out4c)[:200])
+
+    # 未知属性不抛 AttributeError，而是回明确的「未知工具」——模型能据此改名重试
+    ag0.hub.script = [
+        _Res(tool_calls=[_TC("ops_batch", {"script":
+             "r = tools.no_such_tool_xyz()\nprint(r.splitlines()[0])"})]),
+        _Res(content="ok"),
+    ]
+    evs4d = _run(ag0, "未知属性回退")
+    out4d = (next((e for e in evs4d if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("未知属性回落为未知工具提示",
+          "未知工具 no_such_tool_xyz" in out4d, repr(out4d)[:200])
+
     # 主 API 裸 call(...) 直调（覆盖文档主口径）
     ag0.hub.script = [
         _Res(tool_calls=[_TC("ops_batch", {"script":
@@ -231,6 +265,13 @@ def main() -> None:
     check("写类工具结果未 print 也回显（↳ 前缀）", "↳ write_file:" in out_echo, repr(out_echo)[:200])
     check("回显含写入成功确认与路径", "文件" in out_echo and "echo_out.md" in out_echo, repr(out_echo)[:200])
     check("文件确实已落盘", (tmp_echo / "echo_out.md").exists(), "echo_out.md 不存在")
+
+    # 参数名回传：rerun22 里模型用 query= 调 search_code，只收到「unexpected keyword
+    # argument」，又猜了两轮。错误里带上该工具接受的参数名，一轮就能改对。
+    msg = ag0._execute("read_file", {"query": "x"}, True, None)
+    check("参数错误回传可接受参数名",
+          "[参数]" in msg and "path" in msg and "query" not in msg.split("[参数]")[-1],
+          msg[:200])
 
     print("\n结果：全部通过")
     sys.exit(0)

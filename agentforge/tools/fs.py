@@ -5,7 +5,7 @@ import ast
 import json
 
 from .base import SAFE, WRITE, make_tool
-from ..evidence import audit_citations
+from ..evidence import audit_claims, audit_citations
 def _syntax_check(p: Path) -> str | None:
     try:
         if p.suffix.lower() == ".py":
@@ -107,6 +107,20 @@ def build_fs_tools(guard, cfg):
                 if errors and cit_audit.checked >= 2:
                     detail = "\n".join(f"  - {i.token}: {i.detail}" for i in errors)
                     return ("[错误] 引用核查未通过，文件未写入。请修正下列引用后重试：\n" + detail)
+
+        # 语义层核查：路径对、结论错也要拦。rerun22 的差距清单写「AgentForge 缺乏
+        # 上下文压缩 / 权限审批 / 任务清单」，路径全是真的，结论却与代码相反——
+        # 照它改会重复造轮子。这里只判「否定断言 vs 真实定义」这一种确定矛盾，
+        # 命中就把真实 path:line 一起给回去（一次改对，不用反复试探）。
+        if content and getattr(cfg, "claims_gate", True):
+            try:
+                claim_issues = audit_claims(content, cfg.workspace_root)
+            except Exception:
+                claim_issues = []
+            if claim_issues:
+                detail = "\n".join(f"  - {i.token}: {i.detail}" for i in claim_issues)
+                return ("[错误] 语义核查未通过，文件未写入。下列结论与代码事实矛盾，"
+                        "请按给出的真实位置改写（不要保留「缺乏」的表述）：\n" + detail)
 
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8", newline="")

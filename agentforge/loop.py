@@ -216,7 +216,8 @@ TOOL_INDEX_HEADER_PTC = """## 可编入脚本的工具（本次未展开说明�
 PTC_RESIDENT_BLOCK = """## PTC 常驻（程序化工具调用）
 本模式下你**不直接调用任何工具**，所有工具操作都写进一段 Python 脚本、用 ops_batch 一次性执行：
 - 脚本里用 `call("工具名", **参数)` 调工具（等价写法 `tools.call("工具名", ...)` 也行），`print(...)` 把最终结果回传；只有 print 的内容会回到你这里。
-- **切勿在脚本里写 `import tools`**——这会覆盖内置的 call 对象导致调用失败；直接用 call(...) 即可。
+- **切勿在脚本里写 `import tools`**——这会覆盖内置的 tools 壳；直接用 call(...) 即可。
+  （`from tools import read_file`、`tools.read_file(...)` 也能用，但没有必要。）
 - 只读工具自动放行；写/命令类工具需本次运行是完全访问权限；脚本里不能调 ops_batch / ask_user。
 - 想知道某工具的精确参数，先 `find_tools("关键词")` 取用法，再写脚本。
 - 唯一允许直接调用的例外是 ask_user（交互式澄清弹窗，脚本内无法弹窗）。
@@ -730,6 +731,7 @@ class Agent:
                         "请尽快汇总产出（写文件或给出最终答复）；只有确有必要时才再发起新的探索。")})
 
             result = None
+            _t_llm0 = time.monotonic()
             try:
                 for kind, payload in self.hub.chat_stream(spec, messages, tools,
                                                           stop_check=stopped):
@@ -753,10 +755,23 @@ class Agent:
                 yield {"type": "error", "message": "模型未返回任何内容"}
                 return
 
+            # 计时埋点：本轮 LLM 回复的真实 wall-clock（含 API 往返），以及 Ollama
+            # 自报的纯推理耗时（eval_duration，排除排队/网络）。两者一起给，才能
+            # 区分「流程慢」还是「模型生成慢」。
+            _llm_ms = (time.monotonic() - _t_llm0) * 1000.0
+            _eval_ms = getattr(result, "eval_duration_ns", 0) / 1e6
+            # 首轮慢的两个来源单独报：模型冷加载（load）与上下文预填充（prompt_eval）。
+            _load_ms = getattr(result, "load_duration_ns", 0) / 1e6
+            _peval_ms = getattr(result, "prompt_eval_duration_ns", 0) / 1e6
+
             # stats 里把用量与费用一并带上：界面靠它实时累加「已消耗预估费用」
             yield {
                 "type": "stats",
                 "tps": result.tokens_per_second,
+                "llm_ms": round(_llm_ms, 1),
+                "eval_ms": round(_eval_ms, 1),
+                "load_ms": round(_load_ms, 1),
+                "prompt_eval_ms": round(_peval_ms, 1),
                 "tokens": result.eval_count,
                 "prompt_tokens": result.prompt_eval_count,
                 "model_key": self.model_key,
@@ -955,6 +970,7 @@ class Agent:
                 safe = (tool_def is not None and tool_def.risk == SAFE
                         and tc.name != "ops_batch")
                 hit = None
+                _tool_ms = 0.0
                 if safe:
                     if read_cache is not None:
                         hit = read_cache.get(sig)
@@ -970,10 +986,12 @@ class Agent:
                     # ops_batch（PTC）在本工具 run() 里需要找到当前 agent——
                     # 只在工具执行这一小段挂上下文，执行完立刻摘除
                     _ops_t = OPS_AGENT_CTX.set(self)
+                    _t_tool0 = time.monotonic()
                     try:
                         out = self._execute(tc.name, tc.arguments, auto_approve, file_log)
                     finally:
                         OPS_AGENT_CTX.reset(_ops_t)
+                    _tool_ms = (time.monotonic() - _t_tool0) * 1000.0
                     if safe:
                         if read_cache is not None:
                             read_cache.put(sig, out)
@@ -1021,6 +1039,7 @@ class Agent:
                             self.iv_fails += 1
                             out = out + "\n\n" + note
                 yield {"type": "tool_result", "name": tc.name, "output": out,
+                       "dur_ms": round(_tool_ms, 1),
                        **({"failed": True} if (failed or denied) else {})}
                 _push({"role": "tool", "content": out})
 
@@ -1129,6 +1148,18 @@ class Agent:
             return f"[已拒绝] {e}"
         except TypeError as e:
             msg = f"[错误] 工具 {name} 参数不对：{e}"
+            # 直接把该工具接受的参数名列出来：rerun22 里模型用 query= 调 search_code，
+            # 报错只说「unexpected keyword argument」，它又猜了两轮。参数名回传后
+            # 一轮就能改对——这是「一次做对」比「事后返工」便宜的典型。
+            try:
+                params = tool.parameters or {}
+                props = list((params.get("properties") or {}).keys())
+                if props:
+                    req = set(params.get("required") or [])
+                    msg += "\n[参数] " + name + " 接受：" + "、".join(
+                        f"{k}（必填）" if k in req else k for k in props)
+            except Exception:  # noqa: BLE001
+                pass
             if name == "write_file" and "path" in str(e):
                 msg += ("\n[提示] write_file 需要两个参数都要给：path（写入路径，"
                         "如 evals/foo.json）+ content（完整内容）。你这次漏了 path。")

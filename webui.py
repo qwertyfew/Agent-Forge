@@ -1812,6 +1812,12 @@ class _Handler(BaseHTTPRequestHandler):
                         "model": ev.get("model", ""), "model_key": ev.get("model_key", ""),
                         "free": bool(ev.get("free", True)),
                         "cost": round(call_cost, 6),
+                        # 计时透传：llm_ms=本轮 LLM 往返 wall-clock，eval_ms=Ollama
+                        # 纯推理耗时。stats 这里是白名单重建，不显式透传会被吞掉。
+                        "llm_ms": ev.get("llm_ms"),
+                        "eval_ms": ev.get("eval_ms"),
+                        "load_ms": ev.get("load_ms"),
+                        "prompt_eval_ms": ev.get("prompt_eval_ms"),
                     })
                     # 累计用量：前端「已消耗预估费用」直接读这里，不用自己算
                     emit("usage", {

@@ -21,11 +21,13 @@ PTC 把这个循环从模型上下文里搬出去：模型写**一段脚本**，
 """
 from __future__ import annotations
 
+import builtins
 import contextvars
 import io
 import threading
 import time
 import traceback
+import types
 
 from typing import Any
 
@@ -67,12 +69,13 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             "脚本环境：call(\"read_file\", path=\"a.py\") 返回工具结果字符串；"
             "（也可写作 tools.call(...)，两者等价）"
             "print(text) 是唯一回传通道（不 print 就拿不到）；可用循环/条件/正则等全部 Python。"
-            "切勿在脚本里写 `import tools`——这会覆盖内置的 call 对象，导致调用失败。"
+            "脚本里可写 `from tools import read_file`、`tools.read_file(...)`，都等价于 call(...)；"
+            "推荐直接用 call(...)。"
             "只读工具自动放行；写/命令类工具仅完全访问权限的运行可用；"
             "不能在脚本里再调 ops_batch / ask_user。"
             "【PTC 常驻】这是你调用任何工具的唯一通道：脚本内 call(\"工具名\", **参数) 可调用全部已注册工具，"
             "名字见系统提示里的「可编入脚本的工具」清单；不知道某工具的参数就先 find_tools 查。"
-            "（等价写法 tools.call(\"工具名\", ...) 也可用，但别 import tools。）")
+            "（等价写法 tools.call(...) / `from tools import X` 也可用。）")
         parameters = {
             "type": "object",
             "properties": {
@@ -142,15 +145,56 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                     })
                 return r
 
-            class _Tools:
-                call = staticmethod(sdk_call)
+            def _make_tools_module():
+                """把 `tools` 做成真正的模块对象（PEP 562 模块级 __getattr__）。
+
+                这样 `tools.read_file(...)`、`from tools import read_file` 都直接落到
+                sdk_call；rerun22 实测模型写了 6 次 `from tools import list_dir`，
+                每次都 ImportError（命中的是仓库根目录那个没有 __init__ 的 tools/
+                测试包），白烧 6 轮。壳补上 __getattr__ 后这类写法不再是死路。
+                """
+                mod = types.ModuleType("tools")
+                mod.__doc__ = ("ops_batch 脚本内的工具壳：任何属性都当工具名，"
+                               "如 tools.read_file(path=...)。")
+                mod.call = sdk_call  # type: ignore[attr-defined]
+
+                def _module_getattr(attr: str):
+                    # 魔法属性按常规抛 AttributeError，别让 import 机制/调试工具误判。
+                    if attr.startswith("__") and attr.endswith("__"):
+                        raise AttributeError(attr)
+
+                    def _bound(*a, **kw):
+                        if a:
+                            raise TypeError(
+                                f"tools.{attr}() 只支持关键字参数，请写成 "
+                                f"tools.{attr}(path=...) 或 call(\"{attr}\", path=...)")
+                        return sdk_call(attr, **kw)
+
+                    _bound.__name__ = attr
+                    _bound.__doc__ = f"脚本内调用工具 {attr}（等价 call('{attr}', ...)）"
+                    return _bound
+
+                mod.__getattr__ = _module_getattr  # type: ignore[attr-defined]
+                return mod
 
             def _work():
-                # 注入两个等价入口：裸函数 call(...) 为主（模型不会去 import call），
-                # tools.call(...) 为别名。这样即便脚本里写了 `import tools`（把名字
-                # tools 重新绑到真正的 agentforge.tools 模块），call(...) 仍是可用的，
-                # 不会再出现 rerun18 那种 "module 'tools' has no attribute 'call'"。
-                env = {"call": sdk_call, "tools": _Tools(), "print": _print}
+                # 两个等价入口：裸函数 call(...) 为主（模型不爱写 import），
+                # tools.call(...) / tools.<工具名>(...) 为别名。
+                tools_mod = _make_tools_module()
+                # `import tools` 命中的必须是这个壳，而不是仓库根的真实 tools/ 包。
+                # 只替换本脚本 builtins 里的 __import__，不写 sys.modules——写全局会把
+                # 其他线程/模块的 import 一起劫持，属于进程级污染。
+                script_builtins = dict(vars(builtins))
+                _orig_import = builtins.__import__
+
+                def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+                    if level == 0 and (name == "tools" or name.startswith("tools.")):
+                        return tools_mod
+                    return _orig_import(name, globals, locals, fromlist, level)
+
+                script_builtins["__import__"] = _guarded_import
+                env = {"call": sdk_call, "tools": tools_mod, "print": _print,
+                       "__builtins__": script_builtins}
                 try:
                     exec(compile(script, "<ops_batch>", "exec"), env)  # noqa: S102
                 except BaseException as e:  # noqa: BLE001 —— 脚本异常要回给模型，不是崩溃

@@ -33,6 +33,7 @@ class LLMResult:
         self.eval_count: int = 0
         self.eval_duration_ns: int = 0
         self.prompt_eval_count: int = 0
+        self.prompt_eval_duration_ns: int = 0
         self.load_duration_ns: int = 0
         # 结束原因：stop=自然收尾 / length=预算耗尽被截断 / 其他。调度器诊断
         # 「规划 JSON 为什么解析失败」靠它——length 意味着思考通道烧完了预算。
@@ -449,6 +450,11 @@ class OllamaClient:
                             result.prompt_eval_count = int(chunk.get("prompt_eval_count") or 0)
                             result.eval_count = int(chunk.get("eval_count") or 0)
                             result.eval_duration_ns = int(chunk.get("eval_duration") or 0)
+                            # prompt_eval/load 拆开报：首轮慢到底是「模型冷加载」还是
+                            # 「上下文太长预填充慢」，只能靠这两个数字区分（rerun22
+                            # 首轮 23.9s 里只有 6.6s 是生成）。
+                            result.prompt_eval_duration_ns = int(
+                                chunk.get("prompt_eval_duration") or 0)
                             result.load_duration_ns = int(chunk.get("load_duration") or 0)
                             result.done_reason = str(chunk.get("done_reason") or "")
                             break

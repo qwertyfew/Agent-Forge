@@ -114,6 +114,60 @@ def _tree_lines(root: Path, max_lines: int = 60) -> list[str]:
     return lines
 
 
+def _module_lines(root: Path, toks: set[str] | None = None, *,
+                  max_dirs: int = 6, max_names: int = 48) -> list[str]:
+    """源码模块清单：顶层目录 → 该目录下的 .py 文件名（一行一个目录）。
+
+    为什么单独列：_tree_lines 对条目超过 24 的目录只写「agentforge/ (30)」不展开，
+    模型就凭印象猜出 `agentforge/core`、`agentforge/skills` 这种不存在的路径
+    （rerun22 实测：list_dir 已明确回「路径不存在」，它仍把该路径写进交付物）。
+    一行文件名比展开整棵子树便宜得多，却能直接消灭这类幻觉——判断「某能力在不在」
+    之前，至少知道真实模块有哪些。
+
+    排序按任务相关度：模块多到要截断时，先保住 context/permissions/tasksession
+    这些任务真正会问到的，而不是按字典序随机砍掉尾部。
+    """
+    lines: list[str] = []
+    toks = toks or set()
+
+    def _rank(name: str) -> tuple[int, str]:
+        stem = name[:-3].lower() if name.endswith(".py") else name.lower()
+        hit = sum(1 for t in toks if t and t in stem)
+        return (-hit, name)
+
+    try:
+        tops = sorted(p for p in root.iterdir() if p.is_dir())
+    except OSError:
+        return lines
+    for p in tops:
+        if len(lines) >= max_dirs:
+            break
+        if p.name in PRUNE_DIRS or p.name.startswith("."):
+            continue
+        try:
+            names = sorted((q.name for q in p.iterdir()
+                            if q.is_file() and q.suffix == ".py"
+                            # 测试脚本不算「模块」：tools/ 下 60 个 test_* 会把
+                            # 预算吃光，却对判断「能力在不在」毫无帮助。
+                            and not q.name.startswith(("test_", "bench"))), key=_rank)
+        except OSError:
+            continue
+        if not names:
+            continue
+        shown = names[:max_names]
+        tail = f" …(共 {len(names)} 个)" if len(names) > max_names else ""
+        lines.append(f"  {p.name}/: " + " ".join(shown) + tail)
+    # 根目录下的 .py（入口 / 单文件脚本）
+    try:
+        root_py = sorted((q.name for q in root.iterdir()
+                          if q.is_file() and q.suffix == ".py"), key=_rank)
+    except OSError:
+        root_py = []
+    if root_py and len(lines) < max_dirs:
+        lines.append("  (根目录): " + " ".join(root_py[:max_names]))
+    return lines
+
+
 def _readme_digest(root: Path, limit: int = 600) -> str:
     """README 开头若干字（按行边界截断），去掉图片与链接尾巴。"""
     for name in ("README.md", "README.rst", "README.txt", "README"):
@@ -135,7 +189,7 @@ def _readme_digest(root: Path, limit: int = 600) -> str:
 
 def build_block(cfg, task_text: str) -> tuple[str, dict]:
     """生成预热注入块。返回 (块文本, 统计)；开关关闭或工作区不可读返回 ("", stats)。"""
-    stats = {"chars": 0, "tree_entries": 0, "hit_files": 0}
+    stats = {"chars": 0, "tree_entries": 0, "hit_files": 0, "modules": 0}
     if not getattr(cfg, "warmup_enabled", True):
         return "", stats
     root = Path(cfg.workspace_root)
@@ -152,6 +206,13 @@ def build_block(cfg, task_text: str) -> tuple[str, dict]:
     stats["tree_entries"] = len(tree)
     if tree:
         parts.append("【目录结构】\n" + "\n".join(tree))
+
+    # 放在目录结构之后、README 之前：它比 README 摘要更能防「路径幻觉」。
+    mods = _module_lines(root, _task_tokens(task_text))
+    stats["modules"] = len(mods)
+    if mods:
+        parts.append("【源码模块清单】（判断「某能力在不在」前先看这里，别猜路径）\n"
+                     + "\n".join(mods))
 
     digest = _readme_digest(root)
     if digest:
