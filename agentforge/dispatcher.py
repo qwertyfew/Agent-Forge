@@ -236,8 +236,8 @@ class Dispatcher:
 
     def _chat(self, system: str, user: str, num_predict: int = 8192,
               temperature: float = 0.2, validator=None) -> str:
-        # num_predict 8192（原 2048）+ think=True（原 False）：调度模型换成
-        # gpt-oss:20b 后暴露的两个问题——
+        # num_predict 8192（原 2048）+ think 按模型判定（历史：True/False 教训见②③）：调度模型换成
+        # gpt-oss:20b 后暴露的问题——
         #   ① 2048 被它的 analysis（思考）通道吃掉大半：思考 token 与正文共享生成
         #      预算，实测规划 JSON 只吐出 428 字符就在中间被截断，_extract_json
         #      必然失败，Leader 每轮退回兜底（rerun8 实测 8 连败、12 轮全烧在
@@ -252,17 +252,23 @@ class Dispatcher:
         #      头扎进分析反复斟酌，精确撞上 Ollama 对 analysis 段 ~2048 token 的隐
         #      形预算（num_predict=8192/16384 都救不了，eval_count 恒 2046），final
         #      通道永远没机会输出 → content 空、done_reason=length。上下文越长概率
-        #      越高——这就是「短上下文全好、长上下文必坏」的机制。对策是 gpt-oss
-        #      官方的系统提示档位 `Reasoning: low`：分析收敛，实测同一失败提示词
-        #      4/4 全部 stop、且耗时从 26-47s 降到 4-11s（调度 JSON 不需要深推理）。
-        #      对 gemma 无效无害（它不认识该指令，当普通句子忽略）。
+        #      越高——这就是「短上下文全好、长上下文必坏」的机制。
+        #      修复分两代：第一代往系统提示塞 `Reasoning: low` 指令（26-47s→4-11s），
+        #      但那是**软约束**——模型偶发不服从（rerun12 期间仍有 5 个
+        #      eval_count≈2046 的撞墙样本落盘）。第二代（现行）改为**架构级硬约束**：
+        #      按模型名判定，gpt-oss 走 Ollama /api/chat 原生 think 档位参数
+        #      "low"（服务端直接改变生成行为，不依赖模型服从指令）。
         spec = self.spec()
         if spec is None:
             return ""
         messages = [
-            {"role": "system", "content": system + "\n\nReasoning: low."},
+            {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
+        # 推理档位：调度环节是「一次定胜负」的短决策，不需要深推理。按模型族查表
+        # 得到 think 参数值；不在表里的模型一律 True（gemma 等需要思考与正文分离）。
+        model_low = (getattr(spec, "name", "") or "").lower()
+        think = "low" if "gpt-oss" in model_low else True
         # 空响应重试：gpt-oss 偶发「analysis 生成完毕但 final 通道为空」的空回答
         # （rerun8 观测到过）。同一 prompt 重发一次通常就好了，空结果让 Leader
         # 整轮退回兜底的代价远大于这一次重试。
@@ -278,7 +284,7 @@ class Dispatcher:
             res = self.hub.chat(
                 spec, messages, tools=None,
                 options={"temperature": temperature, "num_predict": num_predict},
-                think=True,
+                think=think,
             )
             out = (res.content or "").strip()
             bad_reason = ""

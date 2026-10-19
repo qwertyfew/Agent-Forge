@@ -368,7 +368,7 @@ class OllamaClient:
         messages: list[dict],
         tools: list[dict] | None = None,
         options: dict | None = None,
-        think: bool | None = None,
+        think: bool | str | None = None,
         keep_alive: str | None = None,
         stop_check=None,
     ) -> Iterator[tuple[str, Any]]:
@@ -394,7 +394,12 @@ class OllamaClient:
         if options:
             payload["options"] = options
         if think is not None:
-            payload["think"] = bool(think)
+            # bool（True/False）之外还接受字符串档位 "low"/"medium"/"high"：
+            # gpt-oss 官方支持推理档位，Ollama 0.40+ 的 /api/chat 原生透传。
+            # API 参数是硬约束（服务端直接改变生成行为），比往系统提示里塞
+            # 「Reasoning: low」指令可靠——后者是软约束，模型偶发不服从
+            # （rerun12 期间仍有 5 个 eval_count≈2046 的撞墙样本落盘）。
+            payload["think"] = think
 
         serial = _LOCAL_SERIAL
         last_err: Exception | None = None
@@ -486,7 +491,7 @@ class OllamaClient:
         messages: list[dict],
         tools: list[dict] | None = None,
         options: dict | None = None,
-        think: bool | None = None,
+        think: bool | str | None = None,
         keep_alive: str | None = None,
     ) -> LLMResult:
         result = LLMResult()
