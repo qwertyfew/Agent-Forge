@@ -18,6 +18,7 @@ from .llm import OllamaClient, parse_text_tool_calls
 from .memory import MemoryStore
 from .llm import GenerationStopped
 from .tasksession import contract_paths
+from .tools.ops import OPS_AGENT_CTX
 from .permissions import (
     OUTSIDE_OK,
     OUTDIR_CTX,
@@ -527,6 +528,9 @@ class Agent:
         # 证据台账：本任务「实际核实过哪些文件」的唯一事实源（架构层记录，供写报告时
         # 校验引用）。每次 run 重置，避免跨任务串味。
         self.guard.ledger = EvidenceLedger()
+        # ops_batch（PTC）脚本内的写操作要记入本任务台账；agent 实例本身在
+        # 工具执行点临时挂到 OPS_AGENT_CTX（见主循环 _execute 调用处）。
+        self._file_log = file_log
         # 任务内即时验证的失败回灌计数（0-3）：每次 run 归零，跨轮次保留，
         # 防「改挂→提醒→再改挂」死循环；到顶后不再回灌，终审交给收尾闸门。
         self.iv_fails = 0
@@ -887,7 +891,13 @@ class Agent:
                            "下面是上次的结果，请直接利用；确实需要新信息就换参数，"
                            "或把关键发现记进 task_notes：\n" + hit[0])
                 else:
-                    out = self._execute(tc.name, tc.arguments, auto_approve, file_log)
+                    # ops_batch（PTC）在本工具 run() 里需要找到当前 agent——
+                    # 只在工具执行这一小段挂上下文，执行完立刻摘除
+                    _ops_t = OPS_AGENT_CTX.set(self)
+                    try:
+                        out = self._execute(tc.name, tc.arguments, auto_approve, file_log)
+                    finally:
+                        OPS_AGENT_CTX.reset(_ops_t)
                     if safe:
                         if read_cache is not None:
                             read_cache.put(sig, out)

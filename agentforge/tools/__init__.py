@@ -16,6 +16,7 @@ from .novel import build_novel_tools
 from .remote import build_remote_tools
 from .search import build_search_tools
 from .shell import build_shell_tools
+from .ops import build_ops_tools
 from .skill import build_skill_tools
 from .web import build_web_tools
 
@@ -88,6 +89,7 @@ def build_registry(guard, cfg, enable_web: bool = True, skill_registry=None) -> 
     tools += build_search_tools(guard, cfg)
     tools += build_graph_tools(guard, cfg)
     tools += build_shell_tools(guard, cfg)
+    tools += build_ops_tools(guard, cfg)
     tools += build_git_tools(guard, cfg)
     tools += build_memory_tools(guard, cfg)
     tools += build_notes_tools(guard, cfg)
