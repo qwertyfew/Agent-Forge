@@ -121,9 +121,39 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                 end = kw.get("end", "\n")
                 out.write(sep.join(str(x) for x in a) + end)
 
-            def sdk_call(name: str, **args) -> str:
+            def _first_param(tool_name: str) -> str:
+                """该工具的第一个必填参数名——位置参数映射到它。
+
+                各工具主参数不同（read_file→path、search_code→pattern、
+                run_command→command），不能一律当 path。
+                """
+                spec = agent.registry.get(tool_name)
+                params = getattr(spec, "parameters", None) or {}
+                req = params.get("required") or []
+                if req:
+                    return str(req[0])
+                props = params.get("properties") or {}
+                return next(iter(props), "path")
+
+            def _with_positional(name: str, pos: tuple, kw: dict) -> dict:
+                # 容忍位置参数：模型爱写 call("list_dir", "external") 或
+                # tools.list_dir("external")。旧实现直接抛「只支持关键字参数」，
+                # rerun23 / rerun24 各白烧一轮。纯接口摩擦，壳该迁就调用习惯。
+                if not pos:
+                    return kw
+                main = _first_param(name)
+                if len(pos) > 1:
+                    raise TypeError(
+                        f"{name}() 最多 1 个位置参数（自动映射到 {main}），"
+                        f"其余请用关键字：call(\"{name}\", {main}=..., ...)")
+                if main in kw:
+                    raise TypeError(f"{name}() 参数重复：{main} 既按位置又按关键字给了")
+                return {**kw, main: pos[0]}
+
+            def sdk_call(name: str, *pos, **args) -> str:
                 if time.monotonic() > deadline:
                     raise TimeoutError(f"脚本超过 {timeout:.0f}s 预算，已中止")
+                args = _with_positional(name, pos, args)
                 if name in _DENIED_IN_SCRIPT:
                     r = f"[已拒绝] 脚本内不能调用 {name}"
                     _print(r)
@@ -175,11 +205,8 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                         raise AttributeError(attr)
 
                     def _bound(*a, **kw):
-                        if a:
-                            raise TypeError(
-                                f"tools.{attr}() 只支持关键字参数，请写成 "
-                                f"tools.{attr}(path=...) 或 call(\"{attr}\", path=...)")
-                        return sdk_call(attr, **kw)
+                        # 位置参数由 sdk_call 统一映射到该工具的主参数。
+                        return sdk_call(attr, *a, **kw)
 
                     _bound.__name__ = attr
                     _bound.__doc__ = f"脚本内调用工具 {attr}（等价 call('{attr}', ...)）"
