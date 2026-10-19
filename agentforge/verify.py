@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import json
 import locale
 import os
 import re
@@ -429,16 +430,51 @@ def _tool_names(convo: list[dict] | None):
                 yield name
 
 
+# PTC 常驻下，写盘发生在 ops_batch 的脚本里，顶层只看得到 name="ops_batch"。
+# 只按工具名判定「有没有写过」会让轨迹侧证据整块消失：脚本里真写了文件，
+# ran_writes 仍返回 False，于是 unfinished_gate 以为「全程零文件改动」，
+# 对已经交付的答复多发一轮修正（rerun26 实测的误判形态）。这里补一条按
+# 脚本源码判定的通道——只看 ops_batch 的 arguments 里有没有对写类工具的调用。
+# 注意这是「尝试过写」而不是「写成功」，与 WRITE_TOOLS 的语义一致；真正
+# 是否落盘仍由磁盘 mtime / file_log 台账裁定（loop 内契约闸门就是这么做的）。
+_PTC_WRITE_RX = re.compile(
+    # 引号可能被 JSON 转义成 \"，所以前后都允许一个可选的反斜杠
+    r"""(?:['"]|\\['"])\s*(?:write_file|edit_file)\s*(?:['"]|\\['"])"""
+    r"""|tools\.(?:write_file|edit_file)\s*\(""")   # tools.write_file(...)
+
+
+def _ptc_write_attempted(convo: list[dict] | None) -> bool:
+    for m in convo or []:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        for tc in (m.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            name = fn.get("name") or tc.get("name") or ""
+            if name != "ops_batch":
+                continue
+            args = tc.get("arguments", fn.get("arguments"))
+            if isinstance(args, dict):
+                args = json.dumps(args, ensure_ascii=False)
+            if _PTC_WRITE_RX.search(str(args or "")):
+                return True
+    return False
+
+
 def ran_writes(convo: list[dict] | None) -> bool:
-    """任务过程中是否调用过写类工具（write_file / edit_file）。"""
-    return any(n in WRITE_TOOLS for n in _tool_names(convo))
+    """任务过程中是否调用过写类工具（write_file / edit_file）。
+
+    含 PTC 路径：ops_batch 脚本里对写类工具的调用同样算数。
+    """
+    return (any(n in WRITE_TOOLS for n in _tool_names(convo))
+            or _ptc_write_attempted(convo))
 
 
 def produced_possible(convo: list[dict] | None) -> bool:
     """任务里是否出现过任何可能产出文件的操作（写类工具或 run_command——
     命令也可能合法地产出文件，比如跑脚本生成报告；两者都没有时，
-    「已写入 X」才板上钉钉是假的）。"""
-    return any(n in WRITE_TOOLS or n == "run_command" for n in _tool_names(convo))
+    「已写入 X」才板上钉钉是假的）。PTC 脚本内的写类调用同样算数。"""
+    return (any(n in WRITE_TOOLS or n == "run_command" for n in _tool_names(convo))
+            or _ptc_write_attempted(convo))
 
 
 def _resolve_inside(path: str, root: Path) -> Path | None:

@@ -1634,6 +1634,7 @@ class _Handler(BaseHTTPRequestHandler):
         touched: list[str] = []                # 本任务调用过的工具名（判「有没有可能写过盘」）
         steps = 0
         summary = ""
+        streamed = ""                          # 主答复已下发的正文（只累积无 task_id 的 delta）
         err_msg = ""
         was_stopped = False
         # 用量累计：界面上的「已消耗预估费用」就是这几个变量
@@ -1733,6 +1734,8 @@ class _Handler(BaseHTTPRequestHandler):
                             "step") and ev.get("task_id"):
                     ev = {**ev, "task_id": ev["task_id"]}
                 if kind == "delta":
+                    if not ev.get("task_id"):
+                        streamed += ev.get("text") or ""
                     emit("delta", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "thinking":
                     emit("thinking", {k: v for k, v in ev.items() if k != "type"})
@@ -1833,6 +1836,16 @@ class _Handler(BaseHTTPRequestHandler):
                 elif kind == "assistant":
                     summary = (ev["content"] or "").strip()
                     final_history = ev["history"]
+                    # 收尾闸门的系统侧声明（未交付 / 未经核实）只挂在这条 summary 上，
+                    # SSE 此前只发 delta，声明从未到达浏览器——「闸门判了，用户看不见」。
+                    # 只在 summary 是「已流式正文 + 追加声明」时补发尾段，避免重写轮
+                    # （修正轮把正文整段换掉）造成内容错乱。
+                    if (streamed and len(summary) > len(streamed.rstrip())
+                            and summary.startswith(streamed.rstrip())):
+                        base = streamed.rstrip()
+                        tail = summary[len(base):]
+                        streamed = summary
+                        emit("delta", {"text": tail})
                     emit("history", {"messages": ev["history"]})
                 elif kind == "history":
                     # 中途停止时编排器主动回吐已完成的部分，让界面/台账不丢上下文
@@ -1897,6 +1910,15 @@ class _Handler(BaseHTTPRequestHandler):
                 elif kind == "verify":
                     # 收尾验证闸门：系统亲自运行验证命令的真实结果（模型只有解读权）
                     emit("verify", {k: v for k, v in ev.items() if k != "type"})
+                elif kind == "contract_gate":
+                    # 契约闸门（当前轮次拦截交付物未落盘）。此前这里没有分支，
+                    # 事件被整条丢弃：前端看不到「已拦回」，评测的事件流里也查不到
+                    # ——rerun24 诊断时 gate_skip 全 0 的假象就是它造成的。
+                    _miss = ev.get("missing") or []
+                    emit("notify", {
+                        "text": (f"契约闸门：{len(_miss)} 个交付物未落盘，已退回继续"
+                                 f"（第 {ev.get('round')} 次）"),
+                    })
                 elif kind == "artifacts":
                     # 产出文件清单：随最终答复送给前端，渲染成可点击展开的文件卡片，
                     # 保证汇总结果与产出文件对上
