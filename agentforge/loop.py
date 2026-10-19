@@ -531,6 +531,9 @@ class Agent:
         # ops_batch（PTC）脚本内的写操作要记入本任务台账；agent 实例本身在
         # 工具执行点临时挂到 OPS_AGENT_CTX（见主循环 _execute 调用处）。
         self._file_log = file_log
+        # 本轮开始墙钟：契约收工对账用「mtime 是否晚于本轮开始」判定交付物
+        # 是否本轮真的更新过（rerun15 盲点：上轮留下的旧文件糊弄「存在即完成」）。
+        self._t0 = time.time()
         # 任务内即时验证的失败回灌计数（0-3）：每次 run 归零，跨轮次保留，
         # 防「改挂→提醒→再改挂」死循环；到顶后不再回灌，终审交给收尾闸门。
         self.iv_fails = 0
@@ -750,20 +753,26 @@ class Agent:
                 # 写回上下文让它继续。分析内容此刻都在上下文里，补写文件只是
                 # 落盘，成本远低于收尾闸门的整轮返工。
                 if (contract and contract_blocks < 2 and not stopped()):
-                    missing = [
-                        p for p in contract
-                        if not (Path(self.cfg.workspace_root) / p).exists()
-                    ]
+                    def _owe(p: str) -> bool:
+                        f = Path(self.cfg.workspace_root) / p
+                        try:
+                            if not f.exists():
+                                return True
+                            return f.stat().st_mtime <= self._t0   # 本轮从未更新
+                        except OSError:
+                            return True
+                    missing = [p for p in contract if _owe(p)]
                     if missing:
                         contract_blocks += 1
                         _push({"role": "assistant",
                                "content": result.content or "", **replay_think})
                         _push({"role": "user", "content": (
                             "【停止拦截·交付物未落盘】你宣布任务完成，但程序核对磁盘发现"
-                            "任务书要求的交付物还不存在：\n- "
+                            "任务书要求的交付物还不存在，或自本轮开始后从未更新：\n- "
                             + "\n- ".join(missing)
                             + "\n\n你刚才的分析内容都在上文——现在直接调用 write_file "
-                              "把它们写成文件（内容不必重新分析，路径必须一字不差）。"
+                              "把它们写成文件（内容不必重新分析，路径必须一字不差；已存在的"
+                              "要重新写出，让修改时间晚于本轮开始）。"
                               "写完后给出最终答复。若你认为该文件不该由本轮写出，"
                               "请在最终答复里明确说明原因。")})
                         yield {"type": "contract_gate", "missing": missing,

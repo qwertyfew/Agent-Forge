@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import sys
+import time
 import tempfile
 from pathlib import Path
 
@@ -74,6 +75,12 @@ def _mk_agent(tmp: Path, script: list[_Res]) -> Agent:
     return ag
 
 
+def _run(ag: Agent, text: str, **kw):
+    """每次 run 前清零 stub 轮次计数（hub 按累计轮数索引剧本，跨 run 不清会错位）。"""
+    ag.hub.rounds = []
+    return list(ag.run([], text, auto_approve=True, **kw))
+
+
 def main() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="af_contract_"))
 
@@ -92,8 +99,36 @@ def main() -> None:
     check("无契约 → 空块", contract_block("纯分析任务", tmp) == "")
     (tmp / "evals").mkdir(exist_ok=True)
     (tmp / "evals" / "done.md").write_text("x", encoding="utf-8")
-    check("存在文件不重复要求", "evals/done.md" not in
+    check("读材料不进契约（读取语境）", "evals/done.md" not in
           contract_block("重读 evals/done.md 后写 tmp/new.txt", tmp))
+    check("已存在 + 写入动词 → 也是契约项（必须本轮更新）",
+          "evals/done.md" in contract_paths("重写 evals/done.md 补充新结论", tmp))
+
+    # ---------- rerun15 盲点回归：上轮留下的旧交付物糊弄「存在即完成」 ----------
+    stale = tmp / "tmp" / "stale-report.txt"
+    stale.parent.mkdir(exist_ok=True)
+    stale.write_text("上一轮的旧内容", encoding="utf-8")
+    import os as _os
+    old = time.time() - 3600
+    _os.utime(stale, (old, old))            # mtime 拨回一小时前：本轮从未更新
+    goal_stale = "更新 tmp/stale-report.txt 的结论"
+    check("存在但写入动词 → 契约项", contract_paths(goal_stale, tmp) == ["tmp/stale-report.txt"],
+          repr(contract_paths(goal_stale, tmp)))
+    script_stale = [
+        _Res(content="任务已完成。"),                      # 想收工：文件还是旧的
+        _Res(tool_calls=[_TC("write_file", {              # 被拦后真重写
+            "path": "tmp/stale-report.txt",
+            "content": "本轮重写的新结论"})]),
+        _Res(content="已更新 tmp/stale-report.txt。"),
+    ]
+    ag_s = _mk_agent(tmp, script_stale)
+    evs_s = _run(ag_s, goal_stale, contract=contract_paths(goal_stale, tmp))
+    gates_s = [e for e in evs_s if e.get("type") == "contract_gate"]
+    check("旧文件未更新 → 停止拦截触发", len(gates_s) == 1, str(len(gates_s)))
+    check("拦截文案点明「未更新」", gates_s and "从未更新" in gates_s[0].get("message", "")
+          or gates_s, str(gates_s[:1]))
+    check("重写后 mtime 晚于本轮开始 → 放行",
+          [e for e in evs_s if e.get("type") == "assistant"][-1]["content"].startswith("已更新"))
 
     # ---------- 停止拦截（契约后端）：宣布完成但文件没写 → 拦截补写 ----------
     goal2 = "把 TODO 机制分析写入 tmp/agentforge-todo-system.txt"
@@ -105,8 +140,8 @@ def main() -> None:
         _Res(content="已写入 tmp/agentforge-todo-system.txt。"),  # 再收工：过了
     ]
     ag = _mk_agent(tmp, script)
-    evs = list(ag.run([], goal2, auto_approve=True,
-                      contract=contract_paths(goal2, tmp)))
+    evs = _run(ag, goal2,
+                      contract=contract_paths(goal2, tmp))
     gates = [e for e in evs if e.get("type") == "contract_gate"]
     check("缺交付 → 触发一次拦截", len(gates) == 1, str(len(gates)))
     check("拦截报出缺失文件", gates and gates[0]["missing"] == ["tmp/agentforge-todo-system.txt"])
@@ -130,8 +165,8 @@ def main() -> None:
     ]
     ag2 = _mk_agent(tmp, script2)
     goal3 = "写 tmp/never-written.txt"
-    evs2 = list(ag2.run([], goal3, auto_approve=True,
-                        contract=contract_paths(goal3, tmp)))
+    evs2 = _run(ag2, goal3,
+                        contract=contract_paths(goal3, tmp))
     gates2 = [e for e in evs2 if e.get("type") == "contract_gate"]
     check("最多拦两次", len(gates2) == 2, str(len(gates2)))
     finals2 = [e for e in evs2 if e.get("type") == "assistant"]
@@ -141,7 +176,7 @@ def main() -> None:
     # ---------- 无契约任务零打扰 ----------
     script3 = [_Res(content="普通答复")]
     ag3 = _mk_agent(tmp, script3)
-    evs3 = list(ag3.run([], "纯聊天：什么是 todo list？", auto_approve=True))
+    evs3 = _run(ag3, "纯聊天：什么是 todo list？")
     check("无契约不拦截", not [e for e in evs3 if e.get("type") == "contract_gate"])
     check("无契约正常答复", any(e.get("type") == "assistant"
                                 and e["content"] == "普通答复" for e in evs3))

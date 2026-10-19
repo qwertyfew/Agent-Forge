@@ -46,15 +46,18 @@ def extract_paths(text: str) -> list[str]:
 # 契约判定的句子级信号：路径所在分句出现**写入动词**才算「要求写出的交付」；
 # 出现**对冲词**（上游欠账 / 条件句）则不算——「读取上一步生成的 evals/x.json」
 # 是在等别人的产出，不该拦本步骤收工。
-_WRITE_V_RX = re.compile(r"写入|写出|写成|写到|保存到|保存至|存为|落盘|输出到|交付到|写(?![在进])")
+_WRITE_V_RX = re.compile(r"写入|写出|写成|写到|更新|改写|重写|保存到|保存至|存为|落盘|输出到|交付到|写(?![在进])")
 _HEDGE_RX = re.compile(r"上一步|上游|前面步骤|之前步骤|已有实现|如果|若|已存在|存在则|跳过|可选")
 
 
 def contract_paths(goal: str, root: str | Path) -> list[str]:
-    """任务书点名要求**写出**、开工时还不存在的交付文件。
+    """任务书点名要求**写出**的交付文件（写入动词判定）。
 
-    已存在的路径是要读的材料，不做要求；只认工作区内的相对路径，
-    逃出工作区 / 解析失败的一律跳过（不猜、不误报）。
+    无论磁盘上是否已存在都算契约项：不存在 = 必须写出；已存在 = 必须本轮
+    更新（mtime 变化）——rerun15 实测的盲点：上一轮任务留下的交付物糊弄了
+    「存在即完成」，收尾闸门的 stale 核查只能事后抓。已存在的路径若出现在
+    读取语境（参考/读取/基于）不会进契约——写入动词判定已排除。只认工作区
+    内的相对路径，逃出工作区 / 解析失败的一律跳过（不猜、不误报）。
     """
     rootp = Path(root)
     req: list[str] = []
@@ -76,8 +79,7 @@ def contract_paths(goal: str, root: str | Path) -> list[str]:
                 target.relative_to(rootp.resolve())
             except (OSError, ValueError):
                 continue
-            if not target.exists():
-                req.append(p)
+            req.append(p)
     return req
 
 
@@ -88,8 +90,8 @@ def contract_block(goal: str, root: str | Path) -> str:
     if not req:
         return ""
     return (
-        "\n【验收契约】任务书要求本轮写出以下文件，收工前程序会核对磁盘，"
-        "缺了不放行（会拦截并要求当场补写）：\n- "
+        "\n【验收契约】任务书要求本轮写出以下文件，收工前程序会核对磁盘"
+        "（不存在或本轮未更新都不放行，会拦截并要求当场补写）：\n- "
         + "\n- ".join(req)
         + "\n分析完成后先用 write_file 把内容落盘（路径一字不差），再给最终答复。\n")
 
