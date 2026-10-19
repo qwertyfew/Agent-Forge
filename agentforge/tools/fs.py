@@ -97,7 +97,11 @@ def build_fs_tools(guard, cfg):
         # 「路径看似合理但读者复现不到」这类 bug，不靠提示词自觉。
         ledger = getattr(guard, "ledger", None)
         cit_audit = None
-        if content and "`" in content:
+        # 不再用「含反引号」当门槛：rerun25 把引用改写成圆括号 (lc_loop/code.py:7-13)，
+        # 整份文件一个反引号都没有，核查直接被跳过，9 条虚构路径全部落盘。
+        # 审计内部按 _extract_citations 提取（反引号 + 中英文圆括号），且自身
+        # 用 checked>=2 做「引用密集文档」门槛，这里不该再加形状限制。
+        if content:
             try:
                 cit_audit = audit_citations(content, guard, cfg.workspace_root, ledger)
             except Exception:

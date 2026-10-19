@@ -155,6 +155,31 @@ def main() -> None:
     list(ag.run([], "写一份差距清单", auto_approve=True))
     check("改正后正常落盘", (tmp / "evals" / "gap.md").is_file())
 
+    # ---------- rerun25 回归：圆括号引用也要过核查 ----------
+    # 模型把引用从反引号改写成圆括号 (lc_loop/code.py:7-13)，旧门槛
+    # `if content and "`" in content` 直接跳过核查，9 条虚构路径全部落盘。
+    paren_doc = (
+        "# 差距清单（圆括号引用形态）\n\n"
+        "| 对比点 | 对方做法 | AgentForge 现状 |\n"
+        "| :-- | :-- | :-- |\n"
+        "| agent loop | 极简 while 循环 (lc_loop/code.py:7-13) "
+        "| 多步调度 (agentforge/loop.py:100-400) |\n"
+        "| 上下文压缩 | 滑动窗口 (lc_compact/code.py:30-50) "
+        "| Compressor 多级压缩 (agentforge/context.py:190) |\n"
+    )
+    check("样本确实不含反引号", "`" not in paren_doc)
+    script3 = ("print(call('write_file', path='evals/paren.md', "
+               "content=" + repr(paren_doc) + "))")
+    ag.hub = _StubHub([
+        _Res(tool_calls=[_TC("ops_batch", {"script": script3})]),
+        _Res(content="已写出。"),
+    ])
+    evs3 = list(ag.run([], "写一份差距清单", auto_approve=True))
+    out3 = next((e.get("output") or "" for e in evs3
+                 if e.get("type") == "tool_result" and "ops_batch" in str(e.get("output"))), "")
+    check("圆括号虚构引用也被拦下", "引用核查未通过" in out3, out3[:200])
+    check("圆括号形态未落盘", not (tmp / "evals" / "paren.md").exists())
+
     print("\n结果：全部通过")
 
 
