@@ -945,7 +945,11 @@ class Agent:
         except PermissionDenied as e:
             return f"[已拒绝] {e}"
         except TypeError as e:
-            return f"[错误] 工具 {name} 参数不对：{e}"
+            msg = f"[错误] 工具 {name} 参数不对：{e}"
+            if name == "write_file" and "path" in str(e):
+                msg += ("\n[提示] write_file 需要两个参数都要给：path（写入路径，"
+                        "如 evals/foo.json）+ content（完整内容）。你这次漏了 path。")
+            return msg
         except Exception as e:  # noqa: BLE001
             return f"[错误] 工具 {name} 执行异常：{type(e).__name__}: {e}"
         finally:

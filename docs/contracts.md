@@ -229,6 +229,7 @@
 | `tools/test_worker_card.mjs` | 按需（20 项）| `tools/test_taskstore.py` | 常驻（18 项） | 台账的 prompt：原话逐字入库（不截断、不压空白）、`list`/`get` 都带得出、`finish` 不冲掉、老台账读得进 |
 | `tools/test_worker_card.mjs` | 按需（20 项）| `tools/test_task_view.mjs` | 常驻（38 项） | 「进入任务视图」唯一入口：外部任务在页面不干净时也入场、提问/头像/计时都从台账来、头像行在提问落盘时就位、`busy` 与停在设置页不抢画面、回看不重复上屏、清场后事件仍落在画面上（需 jsdom，缺了自动 SKIP） |
 | `tools/test_worker_card.mjs` | 按需（20 项）| `tools/test_reply_flow.mjs` | 常驻（70 项） | 一条回复的开场与收尾：提问落盘即建头像行与计时；工具条只在收尾后出现、收尾后再动就撤回；`error` 按「已中断」收尾；流读完没 `done` 也收尾；思维链折叠 + 一行动作小结；泳道不留列头；员工进度卡折叠路由（需 jsdom，缺了自动 SKIP） |
+| `tools/test_tasksession.py` | 常驻（22 项） | 任务现场：Event Log 追加写/seq 单调/同 sid 重跑隔离；Surface 重建（步骤+产出磁盘实查+硬规则）；澄清自动答复四分支（已产出/登记缺失/归属步骤/认不出放行）；interact 钩子挂与摘；批内依赖侦测（路径共享/依赖措辞/真独立/单任务）；路径抽取边界 |
 | `tools/test_worker_card.mjs` | 按需（20 项）| `debug/test_worker_card.js` | 按需（20 项） | 员工进度卡端到端：指派开卡、过程入卡、`progress` 上卡、`task_done` 封口、最终答复唯一渲染、普通聊天回归 |
 | `tools/test_worker_card.mjs` | 按需（20 项）| `tools/bench.py` | 工具 | 本地模型性能基准（加载耗时 / 提示 / 生成 / 显存分布） |
 | `tools/test_worker_card.mjs` | 按需（20 项）| `tools/fastpull.py` | 工具 | 模型拉取通道测速与推荐、权重 sha256 体检、镜像整包重拉 |

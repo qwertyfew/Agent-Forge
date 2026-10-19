@@ -1706,7 +1706,7 @@ class _Handler(BaseHTTPRequestHandler):
                                preferred_key=preferred_key,
                                stop_check=stop_ev.is_set,
                                auto_approve=auto_approve, file_log=file_log,
-                               multi_path=multi_path):
+                               multi_path=multi_path, task_id=task_id):
                 kind = ev["type"]
                 # 员工流的三个特征事件带 task_id 透传：前端靠它把员工过程
                 # （思考/工具/正文）收进折叠的进度卡，主对话流只留 leader 骨架。

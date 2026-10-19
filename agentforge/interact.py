@@ -55,8 +55,32 @@ def has_pending() -> bool:
         return bool(_PENDING)
 
 
+def set_auto_answer(fn) -> None:
+    """设置本线程的澄清自动答复钩子（任务现场用，见 tasksession.py）。
+
+    fn(question, options) -> str | None：返回答案文本则跳过真实弹窗直接作答；
+    返回 None 则照常走原流程。编排器在员工运行前挂上、收尾摘掉，线程局部
+    互不串扰。
+    """
+    _LOCAL.auto_answer = fn
+
+
+def clear_auto_answer() -> None:
+    _LOCAL.auto_answer = None
+
+
 def ask(question: str, options: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
     """工具侧入口：返回用户的答复文本（或脚本答案/超时提示）。"""
+    # 任务现场的自动答复最先裁决：文件是本任务自己的产物/预期产物时，
+    # 系统直接作答，不把用户当答案机（rerun13 实证的错位升级在这里堵死）。
+    hook = getattr(_LOCAL, "auto_answer", None)
+    if hook is not None:
+        try:
+            auto = hook(question, options)
+        except Exception:                     # noqa: BLE001  钩子坏了不该卡死员工
+            auto = None
+        if auto:
+            return str(auto)
     scripted = getattr(_LOCAL, "scripted", None)
     if scripted is not None:                      # 评测模式：按任务书脚本应答
         if scripted:

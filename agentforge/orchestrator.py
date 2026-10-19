@@ -40,7 +40,9 @@ from .planner import (
 from .readcache import ReadCache
 from . import artifact
 from . import gaps
+from . import interact
 from . import honesty_guard
+from .tasksession import TaskSession, batch_dependency_reason
 from . import runcontrol
 from . import sources as sources_gate
 from . import verify as verify_gate
@@ -628,7 +630,7 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                message: str, dispatcher: Dispatcher,
                stop_check=None, auto_approve: bool | None = None,
                file_log: list | None = None, read_cache: "ReadCache | None" = None,
-               outdir: str = "") -> Iterator[dict[str, Any]]:
+               outdir: str = "", task_id: str = "") -> Iterator[dict[str, Any]]:
     """Leader 双环编排（第 47 步：七步架构更新，取代旧 run_multi_agent）。
 
     外环（Leader）：每轮只规划【下一批】小步骤（仅相互独立的才同批）→ 员工执行 →
@@ -670,6 +672,9 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
 
     root = cfg.workspace_root
     snap = verify_gate.snapshot_artifacts(message, root)
+    # 任务现场（第 61 步，参照 DeepSeek Harness）：不可变事件日志 + 上下文视图。
+    # 员工 prompt 注入「任务现场」块、澄清自动答复、批内依赖侦测都从这里取材。
+    session = TaskSession(task_id or f"direct-{time.strftime('%m%d-%H%M%S')}", root)
     # 任务开局预热注入（第 58 步）：扫一遍工作区生成项目速览块，本任务所有
     # 员工共享同一份（build_once 缓存）。进员工系统提示（免压缩区）而不是
     # 用户消息，_compact 永不碰它。
@@ -741,6 +746,10 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
         yield {"type": "subtask", "index": t.index, "total": batch_total,
                "text": t.goal, "task_id": t.id, "round": nonlocal_round}
         ag.set_model(t.model_key)
+        # 任务现场：步骤开局记入事件日志（goal 落盘供产物归属判定），并把
+        # 「任务现场」块拼进员工 prompt——下游员工由此知道前面步骤真实做了
+        # 什么、产出了什么（rerun13「后面的员工不知道前面员工做了什么」的根治）。
+        session.step_start(t.index, t.id, t.title, t.goal, t.model_name)
         local = _is_local_model(agent, t.model_key)
         gate = local_gate if (local and local_gate is not None) else None
         if gate is not None:
@@ -750,8 +759,14 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
         failed = False
         convo: list[dict] = []
         last_log_len = len(local_log)
+        # 澄清自动答复：文件下落类追问由任务现场直接作答，不打扰用户。
+        # 线程局部钩子——并行时 run_one 在 wave 线程里迭代，串行时在本线程，
+        # 都必须先挂后摘。
+        interact.set_auto_answer(
+            lambda q, o, _s=session: _s.auto_answer(q))
         try:
-            for ev in ag.run(convo, prompt, auto_route=False, stop_check=stopped,
+            run_prompt = prompt + session.worker_brief()
+            for ev in ag.run(convo, run_prompt, auto_route=False, stop_check=stopped,
                              auto_approve=auto_approve, file_log=local_log,
                              read_cache=read_cache):
                 k = ev.get("type")
@@ -790,6 +805,7 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                     ev = {**ev, "task_id": t.id}
                 yield ev
         finally:
+            interact.clear_auto_answer()
             if gate is not None:
                 gate.release()
         # 程序裁定前置到每个小步骤收尾（步骤⑤的程序部分）：任务书 = Leader 的
@@ -826,6 +842,9 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                 shared_log.extend(local_log)
         sink[t.id] = {"files": files_out, "failed": failed,
                       "summary": summary or _last_assistant(convo)}
+        # 任务现场：步骤收尾记入事件日志（真实状态+真实产出，不采信员工自述）
+        session.step_end(t.index, t.title, sink[t.id]["summary"],
+                         files_out, failed)
         yield {"type": "task_done", "task_id": t.id, "index": t.index,
                "total": batch_total, "status": "error" if failed else "done",
                "title": t.title, "summary": sink[t.id]["summary"],
@@ -980,9 +999,17 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                    "summary": f"Leader 第 {round_no} 批"
                               + (f"：{rationale}" if rationale else "")}
             # ---- 步骤③：员工执行（并行/串行） ----
-            if parallel_on and len(batch) > 1:
+            # 批内依赖守卫（程序级）：leader 只被提示词约束「仅相互独立的才同批」，
+            # rerun13 实证它会违规（l4 写 JSON / l5 读 JSON 同批并行）。现在
+            # 程序亲自侦测路径共享与依赖措辞，命中就整批降级串行。
+            dep_reason = batch_dependency_reason(batch)
+            if parallel_on and len(batch) > 1 and not dep_reason:
                 yield from run_wave(batch)
             else:
+                if dep_reason:
+                    yield {"type": "leader_round", "round": round_no,
+                           "phase": "plan",
+                           "note": f"检测到批内依赖，本批改为串行执行：{dep_reason}"}
                 for t in batch:
                     for ev in run_one(t, agent, len(batch)):
                         yield ev
@@ -1038,6 +1065,9 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
             # 跨批次「工作汇报」：把本批结果累积进 ctx，后续轮次规划/评估复用，
             # leader 不再从零重派（见 leader.LeaderContext.add_progress）。
             ctx.add_progress(round_no, results)
+            session.append("leader_eval", round=round_no,
+                           done=bool(parsed.get("done")),
+                           reason=(parsed.get("reasons") or [""])[0][:120])
             if parsed.get("done"):
                 done_answer = parsed.get("answer") or ""
                 break
@@ -1200,6 +1230,7 @@ def run_task(
     auto_approve: bool | None = None,
     file_log: list | None = None,
     multi_path: bool = False,
+    task_id: str = "",
 ) -> Iterator[dict[str, Any]]:
     """执行一次用户请求。store 提供当前启用的模型池。
 
@@ -1312,7 +1343,7 @@ def run_task(
             yield from run_leader(
                 agent, store, entries, history, message, disp,
                 stop_check=stop_check, auto_approve=auto_approve, file_log=file_log,
-                read_cache=read_cache, outdir=outdir,
+                read_cache=read_cache, outdir=outdir, task_id=task_id,
             )
             return
 
