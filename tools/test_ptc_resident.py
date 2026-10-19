@@ -162,12 +162,62 @@ def test_ops_batch_not_deduped() -> None:
     check("两次都真实运行了脚本", "RUN_A" in outs[0] and "RUN_A" in outs[1], str(outs))
 
 
+def test_ops_batch_contract_gate() -> None:
+    """A 方案回归：契约闸门下沉到 PTC 脚本边界。
+
+    PTC 常驻下模型用 ops_batch（带 tool_calls）反复写-失败死循环，永不到
+    「无 tool_calls 收工」，使 800 行的收工拦截整轮碰不到（rerun20：22 轮
+    死循环、0 次闸门）。这里验证：脚本内调了 write_file 但交付物未落盘
+    （引用核查拒绝），loop 应在 ops_batch 执行后立即触发 contract_gate 回灌，
+    而非等收工——且同一份交付物只触发一次，round2 修正引用后写入则不再触发。
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="af_ptc_cg_"))
+    deliverable = "deliverable.md"
+    # 上轮遗留的交付物（mtime 早于本轮 _t0），模拟 stale 场景
+    (tmp / deliverable).write_text("# old\n", encoding="utf-8")
+
+    script1 = (
+        "call('write_file', path='" + deliverable + "', content='# 报告\\n"
+        "- 见 `external/learn-claude-code/s01_agent_loop/README.md:28`\\n"
+        "- 另见 `nonexistent/path_xyz.md:99`')\n"
+    )
+    script2 = (
+        "call('write_file', path='" + deliverable + "', content='# 报告\\n"
+        "这是修正后的报告，不含任何反引号引用。')\n"
+    )
+    ag = _mk_agent(tmp, [
+        _Res(tool_calls=[_TC("ops_batch", {"script": script1})]),
+        _Res(tool_calls=[_TC("ops_batch", {"script": script2})]),
+        _Res(content="交付物已落盘。"),
+    ], ptc=True)
+    ag.full_access = True   # 让脚本内写工具能执行并被记录到 _ops_write_report
+
+    evs = list(ag.run([], "产出交付物 deliverable.md", auto_approve=True,
+                      contract=[deliverable]))
+    gates = [e for e in evs if e.get("type") == "contract_gate"]
+    vias = [g.get("via") for g in gates]
+    check("PTC 路径下脚本写失败触发契约闸门",
+          any(g.get("via") == "ops_batch" for g in gates), str(vias))
+    check("契约闸门仅触发一次（staleness 不重复触发）",
+          len(gates) == 1, f"gates={len(gates)} vias={vias}")
+    check("contract_gate 事件带 missing 字段且含交付物",
+          bool(gates) and deliverable in (gates[0].get("missing") or []),
+          str(gates[0].get("missing") if gates else None))
+    body = (tmp / deliverable).read_text(encoding="utf-8")
+    check("交付物最终真实落盘（round2 修正引用后）",
+          "修正后的报告" in body, body[:80])
+    check("round2 后终态正常到达（最终答复出现，闸门未阻塞）",
+          any(e.get("type") == "assistant" and "交付物已落盘" in (e.get("content") or "")
+              for e in evs), "未找到最终答复")
+
+
 def main() -> None:
     test_selector_surface()
     test_name_normalization()
     test_malformed_helper()
     test_top_level_guard()
     test_ops_batch_not_deduped()
+    test_ops_batch_contract_gate()
     print("\nALL PASS")
 
 

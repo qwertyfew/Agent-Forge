@@ -672,6 +672,15 @@ class Agent:
         # 契约拦截计数（0-2）：同一回合最多拦两次，拦满放行交给收尾闸门兜底，
         # 防「模型就是不写」的死循环。
         contract_blocks = 0
+        # 契约对账辅助：路径是否「未交付」——不存在，或自本轮开始从未更新。
+        def _owe(p: str) -> bool:
+            f = Path(self.cfg.workspace_root) / p
+            try:
+                if not f.exists():
+                    return True
+                return f.stat().st_mtime <= self._t0
+            except OSError:
+                return True
         # 任务内只读调用缓存：同样的（工具+参数）第二次出现时直接回放上次结果。
         # 小模型忘了自己查过什么时会用一模一样的参数再查一遍（实测 40+ 轮任务里
         # 同一个 search_code pattern 出现 3 次），重新执行毫无新信息，纯烧 GPU。
@@ -803,14 +812,6 @@ class Agent:
                 # 写回上下文让它继续。分析内容此刻都在上下文里，补写文件只是
                 # 落盘，成本远低于收尾闸门的整轮返工。
                 if (contract and contract_blocks < 2 and not stopped()):
-                    def _owe(p: str) -> bool:
-                        f = Path(self.cfg.workspace_root) / p
-                        try:
-                            if not f.exists():
-                                return True
-                            return f.stat().st_mtime <= self._t0   # 本轮从未更新
-                        except OSError:
-                            return True
                     missing = [p for p in contract if _owe(p)]
                     if missing:
                         contract_blocks += 1
@@ -1022,6 +1023,33 @@ class Agent:
                 yield {"type": "tool_result", "name": tc.name, "output": out,
                        **({"failed": True} if (failed or denied) else {})}
                 _push({"role": "tool", "content": out})
+
+                # A 方案：契约闸门下沉到 PTC 脚本边界。PTC 常驻下模型用 ops_batch
+                # （带 tool_calls）反复写-失败死循环，永不到「无 tool_calls 收工」，
+                # 使 800 行的收工拦截整轮碰不到（rerun20：22 轮死循环、0 次闸门）。
+                # 这里在脚本执行后立即对账：脚本确实调了写工具、但交付物仍 _owe，
+                # 就触发闸门回灌，终止无效重试。
+                if (tc.name == "ops_batch"
+                        and contract and contract_blocks < 2 and not stopped()):
+                    wr = getattr(self, "_ops_write_report", None)
+                    if wr:
+                        missing = [p for p in contract if _owe(p)]
+                        if missing:
+                            contract_blocks += 1
+                            _push({"role": "assistant", "content": result.content or ""})
+                            _push({"role": "user", "content": (
+                                "【停止拦截·交付物未落盘】你刚才在 ops_batch 脚本里调用了写文件工具，"
+                                "但程序核对磁盘发现任务书要求的交付物仍不存在或本轮从未更新：\n- "
+                                + "\n- ".join(missing)
+                                + "\n\n常见原因：引用核查拒绝了编造的文件路径/行号"
+                                  "（例如带「推测」「大概」字样、或你并未真正读到的行号）。"
+                                  "请在脚本里删除无法复现的引用、只保留你真正读到的文件与行号，"
+                                  "然后用 call('write_file', path=..., content=...) 重新写入同一份交付物。"
+                                  "写完后给出最终答复。若你确认该文件不该由本轮写出，"
+                                  "请在最终答复里明确说明原因，不要声称已写入。")})
+                            yield {"type": "contract_gate", "missing": missing,
+                                   "round": contract_blocks, "via": "ops_batch"}
+                            break
 
         yield {"type": "error", "message": f"已达到最大步数 {self.cfg.max_steps}，任务未收敛，请拆小任务或提高上限。"}
 

@@ -100,6 +100,7 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             file_log = getattr(agent, "_file_log", None)
             deadline = time.monotonic() + timeout
             stats: list[str] = []
+            writes_reports: list[dict] = []  # 脚本内写类工具调用结果，供 loop 做契约对账
             out = io.StringIO()
             box: dict = {"done": False}
 
@@ -134,6 +135,11 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                 # 只读工具不回显——它们通常内容很大，模型自己 print 即可，避免截断。
                 if spec.risk != SAFE:
                     _print(f"↳ {name}: {str(r)[:800]}")
+                    writes_reports.append({
+                        "tool": name,
+                        "path": str(args.get("path") or args.get("file_path") or ""),
+                        "result": str(r)[:300],
+                    })
                 return r
 
             class _Tools:
@@ -165,6 +171,12 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             summary = f"[ops_batch] {len(stats)} 次工具调用（" \
                       + "、".join(f"{n}×{stats.count(n)}" for n in dict.fromkeys(stats)) \
                       + "）\n" if stats else "[ops_batch] 0 次工具调用\n"
+            # 把脚本内写类工具调用结果挂到 agent，供 loop 在 ops_batch 执行后做
+            # 契约对账（PTC 路径下的收尾诚信核查，对应 T4 契约闸门下沉）。
+            try:
+                agent._ops_write_report = writes_reports
+            except Exception:
+                pass
             return _budget_cut(summary + out.getvalue().strip(), budget)
 
     return [_OpsBatch()]
