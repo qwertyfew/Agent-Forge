@@ -17,6 +17,7 @@ from .evidence import EvidenceLedger
 from .llm import OllamaClient, parse_text_tool_calls
 from .memory import MemoryStore
 from .llm import GenerationStopped
+from .tasksession import contract_paths
 from .permissions import (
     OUTSIDE_OK,
     OUTDIR_CTX,
@@ -493,6 +494,7 @@ class Agent:
         relay: list[dict] | None = None,
         read_cache=None,
         steer_check=None,
+        contract: list[str] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """跑一轮完整任务。
 
@@ -545,6 +547,24 @@ class Agent:
             allow.add(m.group(0).replace("\\", "/").lstrip("./"))
         self._write_allow = frozenset(allow)
 
+        # 交付物契约（做之前就锁定「做对」的标准，而不是做完再核实返工）：
+        # 任务书点名、开工时**还不存在**的带目录层文件 = 本轮必须写出来的交付。
+        # 已存在的路径是要读的材料，不该被要求重写。契约在两处生效：
+        #   ① 模型想收工时（不再调工具、准备给出最终答复）程序先对契约——缺了
+        #      就拦截（见下方 not result.tool_calls 分支），把缺口当观察塞回去
+        #      继续跑，同一回合内自愈；此时分析内容都在模型上下文里，写文件
+        #      只是落盘，不用重新分析。Claude Code Stop hook 同款思想。
+        #   ② 收尾闸门（orchestrator _verify_gate）仍是最后防线，但从「主要
+        #      修正机制」降级为「兜底」——此前 10 次核查拦截全发生在收尾，
+        #      每次都要整轮返工，rerun14 实测就是这个形态。
+        contract = list(contract) if contract is not None else None
+        if contract is None:
+            # 编排层没显式给（CLI 直跑 / 单发对话）：从任务文本兜底提取。
+            # 判定逻辑（写入动词 + 对冲词排除）在 tasksession 单一实现。
+            contract = (contract_paths(user_text or "", self.cfg.workspace_root)
+                        if getattr(self.cfg, "contract_gate", True) else [])
+        self._contract = contract
+
         # auto_route 已停用：旧的信号词粗分（classify）选的是不存在的语义 key，
         # 实际永远落到 fallback，属于死逻辑；真正的路由在编排层
         # （Router.capability 的后果定档 + 调度模型指派）。参数保留只为兼容旧调用。
@@ -592,6 +612,9 @@ class Agent:
 
         # 连续「空轮次」计数：见下面遇到空回复时的处理
         empty_turns = 0
+        # 契约拦截计数（0-2）：同一回合最多拦两次，拦满放行交给收尾闸门兜底，
+        # 防「模型就是不写」的死循环。
+        contract_blocks = 0
         # 任务内只读调用缓存：同样的（工具+参数）第二次出现时直接回放上次结果。
         # 小模型忘了自己查过什么时会用一模一样的参数再查一遍（实测 40+ 轮任务里
         # 同一个 search_code pattern 出现 3 次），重新执行毫无新信息，纯烧 GPU。
@@ -718,6 +741,30 @@ class Agent:
             )
 
             if not result.tool_calls:
+                # 停止拦截：模型宣布收工，程序先对交付物契约。缺了就不放行——
+                # 不 yield assistant（那张「已完成」的嘴替用户看不到），把缺口
+                # 写回上下文让它继续。分析内容此刻都在上下文里，补写文件只是
+                # 落盘，成本远低于收尾闸门的整轮返工。
+                if (contract and contract_blocks < 2 and not stopped()):
+                    missing = [
+                        p for p in contract
+                        if not (Path(self.cfg.workspace_root) / p).exists()
+                    ]
+                    if missing:
+                        contract_blocks += 1
+                        _push({"role": "assistant",
+                               "content": result.content or "", **replay_think})
+                        _push({"role": "user", "content": (
+                            "【停止拦截·交付物未落盘】你宣布任务完成，但程序核对磁盘发现"
+                            "任务书要求的交付物还不存在：\n- "
+                            + "\n- ".join(missing)
+                            + "\n\n你刚才的分析内容都在上文——现在直接调用 write_file "
+                              "把它们写成文件（内容不必重新分析，路径必须一字不差）。"
+                              "写完后给出最终答复。若你认为该文件不该由本轮写出，"
+                              "请在最终答复里明确说明原因。")})
+                        yield {"type": "contract_gate", "missing": missing,
+                               "round": contract_blocks}
+                        continue
                 assistant_msg = {"role": "assistant", "content": result.content, **replay_think}
                 _push(assistant_msg)
                 yield {"type": "assistant", "content": result.content, "history": history}

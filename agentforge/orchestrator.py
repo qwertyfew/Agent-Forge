@@ -42,7 +42,7 @@ from . import artifact
 from . import gaps
 from . import interact
 from . import honesty_guard
-from .tasksession import TaskSession, batch_dependency_reason
+from .tasksession import TaskSession, batch_dependency_reason, contract_block, contract_paths
 from . import runcontrol
 from . import steering
 from . import sources as sources_gate
@@ -766,10 +766,15 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
         interact.set_auto_answer(
             lambda q, o, _s=session: _s.auto_answer(q))
         try:
-            run_prompt = prompt + session.worker_brief()
+            # 契约两端之一：开工先亮验收标准（做之前就知道要写出什么文件）。
+            # 契约只从本步骤任务书（t.goal）提取——不掺任务现场里的缺失上游
+            # 产物（那是别人的欠账，不该拦本步骤收工）。
+            step_contract = contract_paths(t.goal, agent.cfg.workspace_root)
+            run_prompt = (prompt + session.worker_brief()
+                          + contract_block(t.goal, agent.cfg.workspace_root))
             for ev in ag.run(convo, run_prompt, auto_route=False, stop_check=stopped,
                              auto_approve=auto_approve, file_log=local_log,
-                             read_cache=read_cache,
+                             read_cache=read_cache, contract=step_contract,
                              steer_check=lambda: steering.take(t.id, t.id)):
                 k = ev.get("type")
                 if k in ("user", "route"):

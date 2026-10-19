@@ -43,6 +43,57 @@ def extract_paths(text: str) -> list[str]:
     return seen
 
 
+# 契约判定的句子级信号：路径所在分句出现**写入动词**才算「要求写出的交付」；
+# 出现**对冲词**（上游欠账 / 条件句）则不算——「读取上一步生成的 evals/x.json」
+# 是在等别人的产出，不该拦本步骤收工。
+_WRITE_V_RX = re.compile(r"写入|写出|写成|写到|保存到|保存至|存为|落盘|输出到|交付到|写(?![在进])")
+_HEDGE_RX = re.compile(r"上一步|上游|前面步骤|之前步骤|已有实现|如果|若|已存在|存在则|跳过|可选")
+
+
+def contract_paths(goal: str, root: str | Path) -> list[str]:
+    """任务书点名要求**写出**、开工时还不存在的交付文件。
+
+    已存在的路径是要读的材料，不做要求；只认工作区内的相对路径，
+    逃出工作区 / 解析失败的一律跳过（不猜、不误报）。
+    """
+    rootp = Path(root)
+    req: list[str] = []
+    # 分句（分号/句号/换行）后做句子级判定：写入动词 + 无对冲词才算交付要求，
+    # 避免「参考 agentforge/loop.py」这类读材料路径被误当成要写出的东西。
+    for sent in re.split(r"[；;\n。]+", goal or ""):
+        if _HEDGE_RX.search(sent):
+            continue
+        for p in extract_paths(sent):
+            if p in req:
+                continue
+            # 写入动词必须在路径**之前**——「写入 tmp/x.txt」是交付要求；
+            # 「参考 agentforge/loop.py 写总结」的动词在材料路径后面，不算。
+            head = sent[:sent.find(p)]
+            if not _WRITE_V_RX.search(head):
+                continue
+            try:
+                target = (rootp / p).resolve()
+                target.relative_to(rootp.resolve())
+            except (OSError, ValueError):
+                continue
+            if not target.exists():
+                req.append(p)
+    return req
+
+
+def contract_block(goal: str, root: str | Path) -> str:
+    """开工时亮出的「验收契约」块：做之前就知道做对的标准长什么样。
+    与 loop 的停止拦截构成契约两端——开头声明、收工程序对账。"""
+    req = contract_paths(goal, root)
+    if not req:
+        return ""
+    return (
+        "\n【验收契约】任务书要求本轮写出以下文件，收工前程序会核对磁盘，"
+        "缺了不放行（会拦截并要求当场补写）：\n- "
+        + "\n- ".join(req)
+        + "\n分析完成后先用 write_file 把内容落盘（路径一字不差），再给最终答复。\n")
+
+
 class TaskSession:
     """一个任务一份。append-only 日志 + 按需重建的 Surface。"""
 
