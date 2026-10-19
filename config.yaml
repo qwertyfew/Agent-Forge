@@ -175,7 +175,8 @@ compact:
 # 体量很小：max_chars=3500 字 ≈ 1~2K token，占 256K 窗口 <1%、64K 约 3%。
 warmup:
   enabled: true
-  max_chars: 3500        # 注入块字符上限（超出截断）
+  max_chars: 4200        # 注入块字符上限（超出截断）。加 external 仓库清单后
+                         # 3500 会把「与任务相关的文件」整段切掉，得不偿失。
   max_files: 12          # 关键词命中文件清单的条目数
 
 # Skill 系统（Agent Skills 开放标准，与 Claude Code / Codex / Cursor 通用）

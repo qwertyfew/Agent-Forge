@@ -104,6 +104,13 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             deadline = time.monotonic() + timeout
             stats: list[str] = []
             writes_reports: list[dict] = []  # 脚本内写类工具调用结果，供 loop 做契约对账
+            # 写类工具的系统回显单独收集，最后统一附在脚本输出**之后**。
+            # 为什么要压末尾：rerun23 实测模型在脚本末尾写了无条件的
+            # print("Write successful.")，而 write_file 实际被引用核查拒绝。
+            # 我们的 ⇳ 回显排在中间，模型只看到自己那句「成功」就宣布完成，
+            # 交付物根本没落盘，最终答复还连说 7 次「已写入」。
+            # 权威结论必须排在模型自述之后，并用【系统核对】标记区分。
+            echo_lines: list[str] = []
             out = io.StringIO()
             box: dict = {"done": False}
 
@@ -137,11 +144,15 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                 # 时模型也能看到，否则会以为没写而用相同脚本重试、被去重守卫拦死。
                 # 只读工具不回显——它们通常内容很大，模型自己 print 即可，避免截断。
                 if spec.risk != SAFE:
-                    _print(f"↳ {name}: {str(r)[:800]}")
+                    _txt = str(r)
+                    _ok = not (_txt.lstrip().startswith("[错误]")
+                               or "未写入" in _txt or _txt.lstrip().startswith("[已拒绝]"))
+                    echo_lines.append(f"↳ {name}: {_txt[:800]}")
                     writes_reports.append({
                         "tool": name,
                         "path": str(args.get("path") or args.get("file_path") or ""),
-                        "result": str(r)[:300],
+                        "result": _txt[:300],
+                        "ok": _ok,
                     })
                 return r
 
@@ -221,6 +232,21 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                 agent._ops_write_report = writes_reports
             except Exception:
                 pass
-            return _budget_cut(summary + out.getvalue().strip(), budget)
+            # 权威块：永远排在脚本自身输出之后，且明说是系统核对而非脚本 print。
+            tail = ""
+            if writes_reports:
+                fails = [w for w in writes_reports if not w.get("ok")]
+                tail = "\n\n【系统核对·写盘结果】以下由 harness 实测得出，不是脚本里的 print：\n"
+                for w in writes_reports:
+                    tail += (f"  - {w['tool']} → {w['path'] or '(未给 path)'}: "
+                             f"{'已写入磁盘' if w.get('ok') else '写入失败'}\n")
+                if fails:
+                    tail += ("  ⚠ 存在写盘失败。脚本里任何「已写入 / 成功 / write successful」"
+                             "都只是你自己的 print，不代表文件存在。请按上面的错误原因修正后重写。\n")
+                else:
+                    tail += "  ✓ 以上文件已确认存在于磁盘。\n"
+            if echo_lines:
+                tail += "\n" + "\n".join(echo_lines) + "\n"
+            return _budget_cut(summary + out.getvalue().strip() + tail, budget)
 
     return [_OpsBatch()]

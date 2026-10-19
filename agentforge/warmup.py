@@ -168,6 +168,44 @@ def _module_lines(root: Path, toks: set[str] | None = None, *,
     return lines
 
 
+def _external_lines(root: Path, toks: set[str], *, max_repos: int = 6,
+                    max_children: int = 26) -> list[str]:
+    """external/ 下被分析仓库的真实清单：仓库名 + 一级子目录。
+
+    动机（rerun23 实测）：`external/learn-claude-code` 的子目录是
+    `s01_agent_loop`、`s08_context_compact` 这种下划线风格，模型顺着风格把
+    仓库名也写成 `learn_claude_code`，被引用核查连拒 4 次，每次都要整篇重写。
+    目录结构块只写到 `external/` 一层不展开，等于逼模型猜仓库名拼写。
+    这里把真实拼写摊开给它抄；任务没提外部仓库时只列仓库名，省预算。
+    """
+    ext = root / "external"
+    if not ext.is_dir():
+        return []
+    toks = toks or set()
+    deep = any(t in toks for t in ("external", "外部", "仓库", "repo", "逆向", "第三方"))
+    try:
+        repos = sorted(p for p in ext.iterdir()
+                       if p.is_dir() and not p.name.startswith("."))
+    except OSError:
+        return []
+    lines: list[str] = []
+    for repo in repos[:max_repos]:
+        if not deep:
+            lines.append(f"  external/{repo.name}/")
+            continue
+        try:
+            kids = sorted(q.name for q in repo.iterdir()
+                          if q.is_dir() and not q.name.startswith("."))
+        except OSError:
+            kids = []
+        shown = " ".join(kids[:max_children]) if kids else "(无子目录)"
+        tail = f" …(共 {len(kids)} 个目录)" if len(kids) > max_children else ""
+        lines.append(f"  external/{repo.name}/: {shown}{tail}")
+    if len(repos) > max_repos:
+        lines.append(f"  …external/ 下另有 {len(repos) - max_repos} 个仓库")
+    return lines
+
+
 def _readme_digest(root: Path, limit: int = 600) -> str:
     """README 开头若干字（按行边界截断），去掉图片与链接尾巴。"""
     for name in ("README.md", "README.rst", "README.txt", "README"):
@@ -213,6 +251,17 @@ def build_block(cfg, task_text: str) -> tuple[str, dict]:
     if mods:
         parts.append("【源码模块清单】（判断「某能力在不在」前先看这里，别猜路径）\n"
                      + "\n".join(mods))
+
+    # 被分析的外部仓库清单：只列仓库名 + 一级子目录。
+    # 为什么必须显式给：external/learn-claude-code 的子目录是 s01_agent_loop、
+    # s08_context_compact 这种下划线风格，模型会把仓库名也套成 learn_claude_code
+    # （rerun23 被引用核查连拒 4 次都是这个错，每次都要重写整篇交付物）。
+    # 目录结构块只写到 external/ 不展开，等于让模型凭印象拼仓库名。
+    exts = _external_lines(root, _task_tokens(task_text))
+    if exts:
+        stats["external"] = len(exts)
+        parts.append("【外部仓库清单】（这些是真实目录名，引用时必须原样照抄拼写）\n"
+                     + "\n".join(exts))
 
     digest = _readme_digest(root)
     if digest:

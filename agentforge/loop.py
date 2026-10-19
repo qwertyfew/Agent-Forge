@@ -615,12 +615,18 @@ class Agent:
         #   ② 收尾闸门（orchestrator _verify_gate）仍是最后防线，但从「主要
         #      修正机制」降级为「兜底」——此前 10 次核查拦截全发生在收尾，
         #      每次都要整轮返工，rerun14 实测就是这个形态。
-        contract = list(contract) if contract is not None else None
-        if contract is None:
-            # 编排层没显式给（CLI 直跑 / 单发对话）：从任务文本兜底提取。
-            # 判定逻辑（写入动词 + 对冲词排除）在 tasksession 单一实现。
+        # 空列表也必须回落兜底：orchestrator 传的是 contract_paths(t.goal)，而
+        # 步骤级任务书（skill/子上下文改写过的 goal）常常不含交付物路径，于是
+        # 传进来的是 []。旧写法 `if contract is None` 把 [] 当成「编排层已给」，
+        # 兜底提取被跳过，契约恒为空 —— rerun23 因此整套契约闸门空转：
+        # 交付物没落盘、模型谎报 7 次「已写入」，contract_gate 事件 0 次。
+        if not contract:
+            # 编排层没显式给（CLI 直跑 / 单发对话 / 空 step_contract）：从任务文本
+            # 兜底提取。判定逻辑（写入动词 + 对冲词排除）在 tasksession 单一实现。
             contract = (contract_paths(user_text or "", self.cfg.workspace_root)
                         if getattr(self.cfg, "contract_gate", True) else [])
+        else:
+            contract = list(contract)
         self._contract = contract
 
         # auto_route 已停用：旧的信号词粗分（classify）选的是不存在的语义 key，
