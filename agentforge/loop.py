@@ -1054,6 +1054,19 @@ class Agent:
                 # 使 800 行的收工拦截整轮碰不到（rerun20：22 轮死循环、0 次闸门）。
                 # 这里在脚本执行后立即对账：脚本确实调了写工具、但交付物仍 _owe，
                 # 就触发闸门回灌，终止无效重试。
+                if tc.name == "ops_batch":
+                    wr = getattr(self, "_ops_write_report", None)
+                    # 诊断：脚本确实调了写工具、闸门却没机会出手时，把原因记进
+                    # 事件流。rerun24 出现过「3 次写盘失败 + 权威块正确 + 闸门 0 次」
+                    # 的静默，靠这个字段能一次定位是契约空、还是 stopped() 已触发。
+                    if wr and not (contract and contract_blocks < 2 and not stopped()):
+                        yield {"type": "gate_skip",
+                               "reason": ("contract_empty" if not contract
+                                          else "gate_exhausted" if contract_blocks >= 2
+                                          else "stopped"),
+                               "contract": list(contract or []),
+                               "self_contract": list(getattr(self, "_contract", None) or []),
+                               "writes": len(wr)}
                 if (tc.name == "ops_batch"
                         and contract and contract_blocks < 2 and not stopped()):
                     wr = getattr(self, "_ops_write_report", None)
