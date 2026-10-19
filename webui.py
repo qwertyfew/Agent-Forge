@@ -1708,10 +1708,16 @@ class _Handler(BaseHTTPRequestHandler):
                                auto_approve=auto_approve, file_log=file_log,
                                multi_path=multi_path):
                 kind = ev["type"]
+                # 员工流的三个特征事件带 task_id 透传：前端靠它把员工过程
+                # （思考/工具/正文）收进折叠的进度卡，主对话流只留 leader 骨架。
+                # 普通聊天（无编排）没有 task_id，行为不变。
+                if kind in ("delta", "thinking", "tool_start", "tool_result",
+                            "step") and ev.get("task_id"):
+                    ev = {**ev, "task_id": ev["task_id"]}
                 if kind == "delta":
-                    emit("delta", {"text": ev["text"]})
+                    emit("delta", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "thinking":
-                    emit("thinking", {"text": ev["text"]})
+                    emit("thinking", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "step":
                     round_now = int(ev.get("step") or 0)
                     self.tasks.touch(task_id, model=ev.get("model") or "",
@@ -1724,12 +1730,16 @@ class _Handler(BaseHTTPRequestHandler):
                     # 要用它（见 artifact.may_have_written）。绝不靠「模型说它写了」。
                     touched.append(ev["name"])
                     self.tasks.touch(task_id, tool=True, progress=progress_text())
-                    emit("tool_start", {"name": ev["name"], "args": ev["args"]})
+                    emit("tool_start", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "tool_result":
-                    payload = {"name": ev["name"], "output": ev["output"]}
+                    payload = {k: v for k, v in ev.items() if k != "type"}
                     if ev.get("failed"):
                         payload["failed"] = True
                     emit("tool_result", payload)
+                elif kind == "progress":
+                    # 员工的阶段成果汇报（产出新文件时随流上报）：此前没有分支
+                    # 被静默丢弃——前端进度卡靠它显示「做到哪了」
+                    emit("progress", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "notify":
                     # 系统侧提示（确定性架构动作的结果，如「已存入记忆」）：
                     # 前端渲染成绿色 toast，reload 指明要刷新哪个面板

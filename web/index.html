@@ -732,6 +732,30 @@
   .pstep.error .pidx{background:var(--err);color:#fff}
   .pstep.error .ptitle{color:var(--err)}
 
+  /* 员工进度卡：leader 规划模式下，员工的思考/工具/正文全部收进这张可展开的卡，
+     主对话流只留头行实时摘要——用户看「大致进度」，细节点开才有。
+     收起是默认态也是收尾态：完成时自动收回，过程不刷屏。 */
+  .wcard{margin:6px 0;border:1px solid var(--line);border-radius:12px;background:var(--panel);
+    box-shadow:var(--shadow);overflow:hidden}
+  .wcard-head{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;
+    font-size:12.5px;user-select:none}
+  .wcard-head:hover{background:var(--hover)}
+  .wcard-ico{display:flex;flex:none;color:var(--ink2)}
+  .wcard-ico.spin{color:var(--accent)}
+  .wcard.done .wcard-ico{color:var(--ok)}
+  .wcard.fail .wcard-ico{color:var(--err)}
+  .wcard-title{font-weight:550;color:var(--ink);min-width:0;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .wcard-live{margin-left:auto;font-size:11.5px;color:var(--ink3);min-width:0;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .wcard-tog{flex:none;font-size:10.5px;color:var(--ink3);border:1px solid var(--line);
+    border-radius:999px;padding:0 8px;line-height:1.7;background:var(--card)}
+  .wcard-body{border-top:1px solid var(--line);padding:8px 12px;display:flex;
+    flex-direction:column;gap:6px;max-height:480px;overflow:auto;background:var(--card)}
+  .wcard-body.hide{display:none}
+  .wcard-body .msg-ai{max-width:100%}
+  .wcard-body .think-plain,.wcard-body .toolrun{font-size:12px}
+
   /* 并行任务：互不相关的任务各占一列，流式输出互不串行。
      列本身不加框——泳道只是分栏布局，不是卡片，框起来喧宾夺主。
      **没有列头**：任务是什么、进行到哪一步、交给了谁，全由计划卡（.plan）承担，
@@ -4289,7 +4313,7 @@ function resetRenderState(){
   // shimmerEl 非空会让 showShimmer 永远早退——「思考中」再也不出现。
   thinkBox = null; shimmerEl = null;
   replyStartAt = 0; replySettled = true;
-  dropLanes();
+  resetLiveRender();
 }
 
 /* 界面上的「正在执行」从台账来：本页发起的、别的标签页发起的、脚本发起的，
@@ -5151,6 +5175,69 @@ function laneOf(taskId){ return (lanes && taskId) ? (lanes[taskId] || null) : nu
 function dropLanes(){
   if(lanes){ for(const k in lanes) closeLaneThinking(lanes[k]); }
   lanes = null;
+}
+
+/* ============ 员工进度卡（leader 规划模式的过程折叠） ============
+   用户输入的是一句话，要看的是「大致进度」：leader 的计划卡是骨架，员工过程
+   （思考 / 工具 / 正文）全部收进这张可展开的卡，主对话流头行只留一行实时摘要。
+   路由判据是事件带 task_id 且本任务有计划卡——普通聊天（无编排）没有 task_id，
+   一切照旧。员工的「任务已完成。」这类收尾话术从此只活在卡片内部，不再和
+   整个任务的终态混淆。 */
+let workerCards = {};   // task_id -> {wrap, ico, live, body, tools, cur, tool, think}
+let pendingFinal = '';  // history 事件里抓到的 leader 最终答复，complete 时渲染
+/* 每条新回复开跑前的实时渲染复位：上一轮的计划卡/进度卡引用全部作废。
+   不复位的话，上一轮的 planSteps 会把这轮普通聊天误判成「计划模式」
+   （complete 时把已直出的正文再渲染一遍——正文重复的来源）。 */
+function resetLiveRender(){
+  lanes = null;
+  workerCards = {}; pendingFinal = '';
+  planEl = null; planSteps = [];
+}
+function workerTitleOf(taskId){
+  const s = planSteps.find(x=>x.id === taskId);
+  return (s && s.title) ? s.title : '';
+}
+function workerCard(taskId, title){
+  let c = taskId && workerCards[taskId];
+  if(c) return c;
+  closeThinking(); hideShimmer();
+  takeAIHead(log);               // 进度卡可能是本轮第一个元素，头像行在最顶
+  const wrap = el('div','wcard');
+  const head = el('div','wcard-head');
+  const ico = el('span','wcard-ico spin');
+  ico.innerHTML = SVG.spinner;
+  head.appendChild(ico);
+  head.appendChild(el('span','wcard-title', title || workerTitleOf(taskId) || '执行中'));
+  const live = el('span','wcard-live','开始执行…');
+  head.appendChild(live);
+  const tog = el('span','wcard-tog','详情');
+  head.appendChild(tog);
+  const body = el('div','wcard-body hide');
+  wrap.appendChild(head); wrap.appendChild(body);
+  head.addEventListener('click', ()=>{
+    body.classList.toggle('hide');
+    tog.textContent = body.classList.contains('hide') ? '详情' : '收起';
+  });
+  log.appendChild(wrap); scrollBottom();
+  c = { wrap, ico, live, body, tools:0, cur:null, tool:null, think:null };
+  if(taskId) workerCards[taskId] = c;
+  return c;
+}
+function workerNote(taskId, text){
+  const c = taskId && workerCards[taskId];
+  if(c && text) c.live.textContent = text;
+}
+/* 卡片收尾：图标定格、摘要行写结局、过程自动收起。
+   sealText 优先用 leader 给的步骤结论，缺省按状态给一句话。 */
+function workerSeal(taskId, ok, sealText){
+  const c = taskId && workerCards[taskId];
+  if(!c) return;
+  c.ico.innerHTML = ok ? SVG.okico : SVG.errico;
+  c.ico.classList.remove('spin');
+  c.live.textContent = sealText || (ok ? '已完成' : '执行失败');
+  c.wrap.classList.toggle('fail', !ok);
+  c.wrap.classList.add('done');
+  c.body.classList.add('hide');
 }
 
 /* ============ 思维链块：在流时展开，收束后只剩一行 ============
@@ -6283,6 +6370,11 @@ function handleTaskEvent(ev, data){
       // 两处都写就是同一句话说两遍（列头也不再有地方可写）。
       lastAssign = data;
       if(data.multi) markPlanStep(data.index, 'running', data.task_id);
+      // 计划模式下指派即开卡：员工还没吐第一个字，「执行中」就有着落。
+      // 标题优先用 assign 自带的（plan 子任务可能没回传 id，对不上号）。
+      if(data.task_id && planSteps.length && !laneOf(data.task_id)){
+        workerCard(data.task_id, data.title);
+      }
       // 决策模型点的执行者被系统换掉时明确说一句——否则用户会以为小模型在硬扛
       if(data.reassigned && data.reason && !data.multi){
         addPillNote(`调度指派：<b>${esc(data.model_name||'')}</b> —— ${esc(data.reason)}`);
@@ -6296,11 +6388,12 @@ function handleTaskEvent(ev, data){
       renderRunBar();
     }
     else if(ev === 'subtask'){
-      // 并行分栏模式下，各任务在自己的列里跑，不再需要「第 x/n 步」的横向分隔
-      if(!lanes) addDivider(`第 ${data.index}/${data.total} 步`);
+      // 并行分栏模式下，各任务在自己的列里跑；计划卡模式下进度由计划卡+进度卡承担，
+      // 「第 x/n 步」分隔条只在无计划的旧路径里才有信息量
+      if(!lanes && !planSteps.length) addDivider(`第 ${data.index}/${data.total} 步`);
       // 走到第 2 步起，思考行上那句「在干什么」跟着推进：「执行第 2/3 步：再读文件」。
       // 标题取自计划卡（已由后端压成短标题），所以这里不必再截一次。
-      if(data.index > 1){
+      if(data.index > 1 && !planSteps.length){
         const st = planSteps.find(x=>x.id === (data.task_id || '')) || planSteps[data.index - 1];
         noteAction(`执行第 ${data.index}/${data.total} 步${st && st.title ? '：' + st.title : ''}`);
       }
@@ -6324,6 +6417,16 @@ function handleTaskEvent(ev, data){
       if(data.index || data.task_id) markPlanStep(data.index, data.status === 'error' ? 'error' : 'done', data.task_id);
       const ln = laneOf(data.task_id);
       if(ln && ln.think) ln.think = null;
+      // 进度卡同步收口：图标定格 + 摘要行写结局 + 过程自动收起。
+      // 员工回复里的「任务已完成。」只活在卡片内部——主对话流的终态由
+      // leader 的最终答复（complete 时渲染）承担，两者不再混淆。
+      const wc = data.task_id && workerCards[data.task_id];
+      if(wc){
+        closeLaneThinking(wc, '整理结论并作答');
+        workerSeal(data.task_id, data.status !== 'error',
+          data.status === 'error' ? '执行失败'
+            : `已完成 · ${wc.tools} 次工具调用`);
+      }
       if(liveTask && data.summary) liveTask.progress = String(data.summary).slice(0, 60);
       renderRunBar();
     }
@@ -6410,7 +6513,14 @@ function handleTaskEvent(ev, data){
       unsettleReply();                          // 又开始动了：撤回可能已挂上的「收尾」状态
       curToolGroup = null;                      // 新一轮思考开始：之前的工具组封组
       const ln = laneOf(data.task_id);
+      const wc = (!ln && data.task_id && planSteps.length) ? workerCard(data.task_id) : null;
       if(ln){ addLaneThinking(ln).push(data.text); }
+      else if(wc){
+        // 计划模式：员工思考收进进度卡，头行只报「分析中」
+        if(!wc.think) wc.think = makeThinkBox(wc.body);
+        wc.think.push(data.text);
+        workerNote(data.task_id, '分析中…');
+      }
       else{
         const t = addThinking();
         t.text += data.text;
@@ -6422,6 +6532,7 @@ function handleTaskEvent(ev, data){
       hideShimmer();
       unsettleReply();                          // 还在产出正文：这轮没结束
       const ln = laneOf(data.task_id);
+      const wc = (!ln && data.task_id && planSteps.length) ? workerCard(data.task_id) : null;
       if(ln){
         // 并行分栏：这一路输出只进自己那一列，和另一路互不干扰
         closeLaneThinking(ln, '整理结论并作答');
@@ -6429,6 +6540,14 @@ function handleTaskEvent(ev, data){
         ln.cur.text += data.text;
         ln.cur.body.innerHTML = md(ln.cur.text);
         lastSeg = ln.cur;                        // 泳道内容也算本轮回复的正文段
+      }else if(wc){
+        // 计划模式：员工正文流进进度卡（默认收起），主对话流不留全文——
+        // 「任务已完成。」这类员工收尾话术从此只在卡片里，不会冒充整任务终态
+        closeLaneThinking(wc, '整理结论并作答');
+        if(!wc.cur) wc.cur = addAssistant(wc.body);
+        wc.cur.text += data.text;
+        wc.cur.body.innerHTML = md(wc.cur.text);
+        workerNote(data.task_id, '整理结论并作答…');
       }else{
         // 开始动笔：本轮若已有思考行（在流的块 / 已收起的那一行），把这句话收敛成
         // 「整理结论并作答」；本轮压根没有思考行（纯聊天）就不硬造一行。
@@ -6448,6 +6567,7 @@ function handleTaskEvent(ev, data){
         addAskCard((data.args && typeof data.args === 'object') ? data.args : {});
       }
       const ln = laneOf(data.task_id);
+      const wc = (!ln && data.task_id && planSteps.length) ? workerCard(data.task_id) : null;
       if(ln){
         const box = ln.think;
         closeLaneThinking(ln, '决定调用工具 ' + data.name);
@@ -6456,6 +6576,13 @@ function handleTaskEvent(ev, data){
         if(box && box.text.trim().length < 20) box.d.remove();
         ln.cur = null;
         ln.tool = addTool(data.name, data.args, ln.body);
+      }else if(wc){
+        // 计划模式：员工工具调用收进进度卡，头行滚动报「正在什么工具」
+        closeLaneThinking(wc, '决定调用工具 ' + data.name);
+        wc.cur = null;
+        wc.tool = addTool(data.name, data.args, wc.body);
+        wc.tools++;
+        workerNote(data.task_id, `已调用 ${wc.tools} 次工具 · 正在 ${data.name}…`);
       }else{
         // 思考刚落到「要动手」这一步：思考行上写清调的是哪个工具。
         // 工具名来自事件本身，不是模型的复述——所以永远不会说错工具。
@@ -6467,7 +6594,8 @@ function handleTaskEvent(ev, data){
     }
     else if(ev === 'tool_result'){
       const ln = laneOf(data.task_id);
-      const card = ln ? ln.tool : curTool;
+      const wc = (!ln && data.task_id && planSteps.length) ? workerCards[data.task_id] : null;
+      const card = ln ? ln.tool : (wc ? wc.tool : curTool);
       if(card){
         card.body.textContent = data.output;
         const kind = card.t.dataset.kind || 'tool';
@@ -6489,7 +6617,18 @@ function handleTaskEvent(ev, data){
           if(itemIco){ itemIco.innerHTML = SVG.rectcheck; itemIco.classList.remove('spin'); }
         }
         toolHeadSummary(card.t);
-        if(ln) ln.tool = null; else curTool = null;
+        if(ln) ln.tool = null; else if(wc){ wc.tool = null; workerNote(data.task_id, `已调用 ${wc.tools} 次工具`); } else curTool = null;
+      }
+    }
+    else if(ev === 'progress'){
+      // 员工阶段成果（产出新文件时的中途汇报）：有进度卡的写在卡上，
+      // 没有的（旧路径）退回胶囊播报
+      const msg = data.note
+        || ('阶段成果：' + (data.files || []).slice(0, 3).map(esc).join('、'));
+      if(data.task_id && workerCards[data.task_id]){
+        workerNote(data.task_id, msg);
+      }else{
+        addPillNote(esc(msg));
       }
     }
     else if(ev === 'stats'){
@@ -6560,6 +6699,16 @@ function handleTaskEvent(ev, data){
       // 注意：这里不挂复制/重新回答工具条——history 在多步任务的步骤边界也会触发，
       // 挂了就会出现「回答还没完，工具条先出来了」。工具条只在 done/stopped/回看时挂。
       history = data.messages; updateCompactBtn(); updateContextMeter(history, threshold);
+      // 抓 leader 最终答复：编排器的总结以整段 assistant 落在 history 末尾
+      //（从尾部往前找到第一条 user 消息即停），complete 时作为主对话流
+      // 唯一的正文渲染——员工正文已折叠进进度卡，两者不会再混。
+      const msgs = data.messages || [];
+      for(let i = msgs.length - 1; i >= 0; i--){
+        const m = msgs[i];
+        if(!m || !m.role) continue;
+        if(m.role === 'user') break;
+        if(m.role === 'assistant' && (m.content || '').trim()){ pendingFinal = m.content; break; }
+      }
     }
     else if(ev === 'subtask_error' || (ev === 'error' && data.task_id)){
       // 子任务级失败：只让那一路失败，**整条回复还在继续**——绝不能走 settleReply。
@@ -6569,6 +6718,8 @@ function handleTaskEvent(ev, data){
       // 「完整回答中途冒出复制按钮」的 bug。子任务的失败不该由整条回复买单。
       const ln = laneOf(data.task_id);
       if(ln && ln.think) ln.think = null;      // 这一路不再有下文，思考块封口
+      // 进度卡同步标红封口
+      if(data.task_id && workerCards[data.task_id]) workerSeal(data.task_id, false, '执行失败');
       // 计划卡里那一步立刻标红（task_done 随后会再确认一次，幂等）
       if(data.task_id || data.index) markPlanStep(data.index, 'error', data.task_id);
       addPillNote(`子任务失败：${esc(data.message || '')}（其它任务不受影响，继续执行）`, true);
@@ -6605,6 +6756,21 @@ function handleTaskEvent(ev, data){
       // 提前挂会出现「回答没完、工具条先出来」。落定口径只有 settleReply 一处。
       if(data.multi) for(let i=1;i<=data.steps;i++) markPlanStep(i,'done');
       if(liveTask) liveTask.stepIndex = data.steps, liveTask.stepTotal = data.steps;
+      // 计划模式：渲染 leader 最终答复——这是主对话流唯一的正文，也是「整个任务
+      // 完成」的权威信号（员工的「任务已完成。」只是卡片内部的一句话）。
+      // 双重闸门：planSteps 只说明「见过计划卡」，还要本轮真的有进度卡
+      //（workerCards 非空）才折叠过员工正文；旧路径正文已直出主对话流，
+      // 这里再渲染就是重复。普通聊天两者皆无，不重复渲染。
+      if(planSteps.length && Object.keys(workerCards).length
+         && pendingFinal && pendingFinal.trim()){
+        closeThinking(); hideShimmer();
+        addDivider('结论');
+        if(!cur) cur = addAssistant();
+        cur.text = pendingFinal;
+        cur.body.innerHTML = md(cur.text);
+        lastSeg = cur;                    // done 时复制/重新回答工具条挂在这段上
+        pendingFinal = '';
+      }
       cur = null;
       // 注意：不在这里清空 lastSeg —— 留着给 settleReply（done 时）挂整段回复的工具条
     }
@@ -6644,7 +6810,7 @@ async function streamChat(text, hist, extra){
   sentMsgs = (hist || []).concat(text ? [{ role: 'user', content: text }] : []);
   sentTokens = ctxTokens(sentMsgs);
   statsSeen = 0;
-  lanes = null;   // 清掉上一轮的并行分栏（异常中断时可能残留）
+  resetLiveRender();   // 上一轮的计划卡/进度卡/泳道引用全部作废
   try{
     const res = await fetch('/api/chat',{
       method:'POST', headers:{'Content-Type':'application/json'},

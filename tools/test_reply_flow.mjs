@@ -447,10 +447,17 @@ console.log('');
     thinkSum(thinkLines()[0]) === '将任务拆解为 2 步，先做：读一下现有目录结构',
     JSON.stringify(thinkSum(thinkLines()[0])));
 
+  af.handleTaskEvent('assign', { index: 2, total: 2, task_id: 't2', title: '写 README',
+    model_name: 'gemma4:12b', multi: true });
   af.handleTaskEvent('subtask', { index: 2, total: 2, text: '写 README', task_id: 't2' });
-  check('L6 走到第 2 步 → 同一行就地改写（不另起一行）',
-    thinkLines().length === 1 && thinkSum(thinkLines()[0]) === '执行第 2/2 步：写 README',
+  check('L6 走到第 2 步 → 主对话流那一行不再改写（进度由计划卡+员工进度卡承担）',
+    thinkLines().length === 1
+      && thinkSum(thinkLines()[0]) === '将任务拆解为 2 步，先做：读一下现有目录结构',
     JSON.stringify(thinkSum(thinkLines()[0])));
+  check('L6b 第 2 步有自己的进度卡，标题取自 assign',
+    doc.querySelectorAll('.wcard').length === 1
+      && doc.querySelector('.wcard-title').textContent === '写 README',
+    `卡数=${doc.querySelectorAll('.wcard').length}`);
 
   af.handleTaskEvent('delta', { text: '正文来了' });
   check('L7 开始动笔 → 那一行收敛成「整理结论并作答」',
