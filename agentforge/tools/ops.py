@@ -64,17 +64,20 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             "程序化工具调用（PTC）：提交一段 Python 脚本，在本地沙箱里批量组合调用其他工具，"
             "只有 print 出来的最终结果返回给模型。适合：批量读文件并提炼、多轮检索汇总、"
             "跨文件比对——替代「逐个工具调用」的多轮往返，大幅节省 token。"
-            "脚本环境：tools.call(\"read_file\", path=\"a.py\") 返回工具结果字符串；"
+            "脚本环境：call(\"read_file\", path=\"a.py\") 返回工具结果字符串；"
+            "（也可写作 tools.call(...)，两者等价）"
             "print(text) 是唯一回传通道（不 print 就拿不到）；可用循环/条件/正则等全部 Python。"
+            "切勿在脚本里写 `import tools`——这会覆盖内置的 call 对象，导致调用失败。"
             "只读工具自动放行；写/命令类工具仅完全访问权限的运行可用；"
             "不能在脚本里再调 ops_batch / ask_user。"
-            "【PTC 常驻】这是你调用任何工具的唯一通道：脚本内 tools.call 可调用全部已注册工具，"
-            "名字见系统提示里的「可编入脚本的工具」清单；不知道某工具的参数就先 find_tools 查。")
+            "【PTC 常驻】这是你调用任何工具的唯一通道：脚本内 call(\"工具名\", **参数) 可调用全部已注册工具，"
+            "名字见系统提示里的「可编入脚本的工具」清单；不知道某工具的参数就先 find_tools 查。"
+            "（等价写法 tools.call(\"工具名\", ...) 也可用，但别 import tools。）")
         parameters = {
             "type": "object",
             "properties": {
                 "script": {"type": "string",
-                           "description": "Python 脚本。tools.call(工具名, **参数) 调工具，print() 输出结果"},
+                           "description": "Python 脚本。call(工具名, **参数) 调工具（或 tools.call(...)），print() 输出结果"},
                 "budget": {"type": "integer",
                            "description": f"返回结果最大字符数，默认 {_DEFAULT_BUDGET}"},
                 "timeout": {"type": "integer",
@@ -97,24 +100,6 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             file_log = getattr(agent, "_file_log", None)
             deadline = time.monotonic() + timeout
             stats: list[str] = []
-
-            def sdk_call(name: str, **args) -> str:
-                if time.monotonic() > deadline:
-                    raise TimeoutError(f"脚本超过 {timeout:.0f}s 预算，已中止")
-                if name in _DENIED_IN_SCRIPT:
-                    return f"[已拒绝] 脚本内不能调用 {name}"
-                spec = agent.registry.get(name)
-                if spec is None:
-                    return f"[错误] 未知工具 {name}，可用：{', '.join(agent.registry.names())[:150]}"
-                if spec.risk != SAFE and not full:
-                    return (f"[已拒绝] {name} 是{'写' if spec.risk == 'write' else '命令'}类工具，"
-                            "脚本内只自动放行只读工具；写/命令请在脚本外单独调用。")
-                stats.append(name)
-                return agent._execute(name, args, True, file_log)
-
-            class _Tools:
-                call = staticmethod(sdk_call)
-
             out = io.StringIO()
             box: dict = {"done": False}
 
@@ -125,8 +110,41 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                 end = kw.get("end", "\n")
                 out.write(sep.join(str(x) for x in a) + end)
 
+            def sdk_call(name: str, **args) -> str:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"脚本超过 {timeout:.0f}s 预算，已中止")
+                if name in _DENIED_IN_SCRIPT:
+                    r = f"[已拒绝] 脚本内不能调用 {name}"
+                    _print(r)
+                    return r
+                spec = agent.registry.get(name)
+                if spec is None:
+                    r = f"[错误] 未知工具 {name}，可用：{', '.join(agent.registry.names())[:150]}"
+                    _print(r)
+                    return r
+                if spec.risk != SAFE and not full:
+                    r = (f"[已拒绝] {name} 是{'写' if spec.risk == 'write' else '命令'}类工具，"
+                         "脚本内只自动放行只读工具；写/命令请在脚本外单独调用。")
+                    _print(r)
+                    return r
+                stats.append(name)
+                r = agent._execute(name, args, True, file_log)
+                # 写/命令类工具的结果（成功路径 or 引用核查拒绝等）必须回显：脚本没 print
+                # 时模型也能看到，否则会以为没写而用相同脚本重试、被去重守卫拦死。
+                # 只读工具不回显——它们通常内容很大，模型自己 print 即可，避免截断。
+                if spec.risk != SAFE:
+                    _print(f"↳ {name}: {str(r)[:800]}")
+                return r
+
+            class _Tools:
+                call = staticmethod(sdk_call)
+
             def _work():
-                env = {"tools": _Tools(), "print": _print}
+                # 注入两个等价入口：裸函数 call(...) 为主（模型不会去 import call），
+                # tools.call(...) 为别名。这样即便脚本里写了 `import tools`（把名字
+                # tools 重新绑到真正的 agentforge.tools 模块），call(...) 仍是可用的，
+                # 不会再出现 rerun18 那种 "module 'tools' has no attribute 'call'"。
+                env = {"call": sdk_call, "tools": _Tools(), "print": _print}
                 try:
                     exec(compile(script, "<ops_batch>", "exec"), env)  # noqa: S102
                 except BaseException as e:  # noqa: BLE001 —— 脚本异常要回给模型，不是崩溃

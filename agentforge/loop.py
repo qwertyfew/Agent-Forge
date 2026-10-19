@@ -61,7 +61,7 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
 5. **一次只做一步**：可以连续调用多个互不依赖的只读工具，但有依赖时必须等上一步结果。
 6. **批量只读用 ops_batch**：需要读多个文件、多轮检索或跨文件比对汇总时（例如分析一个
    仓库、扫一批文件提炼结论、对比多个模块），用 ops_batch 写一段 Python 脚本一次完成——
-   脚本里 tools.call("read_file", path=...) 调工具，print() 输出最终结论。这样只往返一轮，
+   脚本里 call("read_file", path=...) 调工具（等价写法 tools.call(...) 也行），print() 输出最终结论。这样只往返一轮，
    远比逐个工具调用省时间。单个文件、单次检索不需要，直接调对应工具即可。
 7. **交付前自检**：重要产出交付前对照原始要求核对一遍——要求是否都满足、有无编造的细节、
    有无沿用作废的旧结论。发现就改，再交付。
@@ -204,10 +204,10 @@ find_tools("关键词") 取它的用法，然后再调用它；也可以直接�
   {names}
 """
 
-# PTC 常驻：模型只在 ops_batch 脚本里用 tools.call("工具名", ...) 调这些工具，
+# PTC 常驻：模型只在 ops_batch 脚本里用 call("工具名", ...) 调这些工具，
 # 不能直接调用，所以索引说明换成「脚本内调用」口径。
 TOOL_INDEX_HEADER_PTC = """## 可编入脚本的工具（本次未展开说明）
-下面这些工具不能直接调用，只能在 ops_batch 脚本里用 tools.call("工具名", ...) 调用。
+下面这些工具不能直接调用，只能在 ops_batch 脚本里用 call("工具名", ...) 调用（等价写法 tools.call(...) 也行）。
 需要哪个就先 find_tools("关键词") 取它的参数，再写进脚本：
   {names}
 """
@@ -215,7 +215,8 @@ TOOL_INDEX_HEADER_PTC = """## 可编入脚本的工具（本次未展开说明�
 # PTC 常驻模式追加到系统提示的说明块（见 _system）。
 PTC_RESIDENT_BLOCK = """## PTC 常驻（程序化工具调用）
 本模式下你**不直接调用任何工具**，所有工具操作都写进一段 Python 脚本、用 ops_batch 一次性执行：
-- 脚本里用 `tools.call("工具名", **参数)` 调工具，`print(...)` 把最终结果回传；只有 print 的内容会回到你这里。
+- 脚本里用 `call("工具名", **参数)` 调工具（等价写法 `tools.call("工具名", ...)` 也行），`print(...)` 把最终结果回传；只有 print 的内容会回到你这里。
+- **切勿在脚本里写 `import tools`**——这会覆盖内置的 call 对象导致调用失败；直接用 call(...) 即可。
 - 只读工具自动放行；写/命令类工具需本次运行是完全访问权限；脚本里不能调 ops_batch / ask_user。
 - 想知道某工具的精确参数，先 `find_tools("关键词")` 取用法，再写脚本。
 - 唯一允许直接调用的例外是 ask_user（交互式澄清弹窗，脚本内无法弹窗）。
@@ -947,7 +948,11 @@ class Agent:
                 sig = tc.name + "|" + json.dumps(
                     tc.arguments or {}, ensure_ascii=False, sort_keys=True, default=str,
                 )
-                safe = tool_def is not None and tool_def.risk == SAFE
+                # ops_batch 是脚本执行器，副作用取决于脚本内容（可能写文件），绝不能按
+                # 只读缓存/去重——否则模型重试写脚本会被「重复调用」拦截，且首写失败时
+                # 也没机会重来。只读去重只对真正无副作用的工具生效。
+                safe = (tool_def is not None and tool_def.risk == SAFE
+                        and tc.name != "ops_batch")
                 hit = None
                 if safe:
                     if read_cache is not None:

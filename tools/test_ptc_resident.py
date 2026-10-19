@@ -145,11 +145,29 @@ def test_top_level_guard() -> None:
           str(tr2)[:160])
 
 
+def test_ops_batch_not_deduped() -> None:
+    """回归：ops_batch 是脚本执行器（副作用取决于脚本内容），绝不能被去重守卫按
+    只读缓存——否则模型重试写脚本会被「重复调用」拦截而死锁，且首写失败也没机会重来。"""
+    tmp = Path(tempfile.mkdtemp(prefix="af_ptc_"))
+    ag = _mk_agent(tmp, [
+        _Res(tool_calls=[_TC("ops_batch", {"script": "print('RUN_A')"})]),
+        _Res(tool_calls=[_TC("ops_batch", {"script": "print('RUN_A')"})]),  # 完全相同
+        _Res(content="完成。"),
+    ], ptc=True)
+    evs = list(ag.run([], "ops_batch 去重回归", auto_approve=True))
+    outs = [e.get("output") for e in evs
+            if e.get("type") == "tool_result" and e.get("name") == "ops_batch"]
+    check("两次相同 ops_batch 都被执行（未被去重替换）", len(outs) == 2, f"got {len(outs)} 次")
+    check("第二次不是重复调用拦截", "重复调用" not in outs[1], str(outs))
+    check("两次都真实运行了脚本", "RUN_A" in outs[0] and "RUN_A" in outs[1], str(outs))
+
+
 def main() -> None:
     test_selector_surface()
     test_name_normalization()
     test_malformed_helper()
     test_top_level_guard()
+    test_ops_batch_not_deduped()
     print("\nALL PASS")
 
 

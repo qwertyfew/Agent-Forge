@@ -145,6 +145,35 @@ def main() -> None:
     check("脚本内 ops_batch 被拒", "[已拒绝] 脚本内不能调用 ops_batch" in out4, repr(out4)[:120])
     check("未知工具报可用清单", "[错误] 未知工具 no_such_tool" in out4, repr(out4)[:160])
 
+    # 命名冲突回归（rerun18 真实 bug）：脚本里写 `import tools` 会把名字 tools
+    # 重新绑到真正的 agentforge.tools 模块，导致 tools.call 失效。修复后主 API
+    # 是裸函数 call(...)，即便 import tools 覆盖别名，call(...) 仍可用。
+    ag0.hub.script = [
+        _Res(tool_calls=[_TC("ops_batch", {"script":
+             "import tools\n"                       # 故意模拟模型会做的 import
+             "t = call('read_file', path='src/mod1.py')\n"   # 用裸 call，不受 import 影响
+             "print('OK: ' + t[:80])"})]),          # 验证读到文件即证明 call 可用
+        _Res(content="import tools 不再破坏调用。"),
+    ]
+    evs4b = _run(ag0, "import tools 冲突回归")
+    out4b = (next((e for e in evs4b if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("import tools 后仍能用 call（冲突修复）",
+          "OK: " in out4b and "mod1.py" in out4b and "[脚本异常]" not in out4b,
+          repr(out4b)[:160])
+    check("冲突场景下不再报 'has no attribute 'call''",
+          "has no attribute 'call'" not in out4b, repr(out4b)[:160])
+
+    # 主 API 裸 call(...) 直调（覆盖文档主口径）
+    ag0.hub.script = [
+        _Res(tool_calls=[_TC("ops_batch", {"script":
+             "h = call('read_file', path='src/mod2.py')\n"
+             "print('HEAD2: ' + h[:80])"})]),   # 首行是路径头
+        _Res(content="收到。"),
+    ]
+    evs4c = _run(ag0, "裸 call 主 API 测试")
+    out4c = (next((e for e in evs4c if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("裸 call(...) 主 API 可用", "HEAD2:" in out4c and "mod2.py" in out4c, repr(out4c)[:160])
+
     # 写类工具分级：完全访问 → 放行 + file_log 记账
     ag0.hub.script = [
         _Res(tool_calls=[_TC("ops_batch", {"script":
@@ -187,6 +216,21 @@ def main() -> None:
     tr = next(e for e in evs7 if e.get("type") == "tool_result")
     check("端到端脚本结果正确", "3/3 个模块含函数定义" in (tr.get("output") or ""),
           repr((tr.get("output") or ""))[:120])
+
+    # 回归：写类工具结果即便脚本没 print 也必须回显——否则模型看不到写失败/引用核查
+    # 拒绝，会以为没写而用相同脚本重试，触发去重守卫死锁（rerun19 实测 bug）。
+    tmp_echo = Path(tempfile.mkdtemp())
+    ag_echo = _mk_agent(tmp_echo, [
+        _Res(tool_calls=[_TC("ops_batch", {"script":
+             "call('write_file', path='echo_out.md', content='hello world')"  # 故意不 print
+        })]),
+        _Res(content="收到。"),
+    ])
+    evs_echo = _run(ag_echo, "写结果回显回归")
+    out_echo = (next((e for e in evs_echo if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("写类工具结果未 print 也回显（↳ 前缀）", "↳ write_file:" in out_echo, repr(out_echo)[:200])
+    check("回显含写入成功确认与路径", "文件" in out_echo and "echo_out.md" in out_echo, repr(out_echo)[:200])
+    check("文件确实已落盘", (tmp_echo / "echo_out.md").exists(), "echo_out.md 不存在")
 
     print("\n结果：全部通过")
     sys.exit(0)
