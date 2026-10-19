@@ -1779,6 +1779,17 @@ class _Handler(BaseHTTPRequestHandler):
                                     f"/{ev.get('approach_total', '?')}："
                                     f"{ev.get('approach', '')}",
                         })
+                elif kind == "contract_gate":
+                    # 契约停止拦截（token 经济 Phase 3）：程序在模型收工时
+                    # 核对交付物契约，缺了拦回。转成思考行播报，用户能看到
+                    # 「程序拦了一次、要求补写」——不再静默吞掉（实测
+                    # rerun16 触发 4 次但事件被丢弃，评测时误判闸门没生效）。
+                    missing = ev.get("missing") or []
+                    emit("thinking", {
+                        "text": "程序拦截 · 交付物未落盘（"
+                                + "、".join(str(m) for m in missing[:4])
+                                + "），已要求当场补写",
+                    })
                 elif kind == "skill":
                     emit("skill", {"name": ev["name"], "detail": ev["detail"]})
                 elif kind == "stats":
