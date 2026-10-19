@@ -24,7 +24,7 @@
 | Surface（上下文视图，可压缩替换） | `TaskSession.worker_brief()`：从事件重建「任务现场」块注入员工 prompt | ✅ 本批落地（简化版：每次重建，暂不做摘要替换） |
 | Step / Turn | 小步骤（run_one 一次完整 agent 循环）/ 一次用户请求 | 既有概念对齐 |
 | Inbox·Follow-up（追加任务→新 Turn） | 暂无；用户追加即新请求 | Phase 2 |
-| Inbox·Steering（中途补充→当前 Turn 采纳） | 暂无；用户只能停止重来 | Phase 2 |
+| Inbox·Steering（中途补充→当前 Turn 采纳） | `agentforge/steering.py` 收件箱：任务运行中回车插话，员工下一轮推理 / leader 下批规划立即采纳 | ✅ Phase 2 首项落地 |
 | Inbox·Inject（插件补信息→下 Step 读取） | 部分：守卫打回/评测答复/澄清答复都是直接回灌 | Phase 2 队列化 |
 
 ## 三、本批落地（Phase 1）
@@ -57,14 +57,21 @@
 `step_end`(index/title/summary/files/failed)、`leader_eval`(round/done/reason)。
 Phase 2 扩展：`artifact`、`inject`、`steering`、`summary_replace`（Surface 压缩）。
 
-## 四、Phase 2 路线（未实施）
+## 四、Phase 2 路线
 
-1. **Inbox 三通道**：每任务消息队列；Steering 接前端「中途补充」（替代停止
-   重来）；Inject 承接守卫/评测/澄清回灌；Follow-up 支持同任务追加。
-2. **Surface 压缩**：长任务时把 N 条 step_end 摘要压缩成一条 `summary_replace`
+1. ~~**Inbox·Steering**~~ ✅（本批）：`agentforge/steering.py` 收件箱
+   （与 runcontrol 同款协作式模型）。`submit` 仅收运行中任务（回落普通消息）；
+   每条消息带 seen 集合，**并行批次每个员工各见一次互不抢占**；两个消费点：
+   员工循环每轮推理前（`Agent.run(steer_check=…)`，注入为用户消息「立即采纳
+   并调整方向」）+ leader 每批规划前（写进 reasons/note 硬约束下一批）。
+   webui `/api/steer` + 前端「执行中回车=插话」+ `steered` 事件胶囊播报；
+   任务收尾清箱（与 runcontrol.release 同点）。
+2. **Inbox 三通道收尾**：Follow-up（同任务追加开新 Turn）；Inject 队列化
+   （守卫/评测/澄清回灌走同一队列，可插队可合并）。
+3. **Surface 压缩**：长任务时把 N 条 step_end 摘要压缩成一条 `summary_replace`
    事件，替换视图而非日志（日志永不动）。
-3. **跨 run 延续**：同任务重跑时可选载入上次事件日志，员工 brief 含历史产出。
-4. 旧多步路径（PROGRESS_TEMPLATE 接力）同样接入 TaskSession 事实核验。
+4. **跨 run 延续**：同任务重跑时可选载入上次事件日志，员工 brief 含历史产出。
+5. 旧多步路径（PROGRESS_TEMPLATE 接力）同样接入 TaskSession 事实核验。
 
 ## 五、验证
 

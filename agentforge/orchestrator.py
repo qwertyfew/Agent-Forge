@@ -44,6 +44,7 @@ from . import interact
 from . import honesty_guard
 from .tasksession import TaskSession, batch_dependency_reason
 from . import runcontrol
+from . import steering
 from . import sources as sources_gate
 from . import verify as verify_gate
 from . import warmup as warmup_gate
@@ -768,7 +769,8 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
             run_prompt = prompt + session.worker_brief()
             for ev in ag.run(convo, run_prompt, auto_route=False, stop_check=stopped,
                              auto_approve=auto_approve, file_log=local_log,
-                             read_cache=read_cache):
+                             read_cache=read_cache,
+                             steer_check=lambda: steering.take(t.id, t.id)):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -781,6 +783,10 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                     yield {"type": "subtask_error", "task_id": t.id,
                            "message": ev.get("message") or ""}
                     continue
+                if k == "steered":
+                    # 用户中途补充已注入该员工：任务现场记账 + 前端播报
+                    session.append("steering", text=ev.get("text"),
+                                   consumer=t.id)
                 if k == "stopped":
                     yield {"type": "history",
                            "messages": ev.get("history") or convo}
@@ -801,7 +807,7 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                                    "note": f"阶段成果（{t.title}）："
                                            f"{', '.join(new_files[:5])}"}
                 if k in ("delta", "thinking", "tool_start", "tool_result",
-                         "stats", "step"):
+                         "stats", "step", "steered"):
                     ev = {**ev, "task_id": t.id}
                 yield ev
         finally:
@@ -930,6 +936,13 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
         while ctx.round < max_rounds:
             ctx.add_round()
             round_no = ctx.round
+            # ---- 用户中途补充（Steering）：规划前消费，下一批必须采纳 ----
+            for st_msg in steering.take(task_id, "leader"):
+                ctx.add_reasons([f"用户中途补充（规划下一批时必须采纳）：{st_msg}"])
+                ctx.set_note((ctx.note + f"\n- 用户补充：{st_msg}")[-4000:]
+                             if ctx.note else f"用户补充：{st_msg}")
+                session.append("steering", text=st_msg, consumer="leader")
+                yield {"type": "steered", "text": st_msg, "phase": "leader"}
             # ---- 步骤②：Leader 规划本批 ----
             try:
                 raw = dispatcher._chat(
@@ -1418,7 +1431,8 @@ def run_task(
         hist_ = hist
         for ev in agent.run(hist_, prompt_, auto_route=False, stop_check=stopped,
                             auto_approve=auto_approve, file_log=file_log,
-                            relay=relay_, read_cache=read_cache):
+                            relay=relay_, read_cache=read_cache,
+                            steer_check=lambda: steering.take(task_id, f"step{step_idx}")):
             t = ev.get("type")
             if t == "user":
                 continue                      # 用户气泡由前端本地渲染

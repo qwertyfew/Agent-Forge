@@ -492,6 +492,7 @@ class Agent:
         file_log: list | None = None,
         relay: list[dict] | None = None,
         read_cache=None,
+        steer_check=None,
     ) -> Iterator[dict[str, Any]]:
         """跑一轮完整任务。
 
@@ -612,6 +613,14 @@ class Agent:
                 yield {"type": "stopped", "step": step, "reason": "用户停止",
                        "history": history}
                 return
+            # 中途补充（Steering，DeepSeek Harness 语义）：用户在任务运行中
+            # 插的话，在「下一个 Step」（= 本轮模型决策）立刻采纳并调整方向。
+            # 以用户消息推入上下文，模型把它当最新指令对待。
+            for st_text in (steer_check() if steer_check else ()):
+                if st_text:
+                    _push({"role": "user",
+                           "content": f"（用户中途补充，立即采纳并调整方向）{st_text}"})
+                    yield {"type": "steered", "text": st_text}
             yield {"type": "step", "step": step, "model_key": self.model_key, "model": spec.display}
             # 每轮重算：这轮刚用过的工具、刚 find_tools 取过的工具，下一轮要常驻下发
             tools = self._active_tools(ctx)

@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from agentforge import artifact, autonote, autoskill, gaps, interact, ollamaguard, reveal, runcontrol
+from agentforge import artifact, autonote, autoskill, gaps, interact, ollamaguard, reveal, runcontrol, steering
 from agentforge.cli import CLI
 from agentforge.config import Config
 from agentforge.evalsdesk import EvalsDesk
@@ -840,6 +840,21 @@ class _Handler(BaseHTTPRequestHandler):
                 failed.append({"path": str(resolved), "why": str(e)})
         return {"removed": removed, "failed": failed, "skipped": skipped}
 
+    def _handle_steer(self):
+        """中途补充（Steering）：任务运行中用户回车插话。
+
+        任务在跑 → 进收件箱，运行侧在下一个检查点（员工下一轮推理/leader 下批
+        规划）采纳；没在跑 → ok=False，前端回落为普通新消息。 """
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            req = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            self._json({"error": "invalid json"}, 400)
+            return
+        ok = steering.submit(str(req.get("task_id") or ""),
+                             str(req.get("text") or ""))
+        self._json({"ok": bool(ok)})
+
     def _handle_tasks_post(self):
         length = int(self.headers.get("Content-Length") or 0)
         try:
@@ -1466,6 +1481,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/tasks":
             self._handle_tasks_post()
             return
+        if path == "/api/steer":
+            self._handle_steer()
+            return
         if path == "/api/prefs":
             self._handle_prefs()
             return
@@ -1936,6 +1954,7 @@ class _Handler(BaseHTTPRequestHandler):
             )
             runcontrol.release(task_id)   # 摘掉停止标志，避免越攒越多
             runcontrol.clear_current_task()
+            steering.clear(task_id)       # 收尾清空收件箱：没投递完的补充作废
 
             # 记忆自动沉淀（可用 memory_autonote: false 关闭）：规则抽取立刻做
             # （不花算力、用户明说要记的绝不漏），模型抽取放后台线程，不拖慢收尾。

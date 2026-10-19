@@ -4067,7 +4067,7 @@ let liveTask = null;
    先重放缓冲、再续播实时事件，接管者和发起者看到一样的东西。 */
 let taskStream = null, taskStreamId = '';
 const STREAM_EVENTS = ['task','combo','plan','assign','subtask','dispatch','task_done','bridge','conflict','verify','step','skill','route','stats','usage',
-  'thinking','delta','tool_start','tool_result','history','error','subtask_error','stopped','complete','memory','done'];
+  'thinking','delta','tool_start','tool_result','history','error','subtask_error','stopped','complete','memory','done','steered'];
 function followTaskStream(id){
   if(busy || (taskStream && taskStreamId === id)) return;   // 自己发起的流已在手上
   closeTaskStream();
@@ -6143,9 +6143,30 @@ $('fileInput').onchange = async e => {
 input.addEventListener('keydown', e=>{
   if(e.key === 'Enter' && !e.shiftKey){
     e.preventDefault();
-    send();   // 执行中也可发送：算力空闲立即跑，满载则排队（不再拦截）
+    if(taskActive() && liveTask && liveTask.id) steer();   // 执行中回车=中途插话
+    else send();   // 空闲时发送：算力空闲立即跑，满载则排队（不再拦截）
   }
 });
+
+/* 中途补充（Steering）：任务执行中用户发现方向不对，插一条话，
+   运行侧在下一个检查点（员工下一轮推理/leader 下批规划）立即采纳，
+   而不是只能停止重来。任务没在跑时后端返回 ok=false，回落为新消息。 */
+async function steer(){
+  const typed = input.value.trim();
+  if(!typed) return;
+  const id = (liveTask && liveTask.id) || '';
+  const r = await fetch('/api/steer',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({task_id: id, text: typed})
+  }).then(x=>x.json()).catch(e=>({ok:false,error:String(e)}));
+  if(r && r.ok){
+    input.value = ''; autoGrow();
+    addPillNote(`<b>已插话</b>（将在下一步生效）：${esc(typed)}`);
+  }else{
+    addPillNote('当前没有正在执行的任务，这条将作为新消息发送。');
+    send();   // 复用 send：它自己会读 input.value
+  }
+}
 sendBtn.onclick = ()=>{ if(taskActive()) stopTask(); else send(); };
 $('planBtn').onclick = ()=>{
   autoPlan = !autoPlan;
@@ -6300,7 +6321,7 @@ function syncComposer(){
   input.placeholder = queued
     ? '算力不足，任务已排队 · 空闲后自动执行；点右侧方块可取消'
     : act
-    ? '任务执行中 · 点右侧方块可停止；直接输入即可发起新任务，算力不足会排队'
+    ? '任务执行中 · 回车插话（下一步立即采纳）· 点右侧方块可停止'
     : '向 AgentForge 描述任何事，回车发送，Shift+回车换行';
 }
 
@@ -6411,6 +6432,12 @@ function handleTaskEvent(ev, data){
       }
       if(data.rationale) addPillNote('调度说明：' + esc(data.rationale));
       if(data.parallel && tasks.length > 1) addTaskLanes(tasks);
+    }
+    else if(ev === 'steered'){
+      // 中途补充已被运行侧采纳：leader 规划边界消费的没有 task_id，
+      // 员工注入的带 task_id（顺带在进度卡上留痕）
+      addPillNote(`<b>用户补充已生效</b>（${data.phase === 'leader' ? '下一批规划' : '员工下一步'}采纳）：${esc(data.text || '')}`);
+      if(data.task_id) workerNote(data.task_id, '已采纳用户补充');
     }
     else if(ev === 'task_done'){
       // 某个 agent 任务完成：计划卡里那一步打勾（唯一的进度展示处）
