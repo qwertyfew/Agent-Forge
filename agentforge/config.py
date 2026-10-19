@@ -221,6 +221,7 @@ class Config:
     tools_core: list[str] = field(default_factory=list)   # 常驻工具名，空则用内置清单
     tools_limit: int = 16              # 单轮最多下发几个 schema
     tools_min_score: int = 2           # 关键词命中的最低分
+    ptc_resident: bool = True           # True = 所有工具调用强制走 ops_batch 脚本（PTC 常驻）
 
     # ---- 上下文压缩 ----
     compact_threshold: int = 60_000      # 超过这个字符数就触发压缩
@@ -380,6 +381,7 @@ class Config:
         cfg.tools_core = [str(x) for x in (t.get("core", []) or [])]
         cfg.tools_limit = int(t.get("limit", cfg.tools_limit))
         cfg.tools_min_score = int(t.get("min_score", cfg.tools_min_score))
+        cfg.ptc_resident = bool(t.get("ptc_resident", cfg.ptc_resident))
 
         c = raw.get("compact", {}) or {}
         cfg.compact_threshold = int(c.get("threshold", cfg.compact_threshold))

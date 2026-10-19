@@ -67,6 +67,7 @@ def _mk_agent(tmp: Path, script: list[_Res]) -> Agent:
     cfg = Config.load(str(ROOT / "config.yaml"))
     cfg.workspace_root = tmp
     cfg.compact_auto = False
+    cfg.ptc_resident = False          # 本测试验证「直接 write_file」的契约闸门，需关闭 PTC 常驻
     guard = Guard(cfg, approver=None)
     registry = build_registry(guard, cfg)
     ag = Agent(cfg, client=None, registry=registry, guard=guard,

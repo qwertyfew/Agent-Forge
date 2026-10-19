@@ -38,6 +38,7 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 
 cfg = Config.load(str(ROOT / "config.yaml"))
+cfg.ptc_resident = False          # 本测试验证按需下发/关键词命中，需关闭 PTC 常驻
 reg = build_registry(Guard(cfg, approver=None), cfg)
 sel = reg.selector
 

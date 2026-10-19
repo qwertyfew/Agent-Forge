@@ -67,7 +67,9 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             "脚本环境：tools.call(\"read_file\", path=\"a.py\") 返回工具结果字符串；"
             "print(text) 是唯一回传通道（不 print 就拿不到）；可用循环/条件/正则等全部 Python。"
             "只读工具自动放行；写/命令类工具仅完全访问权限的运行可用；"
-            "不能在脚本里再调 ops_batch / ask_user。")
+            "不能在脚本里再调 ops_batch / ask_user。"
+            "【PTC 常驻】这是你调用任何工具的唯一通道：脚本内 tools.call 可调用全部已注册工具，"
+            "名字见系统提示里的「可编入脚本的工具」清单；不知道某工具的参数就先 find_tools 查。")
         parameters = {
             "type": "object",
             "properties": {

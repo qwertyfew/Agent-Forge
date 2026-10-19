@@ -118,6 +118,7 @@ def build_registry(guard, cfg, enable_web: bool = True, skill_registry=None) -> 
         limit=getattr(cfg, "tools_limit", 16),
         min_score=getattr(cfg, "tools_min_score", 2),
         lazy=getattr(cfg, "tools_lazy", True),
+        ptc_resident=getattr(cfg, "ptc_resident", False),
     )
     reg.selector = sel
     holder["selector"] = sel

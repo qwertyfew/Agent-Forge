@@ -15,6 +15,7 @@ from .artifact import FILE_TOOLS, classify_tool_write
 from .context import Compressor, measure
 from .evidence import EvidenceLedger
 from .llm import OllamaClient, parse_text_tool_calls
+from .toolselect import PTC_SURFACE
 from .memory import MemoryStore
 from .llm import GenerationStopped
 from .tasksession import contract_paths
@@ -202,6 +203,45 @@ TOOL_INDEX_HEADER = """## 其他可用工具（本次未展开说明）
 find_tools("关键词") 取它的用法，然后再调用它；也可以直接按名字调用。
   {names}
 """
+
+# PTC 常驻：模型只在 ops_batch 脚本里用 tools.call("工具名", ...) 调这些工具，
+# 不能直接调用，所以索引说明换成「脚本内调用」口径。
+TOOL_INDEX_HEADER_PTC = """## 可编入脚本的工具（本次未展开说明）
+下面这些工具不能直接调用，只能在 ops_batch 脚本里用 tools.call("工具名", ...) 调用。
+需要哪个就先 find_tools("关键词") 取它的参数，再写进脚本：
+  {names}
+"""
+
+# PTC 常驻模式追加到系统提示的说明块（见 _system）。
+PTC_RESIDENT_BLOCK = """## PTC 常驻（程序化工具调用）
+本模式下你**不直接调用任何工具**，所有工具操作都写进一段 Python 脚本、用 ops_batch 一次性执行：
+- 脚本里用 `tools.call("工具名", **参数)` 调工具，`print(...)` 把最终结果回传；只有 print 的内容会回到你这里。
+- 只读工具自动放行；写/命令类工具需本次运行是完全访问权限；脚本里不能调 ops_batch / ask_user。
+- 想知道某工具的精确参数，先 `find_tools("关键词")` 取用法，再写脚本。
+- 唯一允许直接调用的例外是 ask_user（交互式澄清弹窗，脚本内无法弹窗）。
+"""
+
+# 工具调用名格式校验：合法名应为小写字母/数字/下划线/点（如 read_file / git_clone /
+# 模型偶发的 git.clone 点号变体）。出现空白、CJK、问叹号、括号等特殊符号，或长度异常，
+# 即视为「任务原文泄漏 / 乱码」，不当作能力缺口，避免污染台账（实测曾出现
+# "this??...?" 这类名字被误记成 tool_missing）。点号与大小写差异是「可恢复的名字写法」，
+# 不算乱码——前者由 _execute 归一化、后者交由选择器建议，都不该被当成缺口。
+_TOOL_NAME_OK = re.compile(r"[a-z][a-z0-9_.]*")
+
+
+def _is_malformed_tool_name(name: str) -> bool:
+    s = str(name or "")
+    if not s or len(s) > 64:
+        return True
+    if any(ch.isspace() for ch in s):
+        return True
+    if any(0x4E00 <= ord(ch) <= 0x9FFF for ch in s):
+        return True
+    if set(s) & set("?!\"'#%&*(){}[]<>=+$|\\/"):
+        return True
+    if not _TOOL_NAME_OK.fullmatch(s.lower()):
+        return True
+    return False
 
 COMPACT_THRESHOLD = 60_000
 
@@ -393,11 +433,16 @@ class Agent:
             base += "\n" + self.skills.catalog() + "\n"
         # 工具索引：把没下发说明的工具名字列出来（只列名字，很便宜），
         # 让模型知道能力边界，而不是"没看到就当没有这个功能"
+        if getattr(self.cfg, "ptc_resident", False):
+            base += "\n" + PTC_RESIDENT_BLOCK
         sel = self.registry.selector
         if sel is not None and getattr(self.cfg, "tools_lazy", True):
             idx = sel.index_text(exclude=self._active_tool_names)
             if idx:
-                base += "\n" + TOOL_INDEX_HEADER.format(names=idx)
+                header = (TOOL_INDEX_HEADER_PTC
+                          if getattr(self.cfg, "ptc_resident", False)
+                          else TOOL_INDEX_HEADER)
+                base += "\n" + header.format(names=idx)
         # 长期记忆放在最后：它是「上一批任务留下的偏好」，越靠后模型越容易当约束看。
         block = self.memory.prompt_block()
         if block:
@@ -881,6 +926,18 @@ class Agent:
                     yield {"type": "stopped", "step": step,
                            "reason": "用户停止（工具尚未执行）", "history": history}
                     return
+                # PTC 常驻：只允许「脚本面」工具（ops_batch / ask_user / find_tools）
+                # 直接调用，其余一律改走 ops_batch 写脚本——这是把 PTC 常驻真正落地的
+                # 硬闸，否则模型仍会绕过系统提示直接发工具调用。
+                if getattr(self.cfg, "ptc_resident", False) and tc.name not in PTC_SURFACE:
+                    msg = (f"[PTC 常驻] 直接调用 {tc.name} 已被禁用：所有工具必须通过 "
+                           f"ops_batch 写脚本调用（脚本内 tools.call('{tc.name}', ...)）。"
+                           "请把你要做的工具操作写进一段 Python 脚本用 ops_batch 执行。")
+                    yield {"type": "tool_result", "name": tc.name,
+                           "output": msg, "failed": True}
+                    _push({"role": "tool", "content": msg})
+                    continue
+
                 yield {"type": "tool_start", "name": tc.name, "args": tc.arguments}
                 # 重复调用拦截：只读工具的（名字+参数）指纹在任务内出现过，
                 # 就直接回放上次结果并明说，不再执行。打断「忘了→重查→再忘」的循环。
@@ -973,6 +1030,15 @@ class Agent:
     ) -> str:
         tool = self.registry.get(name)
         if tool is None:
+            # 名字规范化：模型可能用 git.clone / git-clone 这类分隔符变体（注册表是
+            # git_clone）。先把 . - 空格归一成 _ 再查一次，命中就顺正确名字走下去——
+            # 否则会误判成「工具缺失」污染能力缺口台账（实测 git.clone 就因此被记成缺口）。
+            norm = re.sub(r"[\.\-\s]+", "_", str(name or "")).strip("_").lower()
+            if norm and norm != name:
+                tool = self.registry.get(norm)
+                if tool is not None:
+                    name = norm
+        if tool is None:
             # 按需下发模式下，模型可能凭印象报了个名字（例如把 git_push 叫成 push）。
             # 这里替它找一次：名字沾边的直接把用法递过去并粘住，下一轮就带完整说明了。
             sel = self.registry.selector
@@ -985,6 +1051,11 @@ class Agent:
                     self.registry.pinned.update(hits[:3])
                     return (f"[工具名不符] 没有名为 {name} 的工具，你要用的可能是下面这个，"
                             f"请用正确的名字重新调用：\n" + sel.describe_many(hits[:3]))
+            # 名字格式非法（任务原文泄漏 / 乱码，如 "this??...?"）：不是能力缺口，
+            # 不该污染台账——直接退回格式错误，让模型用正确通道重试。
+            if _is_malformed_tool_name(name):
+                return ("[错误] 工具调用名格式非法（应为小写字母/数字/下划线组合，如 read_file），"
+                        "请检查是否把任务描述或正文误当作工具名发出了。当前可用工具见工具索引。")
             # 模型认为该有这个工具却没有：架构层确定的能力缺口，记台账
             # （「工具名不符」不算——那说明工具在，只是叫法错了）。
             gaps.record("tool_missing", name,

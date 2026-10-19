@@ -78,6 +78,13 @@ FAMILIES: tuple[tuple[str, ...], ...] = (
      "browser_snapshot", "browser_screenshot"),
 )
 
+# PTC 常驻（程序化工具调用）模式下，模型**只能直接调用**的「脚本面」工具：
+# - ops_batch  写 Python 脚本批量调其它工具，是 PTC 主通道
+# - ask_user   交互式澄清弹窗，脚本线程里弹窗必死锁，必须直接调
+# - find_tools 写脚本前查某个工具的精确参数
+# 其余所有工具只在脚本里通过 tools.call("工具名", ...) 调用，不直接暴露给模型。
+PTC_SURFACE: tuple[str, ...] = ("ops_batch", "ask_user", "find_tools")
+
 
 def _param_tokens(schema: dict) -> set[str]:
     """把参数表里的名字与描述也当成关键词来源。
@@ -101,17 +108,23 @@ class ToolSelector:
     """按任务文本挑工具，并把「本轮该下发哪些 schema」算出来。"""
 
     def __init__(self, registry, core: Iterable[str] | None = None,
-                 limit: int = 16, min_score: float = 3.0, lazy: bool = True):
+                 limit: int = 16, min_score: float = 3.0, lazy: bool = True,
+                 ptc_resident: bool = False):
         self.reg = registry
         self.lazy = bool(lazy)
         self.limit = max(4, int(limit))
         self.min_score = float(min_score)
+        self.ptc_resident = bool(ptc_resident)
         # IDF 表：命中"少见词"（合并、截图、上传）比命中"大众词"（文件、存在）
         # 更能说明相关。按词频把重合度加权，阈值才好定。
         self._df: dict[str, int] = {}
         self._df_n = -1
         self._uni: dict[str, set[str]] = {}      # 单字关键词（只在兜底检索里用）
-        wanted = list(core) if core else list(DEFAULT_CORE)
+        if self.ptc_resident:
+            # PTC 常驻：模型只能直接调「脚本面」工具，其余一律在脚本里调
+            wanted = [n for n in PTC_SURFACE if registry.get(n)]
+        else:
+            wanted = list(core) if core else list(DEFAULT_CORE)
         # 只保留真实存在的（用户可能删了某个工具 / 插件没装上）
         self.core = [n for n in wanted if registry.get(n)]
         if "find_tools" in registry.names() and "find_tools" not in self.core:
@@ -283,6 +296,9 @@ class ToolSelector:
         """
         if not self.lazy:
             return self.reg.schemas()
+        if self.ptc_resident:
+            # 常驻模式：只下发脚本面工具，其余一律在脚本里调，不做关键词增补
+            return self.core_schemas()
         picked: list[str] = list(self.core)
         for n in sticky:
             if n and n not in picked and self.reg.get(n):
@@ -385,4 +401,5 @@ def build_select_tools(holder: dict, lazy: bool = True):
     ]
 
 
-__all__ = ["ToolSelector", "build_select_tools", "DEFAULT_CORE", "FAMILIES"]
+__all__ = ["ToolSelector", "build_select_tools", "DEFAULT_CORE", "FAMILIES",
+           "PTC_SURFACE"]
