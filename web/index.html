@@ -1633,19 +1633,31 @@ function el(tag, cls, text){
   if(text !== undefined) n.textContent = text;
   return n;
 }
-/* 用户向上翻看历史时暂停「贴底」：离底部超过 160px 视为在回看，
-   期间流式输出不再把视口拽到底部；回到底部附近自动恢复。 */
+/* 用户主动向上滚（滚轮/拖滚动条/触摸）才暂停「贴底」；回到底部附近自动恢复。
+   判据是 scrollTop 是否**下降**，而不是「离底多远」——流式输出把 scrollHeight
+   撑大时 dist 会从 0 一步跳过任何阈值，旧的距离判据会把这种正常长高误判成
+   「用户在回看」，贴底就此永久失效，滚动条拇指被后续长高顶在轨道中部
+   （看起来就是一条孤零零悬在页面中间的滚动条，实测如此）。 */
 let threadPinned = false;
+let threadLastST = thread.scrollTop;
 thread.addEventListener('scroll', ()=>{
-  threadPinned = thread.scrollHeight - thread.scrollTop - thread.clientHeight > 160;
+  const st = thread.scrollTop;
+  if(st < threadLastST - 1) threadPinned = true;               // 向上滚 = 用户在回看
+  if(thread.scrollHeight - st - thread.clientHeight < 40) threadPinned = false;  // 回到底部恢复贴底
+  threadLastST = st;
 },{passive:true});
 function scrollBottom(){
   if(threadPinned) return;   // 用户在回看，别拽
   // 有消息进来就以「贴底」为准：撤销可能还排队等着的那次滚动恢复
   cancelAnimationFrame(threadScrollRAF);
   threadScrollRAF = 0;
-  const near = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 140;
-  if(near || !busy) thread.scrollTop = thread.scrollHeight;
+  thread.scrollTop = thread.scrollHeight;
+}
+/* 展开（或泳道这类常显）的过程容器有新内容时，容器自己也要贴自己的底。
+   只在已近底时跟随（<60px），用户在容器里翻看时不抢。 */
+function pinNearBottom(box){
+  if(!box) return;
+  if(box.scrollHeight - box.scrollTop - box.clientHeight < 60) box.scrollTop = box.scrollHeight;
 }
 /* 点进任务（回看 / 接管运行中）必须落在最后一行。threadPinned 是「用户在回看」
    的标志，会从上一个画面残留；隐藏对话区时排队的滚动恢复 RAF 还会把旧位置
@@ -6547,6 +6559,7 @@ function handleTaskEvent(ev, data){
         if(!wc.think) wc.think = makeThinkBox(wc.body);
         wc.think.push(data.text);
         workerNote(data.task_id, '分析中…');
+        pinNearBottom(wc.body);
       }
       else{
         const t = addThinking();
@@ -6567,6 +6580,7 @@ function handleTaskEvent(ev, data){
         ln.cur.text += data.text;
         ln.cur.body.innerHTML = md(ln.cur.text);
         lastSeg = ln.cur;                        // 泳道内容也算本轮回复的正文段
+        pinNearBottom(ln.body);
       }else if(wc){
         // 计划模式：员工正文流进进度卡（默认收起），主对话流不留全文——
         // 「任务已完成。」这类员工收尾话术从此只在卡片里，不会冒充整任务终态
@@ -6575,6 +6589,7 @@ function handleTaskEvent(ev, data){
         wc.cur.text += data.text;
         wc.cur.body.innerHTML = md(wc.cur.text);
         workerNote(data.task_id, '整理结论并作答…');
+        pinNearBottom(wc.body);
       }else{
         // 开始动笔：本轮若已有思考行（在流的块 / 已收起的那一行），把这句话收敛成
         // 「整理结论并作答」；本轮压根没有思考行（纯聊天）就不硬造一行。
@@ -6618,6 +6633,11 @@ function handleTaskEvent(ev, data){
         curTool = addTool(data.name, data.args);
       }
       if(liveTask){ liveTask.tools = (liveTask.tools || 0) + 1; renderRunBar(); }
+      // 工具行落进展开的卡片/泳道时也要贴底；主对话流同样——此前这条分支
+      // 不调 scrollBottom，一次工具行追加把离底距离顶过阈值，贴底就此失效
+      if(wc) pinNearBottom(wc.body);
+      if(ln) pinNearBottom(ln.body);
+      scrollBottom();
     }
     else if(ev === 'tool_result'){
       const ln = laneOf(data.task_id);
@@ -6645,6 +6665,9 @@ function handleTaskEvent(ev, data){
         }
         toolHeadSummary(card.t);
         if(ln) ln.tool = null; else if(wc){ wc.tool = null; workerNote(data.task_id, `已调用 ${wc.tools} 次工具`); } else curTool = null;
+        if(wc) pinNearBottom(wc.body);
+        if(ln) pinNearBottom(ln.body);
+        scrollBottom();
       }
     }
     else if(ev === 'progress'){
