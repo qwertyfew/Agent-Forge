@@ -67,7 +67,8 @@ rerun12 的 68 次工具调用中真正的失败很少（grep 无匹配 exit 1 �
 
 ## 四、遗留动作
 
-- [ ] 停止路径补收尾核查（四.4，小改动）
-- [ ] search_code/run_command 输出提示（四.①②，小改动）
-- [ ] 台账硬闸（四.③，中等改动，需要定义「哪些任务强制 read_file」的豁免规则）
+- [x] 停止路径补收尾核查（四.4）——verify.py `stop_integrity_note` + webui stopped 事件带 note + 前端 pill 渲染（9fb155d）
+- [x] search_code/run_command 输出提示（四.①②）——0 命中自动复扫命名变体并附检索策略提示；截断附「缩小范围重试」指引（9fb155d）
+- [x] **台账硬闸（四.③，真正的杠杆）**——external/ 仓库文件引用必须本任务 read_file 过，否则拒绝写入（error not_read）；search_code/list_dir 片段不算已读；台账以 read 标记区分「真读过」与「检索命中过」（9fb155d）
 - [ ] write_file 守卫补「越权写入路径」校验（交付物之外只读）
+- [ ] 测试债（与本次无关，干净基线同样失败）：test_evalsdesk（stub 缺 done_reason，611734d 遗留）、test_multipath（stub 缺 .client）、test_service_ctrl（webui 导入名过时）
