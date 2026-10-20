@@ -7,6 +7,7 @@ import json
 from .base import SAFE, WRITE, make_tool
 from ..evidence import audit_claims, audit_citations
 from .. import writepolicy
+from .. import skeleton
 def _syntax_check(p: Path) -> str | None:
     try:
         if p.suffix.lower() == ".py":
@@ -82,20 +83,14 @@ def build_fs_tools(guard, cfg):
             read_budget.pop(str(p), None)   # 完整读过了，恢复默认预算
         return body
 
-    # ---------- write_file ----------
-    def write_file(path: str, content: str) -> str:
-        # 产出目录的架构级保证：任务设有产出目录时，相对路径强制落进去
-        # （resolve_for_write；任务书点名的路径与绝对路径走例外通道）。
-        rfw = getattr(guard, "resolve_for_write", None)
-        p = rfw(path) if rfw else guard.resolve(path)
-        redirected = p != guard.resolve(path)
-        existed = p.exists()
-        old = p.read_text(encoding="utf-8", errors="replace") if existed else ""
+    # ---------- 内容核查（写盘前统一入口） ----------
+    def _content_gate(path: str, content: str):
+        """写盘前的完整核查链：证据门槛 → 引用核查 → 语义闸门。
 
-        # 引用证据架构校验：仓库分析 / 差距清单 / 逆向报告类交付物，写出前先核引用。
-        # 只校验「含 / 的反引号引用」；硬错误（路径不存在 / 目录当文件 / 行号越界）
-        # 且这是一份引用密集文档（checked>=2）时，拒绝写入并退回修正——直接卡死
-        # 「路径看似合理但读者复现不到」这类 bug，不靠提示词自觉。
+        返回 (拒绝文案 | None, cit_audit)。write_file / write_skeleton /
+        fill_section 共用这一条链：分段填充时只核查**本节内容**，被拒的代价
+        也就只有一节，不会牵连已经填好的部分。
+        """
         ledger = getattr(guard, "ledger", None)
         cit_audit = None
         # 写前策略（writepolicy.py）：先看证据，再谈内容。
@@ -105,7 +100,7 @@ def build_fs_tools(guard, cfg):
             dec = writepolicy.intent_gate(path, content, cfg=cfg, guard=guard,
                                           ledger=ledger, root=cfg.workspace_root)
             if not dec.allow:
-                return dec.message
+                return dec.message, None
         # 不再用「含反引号」当门槛：rerun25 把引用改写成圆括号 (lc_loop/code.py:7-13)，
         # 整份文件一个反引号都没有，核查直接被跳过，9 条虚构路径全部落盘。
         # 审计内部按 _extract_citations 提取（反引号 + 中英文圆括号），且自身
@@ -118,8 +113,7 @@ def build_fs_tools(guard, cfg):
             if cit_audit is not None:
                 errors = [i for i in cit_audit.issues if i.level == "error"]
                 if errors and cit_audit.checked >= 2:
-                    return writepolicy.reject_message(path, content, errors, "citation", cfg)
-
+                    return writepolicy.reject_message(path, content, errors, "citation", cfg), None
         # 语义层核查：路径对、结论错也要拦。rerun22 的差距清单写「AgentForge 缺乏
         # 上下文压缩 / 权限审批 / 任务清单」，路径全是真的，结论却与代码相反——
         # 照它改会重复造轮子。这里只判「否定断言 vs 真实定义」这一种确定矛盾，
@@ -130,7 +124,25 @@ def build_fs_tools(guard, cfg):
             except Exception:
                 claim_issues = []
             if claim_issues:
-                return writepolicy.reject_message(path, content, claim_issues, "claims", cfg)
+                return writepolicy.reject_message(path, content, claim_issues, "claims", cfg), None
+        return None, cit_audit
+
+    def _write_target(path: str):
+        """写盘落点：产出目录重定向（resolve_for_write）+ 是否被重定向。"""
+        rfw = getattr(guard, "resolve_for_write", None)
+        p = rfw(path) if rfw else guard.resolve(path)
+        return p, p != guard.resolve(path)
+
+    # ---------- write_file ----------
+    def write_file(path: str, content: str) -> str:
+        # 产出目录的架构级保证：任务设有产出目录时，相对路径强制落进去
+        # （resolve_for_write；任务书点名的路径与绝对路径走例外通道）。
+        p, redirected = _write_target(path)
+        existed = p.exists()
+        old = p.read_text(encoding="utf-8", errors="replace") if existed else ""
+        err, cit_audit = _content_gate(path, content)
+        if err:
+            return err
 
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8", newline="")
@@ -143,6 +155,9 @@ def build_fs_tools(guard, cfg):
                     path, content,
                     [("", f"语法错误：{check_result}（文件已回滚到原内容）")],
                     "syntax", cfg)
+        # 整篇写出即视为「不再是骨架」：旧骨架记录若留着，收尾核查会拿
+        # 建档时的正文去比对，把刚写完的整篇文档判成「还没填」。
+        skeleton.drop_state(cfg.workspace_root, p)
         
         action = "覆盖" if existed else "新建"
         diff = "" if not existed else f"（原 {len(old)} 字符 → 现 {len(content)} 字符）"
@@ -153,6 +168,71 @@ def build_fs_tools(guard, cfg):
             if warns:
                 note += "\n[引用核查提醒] " + "；".join(f"{i.token or '报告'}: {i.detail}" for i in warns)
         return f"已{action}文件 {p} {diff}{note}"
+
+    # ---------- write_skeleton / fill_section（骨架先行） ----------
+    def write_skeleton(path: str, outline: str) -> str:
+        """只写结构：`## 小节标题` + 一句话意图，几百字符。
+
+        骨架几乎不可能被内容核查拒（没有事实断言可错），所以「先落一个能通过
+        核查的结构」几乎零成本；正文随后一节一节填，单次失败只丢一节。
+        """
+        bad = skeleton.outline_error(outline)
+        if bad:
+            return bad
+        err, _ = _content_gate(path, outline)
+        if err:
+            return err
+        p, redirected = _write_target(path)
+        existed = p.exists()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(outline, encoding="utf-8", newline="")
+        skeleton.record_skeleton(cfg.workspace_root, p, outline)
+        st = skeleton.status(outline)
+        names = "、".join(s.heading for s in skeleton.body_sections(outline)[:12])
+        note = "（相对路径已按产出规则自动写入产出目录）" if redirected else ""
+        return (
+            f"已{'覆盖' if existed else '新建'}骨架 {p}（{st['total']} 节 / "
+            f"{len(outline)} 字符）{note}\n"
+            f"小节：{names}\n"
+            "下一步：用 fill_section(path, heading, content) 一次填一节，"
+            "长章节第二次用 mode='append' 续写同一节。\n"
+            f"注意：骨架本身不算交付——{st['total']} 个小节全部填上正文之前，"
+            "收尾核查会判它没写（只看正文有没有真填，不看文件是否存在）。"
+        )
+
+    def fill_section(path: str, heading: str, content: str = "",
+                     mode: str = "replace") -> str:
+        """把一段正文填进某一节。核查只看这一节，被拒不牵连已填好的小节。"""
+        p, _ = _write_target(path)
+        if not p.exists():
+            return (f"[错误] 文件不存在：{p}\n"
+                    "先用 write_skeleton 写骨架（只放小节标题），再逐节 fill_section。")
+        text = p.read_text(encoding="utf-8", errors="replace")
+        new_text, err = skeleton.fill(text, heading, content, mode)
+        if err:
+            return err
+        # 核查目标就是本节内容：这正是「骨架先行」的收益——单次失败的成本
+        # 等于一节的生成，而不是整篇。
+        gate_err, _ = _content_gate(path, content)
+        if gate_err:
+            return gate_err + "\n（本次只丢了这一节；已填好的小节原样保留在文件里。）"
+        p.write_text(new_text, encoding="utf-8", newline="")
+        if p.suffix.lower() in {".py", ".json"}:
+            check = _syntax_check(p)
+            if check:
+                p.write_text(text, encoding="utf-8", newline="")
+                return writepolicy.reject_message(
+                    path, content,
+                    [("", f"语法错误：{check}（文件已回滚到本次填充前）")],
+                    "syntax", cfg)
+        pr = skeleton.progress(cfg.workspace_root, p)
+        msg = (f"已填充小节「{heading}」（{len(content)} 字符，{mode}）→ {p}\n"
+               + skeleton.progress_text(cfg.workspace_root, p))
+        if pr["pending"]:
+            msg += "\n下一步：继续 fill_section 填：" + "、".join(str(x) for x in pr["pending"][:6])
+        else:
+            msg += "\n所有小节已填完，可以给出最终答复（收尾核查会按磁盘内容复核）。"
+        return msg
 
     # ---------- edit_file ----------
     def edit_file(path: str, old_text: str, new_text: str) -> str:
@@ -186,6 +266,7 @@ def build_fs_tools(guard, cfg):
         if not p.exists():
             return f"[错误] 文件不存在: {p}"
         p.unlink()
+        skeleton.drop_state(cfg.workspace_root, p)
         return f"已删除 {p}"
 
     # ---------- list_dir ----------
@@ -245,6 +326,41 @@ def build_fs_tools(guard, cfg):
                 "required": ["path", "content"],
             },
             write_file,
+            WRITE,
+        ),
+        make_tool(
+            "write_skeleton",
+            "先写文档骨架：只放 `## 小节标题` 和一句话意图（几百字符），"
+            "再用 fill_section 逐节填正文。超过两节的文档一律先骨架——"
+            "骨架几乎不会被内容核查拒，单次生成失败只损失一节。",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "目标文件路径（后续 fill_section 用同一路径）"},
+                    "outline": {"type": "string",
+                                "description": "骨架正文：标题 + 2 个以上 `## 小节标题`，每节可带一句意图（≤240 字符）"},
+                },
+                "required": ["path", "outline"],
+            },
+            write_skeleton,
+            WRITE,
+        ),
+        make_tool(
+            "fill_section",
+            "把一段正文填进骨架里的某一个 `## 小节`。内容核查只针对这一节，"
+            "被拒不牵连其他小节；mode='append' 用于把长章节分几次续写。",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "骨架文件路径"},
+                    "heading": {"type": "string", "description": "小节标题（不含 #，如「3. 结论」）"},
+                    "content": {"type": "string", "description": "这一节的完整正文（Markdown）"},
+                    "mode": {"type": "string", "enum": ["replace", "append"],
+                             "description": "replace=替换该节正文（默认）；append=接在已有正文之后续写"},
+                },
+                "required": ["path", "heading", "content"],
+            },
+            fill_section,
             WRITE,
         ),
         make_tool(

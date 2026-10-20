@@ -34,6 +34,8 @@ DEFAULT_CORE: tuple[str, ...] = (
     "find_files",
     "read_file",
     "write_file",
+    "write_skeleton",
+    "fill_section",
     "edit_file",
     "search_code",
     "run_command",

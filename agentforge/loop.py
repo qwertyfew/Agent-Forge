@@ -10,6 +10,7 @@ from typing import Any, Iterator
 
 from .config import Config
 from . import gaps
+from . import skeleton
 from . import verify as verify_gate
 from .artifact import FILE_TOOLS, classify_tool_write
 from .context import Compressor, measure
@@ -147,12 +148,18 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
 - 被拒绝时不要反复重试同一操作，换一种方式或向用户说明。
 - 禁止删除工作区之外的任何东西。
 
-## 写文件的两条硬规则（架构层真的会拦，不是建议）
+## 写文件的三条硬规则（架构层真的会拦，不是建议）
 - 写需要引用代码事实的文档（分析 / 差距清单 / 逆向报告）之前，先用 read_file 真读过要引用的文件。
   本任务一次都没读过就提交引用密集型内容，程序会直接拒收并列出必读清单——引用只能来自读过的代码，
   凭印象写出来的路径即使存在，结论也多半是错的。
+- 超过两节的文档**先写骨架再分段填**：write_skeleton(path, outline) 只放 `## 小节标题`
+  和一句话意图（几百字符），然后 fill_section(path, heading, content) 一节一节填正文，
+  长章节用 mode="append" 续写。骨架几乎不会被内容核查拒，正文被拒也只丢这一节，
+  已经填好的小节原地保留。**骨架不算交付**：空着小节的文件，收尾核查一律判未交付。
 - 被核查拒绝时**不要整篇重写**：被拒内容会自动存成 .drafts/ 下的草稿，用 edit_file 只改点到的几行，
   改完复制到目标路径。整篇重写会把已经写对的部分也改坏，还多烧一轮生成。
+- 工具调用方式随模式走：PTC 常驻时上面这些都写在 ops_batch 脚本里，
+  如 `call("write_skeleton", path=..., outline=...)`、`call("fill_section", path=..., heading=..., content=...)`。
 """
 
 # 产出目录规则：任务发起时由编排层按发起时间算好一个文件夹名填进 outdir，
@@ -780,6 +787,10 @@ class Agent:
             try:
                 if not f.exists():
                     return True
+                # 骨架先行后，「文件存在」不再等于「已交付」：write_skeleton 会
+                # 真的落盘并刷新 mtime，但里面只有标题。空着小节就当没写。
+                if skeleton.unfinished_file(self.cfg.workspace_root, p):
+                    return True
                 return f.stat().st_mtime <= self._t0
             except OSError:
                 return True
@@ -941,15 +952,21 @@ class Agent:
                                  "content=...) 写入"
                                  if getattr(self.cfg, "ptc_resident", False)
                                  else "直接调用 write_file 把它们写成文件")
+                        _fill = ("call('fill_section', path=..., heading=..., content=...)"
+                                 if getattr(self.cfg, "ptc_resident", False)
+                                 else "fill_section(path=..., heading=..., content=...)")
                         _push({"role": "assistant",
                                "content": result.content or "", **replay_think})
                         _push({"role": "user", "content": (
                             "【停止拦截·交付物未落盘】你宣布任务完成，但程序核对磁盘发现"
-                            "任务书要求的交付物还不存在，或自本轮开始后从未更新：\n- "
+                            "任务书要求的交付物还不存在、自本轮开始后从未更新，"
+                            "或者只有骨架而正文是空的：\n- "
                             + "\n- ".join(missing)
                             + f"\n\n你刚才的分析内容都在上文——现在{_hint}"
                               "（内容不必重新分析，路径必须一字不差；已存在的"
                               "要重新写出，让修改时间晚于本轮开始）。"
+                              f"文件里已经有骨架的，用 {_fill} 把空着的小节逐节填完，"
+                              "别整篇重写。"
                               "写完后给出最终答复。若你认为该文件不该由本轮写出，"
                               "请在最终答复里明确说明原因。")})
                         yield {"type": "contract_gate", "missing": missing,
@@ -1188,6 +1205,9 @@ class Agent:
                                   "（例如带「推测」「大概」字样、或你并未真正读到的行号）。"
                                   "请在脚本里删除无法复现的引用、只保留你真正读到的文件与行号，"
                                   "然后用 call('write_file', path=..., content=...) 重新写入同一份交付物。"
+                                  "若文件里已经有骨架、只是有空着的小节，"
+                                  "用 call('fill_section', path=..., heading=..., content=...) 逐节填完即可，"
+                                  "不必整篇重写。"
                                   "写完后给出最终答复。若你确认该文件不该由本轮写出，"
                                   "请在最终答复里明确说明原因，不要声称已写入。")})
                             yield {"type": "contract_gate", "missing": missing,

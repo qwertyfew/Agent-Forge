@@ -495,12 +495,20 @@ def _verify_gate(agent, message: str, holder: dict,
             # 只认这一种确定情形：全程零写盘 + 全部缺失，避免误伤「写了但没到位」。
             # 不用 looks_like_change：它只认「改代码」的活，写报告类任务会判 False，
             # 而 rerun26 恰恰就是报告任务。
+            # 只认两种确定情形：①全程零写盘 + 全部缺失（压根没动手）；
+            # ②写了骨架但正文一节没填（看上去动手了，交付物却是空壳）。
+            # 其余「写了但没写到点子上」仍只提示，避免误伤。
+            statuses = {c.get("status") for c in issues}
+            untouched = not verify_gate.produced_possible(convo)
+            skeleton_only = ("skeleton" in statuses
+                             and statuses <= {"missing", "skeleton"})
             if (getattr(cfg, "delivery_hard_gate", True)
-                    and not verify_gate.produced_possible(convo)
-                    and all(c.get("status") == "missing" for c in issues)):
+                    and statuses <= {"missing", "skeleton"}
+                    and (untouched or skeleton_only)):
                 holder["delivery_failed"] = [c["path"] for c in issues]
                 notes.append(verify_gate.delivery_failed_block(
-                    [c["path"] for c in issues]))
+                    [c["path"] for c in issues],
+                    skeleton_only=bool(skeleton_only and not untouched)))
 
     # 第五道核查：**自己承认还没做 / 做不了**，同样不许当成交付。
     # 上面几道治的都是「声称做了但没做」；这是它的反面，一直没人管——模型如实招了

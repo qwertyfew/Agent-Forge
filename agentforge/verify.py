@@ -39,6 +39,8 @@ import time
 import unicodedata
 from pathlib import Path
 
+from . import skeleton as skel
+
 # 「验证：xxx」这类声明行。容忍 markdown 列表符、编号、「验证脚本/命令/方式」等变体。
 _DECLARE = re.compile(
     r"^\s*(?:[-*•>\d.、\s]*)"
@@ -412,7 +414,7 @@ def ran_verification(convo: list[dict] | None) -> bool:
 # ---------------------------------------------------------------------------
 # 会产出/修改文件的写类工具。总结声称「已写入」而任务里一个都没出现过，
 # 就是幽灵声明的判定依据（REA 三测：零 write_file 却声称报告已写入）。
-WRITE_TOOLS = ("write_file", "edit_file")
+WRITE_TOOLS = ("write_file", "edit_file", "write_skeleton", "fill_section")
 
 # mtime 比较容差：同一文件未修改时 stat 返回值应完全一致，留一点余量
 # 防文件系统时间精度差异造成的误判。
@@ -439,8 +441,9 @@ def _tool_names(convo: list[dict] | None):
 # 是否落盘仍由磁盘 mtime / file_log 台账裁定（loop 内契约闸门就是这么做的）。
 _PTC_WRITE_RX = re.compile(
     # 引号可能被 JSON 转义成 \"，所以前后都允许一个可选的反斜杠
-    r"""(?:['"]|\\['"])\s*(?:write_file|edit_file)\s*(?:['"]|\\['"])"""
-    r"""|tools\.(?:write_file|edit_file)\s*\(""")   # tools.write_file(...)
+    r"""(?:['"]|\\['"])\s*(?:write_file|edit_file|write_skeleton|fill_section)"""
+    r"""\s*(?:['"]|\\['"])"""
+    r"""|tools\.(?:write_file|edit_file|write_skeleton|fill_section)\s*\(""")
 
 
 def _ptc_write_attempted(convo: list[dict] | None) -> bool:
@@ -606,6 +609,13 @@ def find_artifact_issues(entries: list[tuple[str, bool]],
             issues.append({"path": p, "declared": bool(declared),
                            "status": "missing"})
             continue
+        # 骨架未填完 = 没交付。必须放在 mtime / produced 那些分支**之前**：
+        # write_skeleton 会真的落盘并刷新 mtime，若先走「mtime 比任务开始新」
+        # 就被判成本轮产出——那等于写个空架子就能骗过存在性核查。
+        if skel.unfinished_file(root, p):
+            issues.append({"path": p, "declared": bool(declared),
+                           "status": "skeleton"})
+            continue
         # 执行轨迹权威记录（来自全局 file_log 的本任务真实写操作）：只要本任务
         # 确实写出过该文件，无论 mtime 快照怎么判（stale/ghost 都源于「开局快照
         # 早于最终写盘 / convo 缺写工具记录」的竞态），一律认定本轮产出、跳过判定。
@@ -658,6 +668,10 @@ def artifact_fixed(issue: dict, pre: dict[str, float | None],
         return False
     if issue["status"] == "missing":
         return True
+    if issue["status"] == "skeleton":
+        # 骨架补齐后 mtime 当然也变了，但真正的判据是「还有没有空小节」——
+        # 又填了一节、还是空着一半，都算没修好。
+        return not skel.unfinished_file(root, issue["path"])
     m0 = pre.get(issue["path"].lower())
     if m0 is None:
         return True
@@ -668,6 +682,7 @@ _STATUS_TEXT = {
     "missing": "不存在于工作区",
     "stale": "存在，但修改时间与任务开始时的快照一致——本轮从未更新，现有内容不是本轮产出",
     "ghost": "存在，但整个任务没有任何写文件/执行命令的操作——它不是本轮写出的",
+    "skeleton": "只有骨架：小节标题在，正文还是空的或只有占位符——不算交付，用 fill_section 逐节填完",
 }
 
 
@@ -871,6 +886,8 @@ ARTIFACT_CORRECTIVE_PROMPT = """【系统侧核查结果（权威，不可推翻
 
 【要求】
 如果这些文件确实应该由本任务产出：现在真实地创建/更新它们（write_file），写完再说完成；
+如果文件里已经有一份骨架（只有 `## 小节标题`、正文为空），用 fill_section 逐节填完即可，
+不要整篇重写——骨架里的结构是对的，重写只会再烧一次整篇生成。
 如果本就无需产出（例如核查误判或路径笔误），就在最终总结里如实说明原因。
 禁止再次声称已写入而不实际写文件——系统会复查文件是否真的在本轮被写过。
 只输出修正动作的开始或修正后的最终总结，不要寒暄。"""
@@ -975,18 +992,25 @@ UNFINISHED_NOTE = (
 )
 
 
-def delivery_failed_block(missing: list[str]) -> str:
-    """「只说不做」的终态声明：任务书点名要写出、复核后仍不存在，且全程零写操作。
+def delivery_failed_block(missing: list[str], skeleton_only: bool = False) -> str:
+    """「只说不做」的终态声明：任务书点名要写出、复核后仍未交付。
 
     与 artifact_issue_block 的区别是**定性**：那个说「这些文件不是本轮产出」，
-    这个直接判定「本任务未完成」——因为没有任何写盘动作的答复只可能是计划或
-    分析，不构成交付（rerun26：7 轮全在写「下一步计划」，一次工具都没调）。
+    这个直接判定「本任务未完成」——因为答复只可能是计划、分析或空壳骨架，
+    不构成交付（rerun26：7 轮全在写「下一步计划」，一次工具都没调）。
+
+    skeleton_only=True：写了骨架、正文一节没填。写动作确实发生过，但交付物
+    客观上是空壳，同样不是交付——这条判据来自「骨架先行」这个新机制：
+    否则模型写个标题就能满足「文件存在」。
     """
     lines = "\n".join(f"- {p}" for p in (missing or []))
+    why = ("只写了骨架（小节标题在，正文是空的），没有任何一节被填上"
+           if skeleton_only
+           else "全程**没有任何写盘动作**，文件也不存在")
     return (
         "【系统侧核查 · 任务未交付】\n"
-        f"任务书要求写出以下文件，但本任务全程**没有任何写盘动作**，文件也不存在：\n{lines}\n"
-        "上面的内容是计划或分析，不是交付物。系统在收到答复后已要求补写，未执行。\n"
+        f"任务书要求写出以下文件，但{why}：\n{lines}\n"
+        "上面的内容是计划、分析或空架子，不是交付物。系统在收到答复后已要求补写，未执行。\n"
         "本任务据此标记为**未完成**。"
     )
 

@@ -174,6 +174,32 @@ def main() -> None:
     check("拦满后最终答复放行（兜底交收尾闸门）",
           finals2 and finals2[-1]["content"] == "完成 3")
 
+    # ---------- 骨架先行：只写骨架 → 契约闸门不放行 ----------
+    # 骨架会让文件「存在」，甚至 mtime 也更新了。旧判据（存在 + mtime）到这里
+    # 会直接放行，等于给「写个空架子」开了一条交付捷径。
+    goal_sk = "把结论写入 tmp/skel-report.md"
+    skel = "# 报告\n\n## 一\n\n## 二\n\n## 三\n"
+    full = ("# 报告\n\n## 一\n正文一……\n\n## 二\n正文二……\n\n## 三\n正文三……\n")
+    script_sk = [
+        _Res(tool_calls=[_TC("write_file", {
+            "path": "tmp/skel-report.md", "content": skel})]),
+        _Res(content="报告已写入。"),                  # 收工：只有骨架，应被拦
+        _Res(tool_calls=[_TC("write_file", {
+            "path": "tmp/skel-report.md", "content": full})]),
+        _Res(content="报告已写入。"),                  # 这次正文填上了
+    ]
+    ag_sk = _mk_agent(tmp, script_sk)
+    evs_sk = _run(ag_sk, goal_sk, contract=contract_paths(goal_sk, tmp))
+    gates_sk = [e for e in evs_sk if e.get("type") == "contract_gate"]
+    check("只有骨架 → 契约闸门拦一次", len(gates_sk) == 1, str(len(gates_sk)))
+    sk_msg = next((m for m in (evs_sk[-1]["history"] if evs_sk else [])
+                   if m["role"] == "user" and "停止拦截" in (m.get("content") or "")), None)
+    check("拦截文案说明「骨架/空小节」并指向 fill_section",
+          sk_msg is not None and "骨架" in sk_msg["content"]
+          and "fill_section" in sk_msg["content"],
+          (sk_msg or {}).get("content", "")[:200])
+    check("填完正文后放行", (tmp / "tmp" / "skel-report.md").read_text("utf-8") == full)
+
     # ---------- 无契约任务零打扰 ----------
     script3 = [_Res(content="普通答复")]
     ag3 = _mk_agent(tmp, script3)

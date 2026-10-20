@@ -35,7 +35,9 @@ MAX_DEPTH = 8
 MAX_INDEX = 4000         # 索引最多记多少文件，防异常仓库拖慢任务收尾
 
 # 只有这几种工具会直接改文件；其余工具靠目录扫描兜底
-FILE_TOOLS = {"write_file": "write", "edit_file": "edit", "delete_file": "delete"}
+# （骨架先行把一次写拆成了两次：write_skeleton 新建/覆盖，fill_section 逐节改）
+FILE_TOOLS = {"write_file": "write", "edit_file": "edit", "delete_file": "delete",
+              "write_skeleton": "write", "fill_section": "edit"}
 
 # 「只读」的风险等级字面量。刻意不 import agentforge.tools.base.SAFE：本模块要
 # 保持零依赖（任何测试都能单独加载它），代价就是这一个字面量——tools/test_artifacts.py
@@ -93,7 +95,7 @@ def classify_tool_write(tool_name: str, args: dict, output: str) -> dict | None:
     if kind == "delete":
         action = "deleted" if "已删除" in text else None
     elif kind == "edit":
-        action = "modified" if "已修改" in text else None
+        action = "modified" if ("已修改" in text or "已填充" in text) else None
     else:  # write_file
         if "已新建" in text:
             action = "created"
