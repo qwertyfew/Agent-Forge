@@ -17,6 +17,7 @@
   得有你刚读到的材料撑着」。
 """
 
+import difflib
 import re
 
 # 任务意图：问「怎么操作 / 修改 / 使用 / 运行」某个项目 / 前端 / 代码 / 源码
@@ -203,16 +204,26 @@ def extract_ops_claims(reply: str) -> list[str]:
 
 
 # ---- 源锚点 / 命令主体 精确匹配（fix: 任意常见词子串命中即放行 → 精确锚点）----
+# 只放「包管理器 / 通用编排器」——它们后面的 token 才是主体。
+# 不要把 vite / tsc / webpack / eslint / jest 放进来：它们本身就是被调用的程序，
+# 放进来会把 `npx vite`、`tsc --noEmit` 的主体跳成空，导致正确命令被判无据。
 _GENERIC_VERB_PREFIX = {
     "npm", "npx", "pnpm", "yarn", "bun", "deno", "node", "python", "python3", "py",
-    "pip", "pip3", "cargo", "go", "make", "ruby", "php", "tsc", "docker", "git",
+    "pip", "pip3", "cargo", "go", "make", "ruby", "php", "docker", "git",
     "curl", "wget", "java", "javac", "gradle", "mvn", "kubectl", "terraform",
-    "vite", "webpack", "eslint", "jest", "ts-node", "dotnet", "i",
+    "dotnet", "i",
 }
 _PKG_INSTALL_RX = re.compile(
     r"^(?:npm\s+install|npm\s+i\b|pnpm\s+install|yarn\s+install|yarn\s+add"
     r"|pnpm\s+add|bun\s+add|pip3?\s+install)\b", re.I,
 )
+# 包管理器之后的子命令：`npm install X` 的实质主体是 X，不是 install。
+# 不跳过的话 `_cmd_subject` 会返回 "install"，导致「包名是否在源里」这一判定失效
+# （rerun56 实证：npm install -g @marp-team/marp 被判为可溯源，因为 install 是通用词）。
+_PKG_SUBCMD = {"install", "i", "add", "get", "require", "upgrade", "update"}
+_PKG_MANAGERS = {
+    "npm", "yarn", "pnpm", "bun", "pip", "pip3", "cargo", "go", "brew", "dotnet",
+}
 
 
 def _norm_anchor(t: str) -> str:
@@ -238,9 +249,11 @@ def _source_anchor_set(sources: str) -> set[str]:
 def _cmd_subject(claim: str) -> str:
     """命令的程序/包名主体：去掉通用动词前缀后的首个实质 token。
 
-    特殊处理 `npm run` / `yarn run` / `pnpm run` 等「包管理器 + run」模式：连同 run
-    一起跳过，把真正的脚本名（如 dev）作为主体，否则 `run` 会被当主体、又恰好在源里
-    作为普通词出现导致误判有据（test_bad_reply_flagged 的 npm run dev 实证）。
+    特殊处理两类「前缀不是主体」的形态：
+    - `npm run dev` / `yarn run build`：连同 run 一起跳过，把脚本名作为主体，
+      否则 `run` 会被当主体、又恰好在源里作为普通词出现导致误判有据。
+    - `npm install -g @marp-team/marp`：连同 install 与选项一起跳过，把**包名**作为
+      主体，否则主体会退化成通用词 `install`，包名是否在源里就查不出来了。
     """
     toks = re.findall(r"[^\s]+", (claim or "").replace("`", ""))
     i = 0
@@ -251,11 +264,17 @@ def _cmd_subject(claim: str) -> str:
             if i < len(toks) and toks[i].startswith("-"):
                 i += 1
             continue
+        prev = toks[i - 1].lower().strip("`\"'-:") if i >= 1 else ""
         # npm run / yarn run / pnpm run / bun run → 连同 run 一起跳过
-        if (i >= 1 and base == "run"
-                and toks[i - 1].lower() in ("npm", "yarn", "pnpm", "bun", "deno")):
+        if base == "run" and prev in ("npm", "yarn", "pnpm", "bun", "deno"):
             i += 1
             if i < len(toks) and toks[i].startswith("-"):
+                i += 1
+            continue
+        # npm install X / pip install X → 跳过子命令与选项，取 X 作主体
+        if base in _PKG_SUBCMD and prev in _PKG_MANAGERS:
+            i += 1
+            while i < len(toks) and toks[i].startswith("-"):
                 i += 1
             continue
         break
@@ -273,6 +292,18 @@ def _has_specific_pkg(n: str) -> bool:
     rest = _PKG_INSTALL_RX.sub("", n, count=1).strip()
     rest = re.sub(r"^-{1,2}[\w]+", "", rest).strip()
     return bool(rest)
+
+
+def _bounded_in(needle: str, hay: str) -> bool:
+    """needle 是否作为**完整 token**出现在 hay 里（不是子串）。
+
+    `npm install -g @marp-team/marp` 是 `...-marp-cli` 的前缀子串——用 `in` 判断会
+    把「包名写错」当成有据（rerun56 同类问题的命令层残留）。必须带两侧边界。
+    """
+    if not needle:
+        return False
+    pat = r"(?<![\w.-])" + re.escape(needle) + r"(?![\w.-])"
+    return re.search(pat, hay, re.I) is not None
 
 
 def _claims_grounded_in(claims: list[str], sources: str) -> list[str]:
@@ -298,9 +329,10 @@ def _claims_grounded_in(claims: list[str], sources: str) -> list[str]:
         # 白名单：纯通用动作（无任何具体包名/参数）才兜底
         if _UNIVERSAL_RX.search(n) and not _has_specific_pkg(n):
             continue
-        # 整段命令 / 目录原文在源里连续出现
+        # 整段命令 / 目录原文在源里连续出现（带边界，防包名前缀子串蒙过）
         token = n.strip("`")
-        if n in src or token in src or ("/" in token and token.rstrip("/") in src):
+        if (_bounded_in(n, src) or _bounded_in(token, src)
+                or ("/" in token and _bounded_in(token.rstrip("/"), src))):
             continue
         # 主体程序/包名须在源锚点集合里精确匹配（或作为裸词在源里）
         subject = _cmd_subject(c)
@@ -504,3 +536,400 @@ def evidence_admission_issues(reply: str, candidates: str) -> list[str]:
             continue
         bad.append(ref)
     return bad
+
+
+# ============ 诊断层：打回时说清「错在哪、源里对的什么样、下一步往哪走」 ============
+#
+# 问题（用户提出）：早期闸门只吐一句「这几条找不到，回去重写」，属于「驳回判决」。
+# 模型下一轮只能猜——不知道是检索没命中、不知道候选池里到底有什么、也不知道源里
+# 正确的写法是什么，于是反复重试同一个错（rerun54→56 一路的形态）。
+#
+# 诊断层把闸门输出从「判据列表」升级成「结构化病历」，三类信息：
+#   1) 检索侧：本次检索有没有命中任务里的项目名？候选池里真实可引用的是哪些仓库？
+#      （提词提错是 rerun56 的根因：Marp 被提成 presentation，模型只好自构 URL）
+#   2) 引用侧：每条未准入的引用，候选中名字最接近的是什么？
+#      （`@marp-team/marp` → `@marp-team/marp-cli`，一眼看出漏了 -cli）
+#   3) 命令侧：每条无据命令，源里实际出现过的近似命令行是什么？
+# 每类都附一句可执行的方向，而不是「请回去重写」。
+
+
+def _is_repo_like(owner: str, name: str) -> bool:
+    """owner/name 是否像仓库名（与 extract_citations 的过滤口径保持一致）。"""
+    if not owner or not name:
+        return False
+    if "." in owner or "." in name:
+        return False
+    if owner.lower() in _PATHY_SEGMENTS or name.lower() in _PATHY_SEGMENTS:
+        return False
+    if owner.lower() in _TECHY_TOKENS or name.lower() in _TECHY_TOKENS:
+        return False
+    return bool(re.search(r"[A-Za-z]", owner) and re.search(r"[A-Za-z]", name))
+
+
+def _is_pool_repo(owner: str, name: str) -> bool:
+    """候选池里的 owner/name 判定（比答复侧宽松）。
+
+    候选池是检索器渲染的 `owner/repo  star=.. URL` 结构，斜杠两侧本来就是仓库名，
+    不会再出现 `HTML/JS` 那种并列写法。这里若沿用答复侧的技术词黑名单，会把
+    `younghz/Markdown`、`marp-team/marp-cli` 这类**合法仓库**整体滤掉（rerun55
+    实证：pool_repos 返回空，于是诊断只能说「候选池是空的」，把模型带偏）。
+    折中口径：只有**斜杠两侧都是技术名词**（`PDF/HTML`）才判为并列写法，排除。
+    """
+    if not owner or not name:
+        return False
+    if "." in owner or "." in name:          # github.com/xxx 这类 URL 残片
+        return False
+    if owner.lower() in _PATHY_SEGMENTS or name.lower() in _PATHY_SEGMENTS:
+        return False
+    if owner.lower() in _TECHY_TOKENS and name.lower() in _TECHY_TOKENS:
+        return False                          # PDF/HTML 这种并列，不是仓库
+    return bool(re.search(r"[A-Za-z]", owner) and re.search(r"[A-Za-z]", name))
+
+
+def pool_repos(pool: str, limit: int = 6) -> list[str]:
+    """候选池里真实出现过的 owner/repo（去重保序）——回答「我能引用哪些」。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _REPO_SLUG_RX.finditer(pool or ""):
+        raw = m.group(1)
+        owner, _, name = raw.partition("/")
+        if not _is_pool_repo(owner, name):
+            continue
+        k = _norm_ref(raw)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(raw)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def generic_name_flood(repos: list[str], threshold: int = 3) -> list[str]:
+    """候选里「同名不同 owner」≥ threshold 个 → 检索词落到了通用词上。
+
+    rerun55/56 的根因不是「任务书里的项目名没命中」（任务书写的是 Markdown / PPT），
+    而是检索把**通用词**当成了主题词：返回 19 个都叫 markdown、14 个都叫 presentation
+    的项目，真正的答案项目一个都不在里面。这个信号不依赖任务书措辞，比关键词比对稳。
+    """
+    cnt: dict[str, int] = {}
+    for r in repos:
+        _, _, name = r.partition("/")
+        if not name:
+            continue
+        k = name.lower()
+        cnt[k] = cnt.get(k, 0) + 1
+    return [n for n, c in cnt.items() if c >= threshold]
+
+
+# 「总览/入口仓库」自述：这类仓库本来就不含安装与使用说明，从里面推命令必然靠记忆补
+_META_SRC_RX = re.compile(
+    r"(entrance repository|entry (repository|point)|meta-?repo|ecosystem of"
+    r"|this repository (is|contains|serves as)|overview of the"
+    r"|入口仓库|总览仓库|生态入口|此仓库为.{0,8}(入口|总览))", re.I)
+# 任何安装类命令：有它说明这份源确实讲了怎么装，不算总览页
+_INSTALL_CMD_RX = re.compile(
+    r"(npm\s+(?:install|i)\b|yarn\s+add|pnpm\s+add|bun\s+add|pip3?\s+install"
+    r"|brew\s+install|cargo\s+install|go\s+install|docker\s+pull|npx\s+[\w@])", re.I)
+
+
+def source_is_meta(sources: str) -> bool:
+    """源看起来是「总览/入口仓库」而非实现仓库。
+
+    rerun56 抓的 `marp-team/marp` 自述 *The entrance repository of Markdown
+    presentation ecosystem*，且整篇没有一个安装命令——CLI 的真身在 `marp-cli`。
+    在这种源上「找命令」，只能靠记忆补，正是幻觉的温床。
+    """
+    s = sources or ""
+    if not s.strip():
+        return False
+    return bool(_META_SRC_RX.search(s)) and not _INSTALL_CMD_RX.search(s)
+
+
+def source_command_lines(sources: str, limit: int = 60) -> list[str]:
+    """从源文本里抽「形如命令行」的行——回答「源里真有的命令长什么样」。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in (sources or "").splitlines():
+        s = line.strip()
+        s = re.sub(r"^[-*+]\s+", "", s)          # markdown 列表符号
+        s = re.sub(r"^[`$>%#]+\s*", "", s).strip()  # shell 提示符 / 引用符
+        if not s or len(s) > 220:
+            continue
+        if re.match(r"^[\u4e00-\u9fff]", s):     # 中文说明句
+            continue
+        if not (_KNOWN_BIN_RX.match(s)
+                or re.match(r"^[\w./@\-]+\s+--?[A-Za-z]", s)):
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if len(out) >= limit:
+            break
+    return out
+
+
+# near-miss 时不该当锚点的通用词（否则 `npm` 会前缀命中 `npm-cli` 之类噪声）
+_NEAR_MISS_STOP = {
+    "npm", "npx", "pnpm", "yarn", "bun", "node", "python", "python3", "pip", "pip3",
+    "cargo", "make", "deno", "docker", "git", "curl", "wget", "install", "run",
+}
+
+
+def near_miss(needle: str, corpus: str, limit: int = 3) -> list[str]:
+    """在 corpus 里找与 needle 最接近的写法（前缀超串优先，其次高相似度）。
+
+    rerun56 的关键用例：needle=`@marp-team/marp`、corpus 含 `@marp-team/marp-cli`
+    → 返回 `@marp-team/marp-cli`，模型一眼看出自己漏了 `-cli`，不用瞎试。
+    """
+    n = _norm_anchor(needle)
+    if len(n) < 5 or n in _NEAR_MISS_STOP:
+        return []
+    cands: set[str] = set(re.findall(r"[@\w][\w./@\-]{3,}", corpus or ""))
+    cands |= _source_anchor_set(corpus or "")
+    scored: list[tuple[int, float, str]] = []
+    for t in cands:
+        tl = _norm_anchor(t)
+        if not tl or tl == n or len(tl) < 5 or tl in _NEAR_MISS_STOP:
+            continue
+        if tl.startswith(n):
+            scored.append((0, -float(len(tl)), tl))   # 前缀超串：最强信号
+            continue
+        ratio = difflib.SequenceMatcher(None, n, tl).ratio()
+        if ratio >= 0.85 and abs(len(tl) - len(n)) <= max(4, len(n) // 3):
+            scored.append((1, -ratio, tl))
+    scored.sort()
+    out: list[str] = []
+    for _, _, t in scored:
+        if t in out:
+            continue
+        out.append(t)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _task_keyword(task: str) -> str:
+    """任务书里的「项目名」关键词（与检索器提词同源，失败则空）。"""
+    try:
+        from .tools.web import repo_keyword
+        return repo_keyword(task or "") or ""
+    except Exception:
+        return ""
+
+
+_KIND_TITLE = {
+    "retrieval_generic": "检索词落到了通用词上",
+    "retrieval_miss": "检索没命中项目名",
+    "zero_retrieval": "零检索：没抓取就作答",
+    "meta_source": "抓的是入口/总览仓库",
+    "unadmitted_citation": "引用未准入：地址是自己拼的",
+    "ungrounded_command": "命令/目录无据：源里没有",
+}
+
+
+def diagnose(reply: str, sources: str, candidates: str, *,
+             task: str = "", intent: bool = True) -> dict:
+    """答复诊断报告。ok=True 表示无需打回（此时 findings 为空）。
+
+    注意：**是否打回的判定与旧逻辑完全一致**（reply_grounding_issues +
+    evidence_admission_issues），诊断层只负责在已决定打回时补充「为什么、怎么改」，
+    不擅自放宽或收紧闸门。
+    """
+    reply = reply or ""
+    src = (sources or "").strip()
+    pool = (candidates or "").strip()
+    kw = _task_keyword(task)
+    all_repos = pool_repos(pool, limit=40)
+    repos = all_repos[:6]
+    retrieval = {
+        "had_candidates": bool(pool),
+        "task_keyword": kw,
+        "keyword_in_candidates": (kw.lower() in pool.lower()) if (kw and pool) else None,
+        "repos": repos,
+        "generic_flood": generic_name_flood(all_repos),
+    }
+
+    issues = reply_grounding_issues(reply, src, intent=intent)
+    refs = evidence_admission_issues(reply, pool) if pool else []
+    if not issues and not refs:
+        return {"ok": True, "findings": [], "retrieval": retrieval,
+                "issues": [], "refs": []}
+
+    findings: list[dict] = []
+    real_issues = [c for c in issues if c != _ZERO_SRC_MSG]
+
+    # ---- 根因 A：检索词落到「通用词」上（rerun55/56 的真起点）----
+    # 任务书写的是 markdown / PPT，检索就返回一堆同名项目——看似「命中了」，
+    # 实际命中的是通用词，答案项目一个都不在。这个信号不依赖任务书措辞。
+    flood = retrieval["generic_flood"]
+    if pool and flood:
+        flood_items = []
+        for n in flood[:2]:
+            same = [r for r in all_repos if r.partition("/")[2].lower() == n]
+            flood_items.append({
+                "value": n,
+                "why": f"候选里 {len(same)} 个不同作者的仓库都叫这个名字（"
+                       + "、".join(same[:2]) + "…）",
+            })
+        findings.append({
+            "kind": "retrieval_generic",
+            "severity": "root",
+            "mistake": (
+                "把定向检索做成了泛搜——拿通用词当主题词，命中的是「一类东西」而不是"
+                "「那个项目」。于是手上从来没有真候选，后面写命令只能靠记忆补。"),
+            "items": flood_items,
+            "next": (
+                "用你认定的那个具体项目名做精确检索（exact_repo_lookup 可做同名匹配），"
+                "并核对候选描述是否真的符合需求。在拿到描述相符的候选之前，"
+                "不要开始写安装/使用步骤。"),
+        })
+    # ---- 根因 A2：任务书里的项目名没出现在候选里 ----
+    elif pool and kw and kw.lower() not in pool.lower():
+        findings.append({
+            "kind": "retrieval_miss",
+            "severity": "root",
+            "mistake": "检索结果与任务要的项目无关，却仍然据它作答。",
+            "items": [{
+                "value": kw,
+                "why": f"候选池 {len(all_repos)} 个仓库里没有任何一个与该名字相关",
+            }],
+            "next": (
+                f"用项目名「{kw}」重做精确检索，拿到真候选再引用；"
+                "拿不到就如实说明「没检索到」，不要用无关候选凑。"),
+        })
+
+    # ---- 根因 B：零检索（没有任何工具结果就作答）----
+    if not pool and not src:
+        cites = extract_citations(reply)
+        findings.append({
+            "kind": "zero_retrieval",
+            "severity": "root",
+            "mistake": "零抓取就下断言——把训练记忆当成了「已核实的材料」。",
+            "items": [{"value": c, "why": "本轮 history 里工具结果 0 条，这个源没有任何来路"}
+                      for c in cites[:5]] or
+                     [{"value": "（本轮答复含具体命令/自称已核实）",
+                       "why": "本轮 history 里工具结果 0 条"}],
+            "next": (
+                "先经 ops_batch 发起检索并抓源（tools.call('web_search', ...)），"
+                "拿到候选再写；确实抓不到就如实说明「未检索到、无法确认」。"),
+        })
+
+    # ---- 根因 C：抓的是「入口/总览仓库」，本来就没有安装说明 ----
+    if src and real_issues and source_is_meta(src):
+        findings.append({
+            "kind": "meta_source",
+            "severity": "root",
+            "mistake": (
+                "在「入口/总览仓库」里找用法——这类仓库的职责是介绍生态，本身不写安装与"
+                "用法。在它上面推命令，只能靠记忆补，答错是必然的。"),
+            "items": [{
+                "value": "本次抓取的源",
+                "why": ("源里自述 entrance / ecosystem 之类的总览身份，"
+                        "且全文 0 条安装命令（无 npm install / pip install / brew install 等）"),
+            }],
+            "next": (
+                "改抓该项目的**实现仓库**（描述里写明「是 CLI / 是库本身」的那个，"
+                "不是介绍生态的入口页），从它的 README 取命令；"
+                "找不到实现仓库就如实说明。"),
+        })
+
+    # ---- 症状 A：引用未准入 ----
+    if refs:
+        items: list[dict] = []
+        for r in refs[:6]:
+            near = near_miss(r, pool, limit=1)
+            why = f"候选池共 {len(all_repos)} 个仓库，逐字比对没有这一条"
+            if near:
+                why += f"；候选里实际出现的是「{near[0]}」（与你写的不一致）"
+            items.append({"value": r, "why": why})
+        findings.append({
+            "kind": "unadmitted_citation",
+            "severity": "symptom",
+            "mistake": (
+                "引用了不在检索候选里的源——地址是自己拼的，等于绕过检索自行选定证据，"
+                "之后的所有结论都建立在自己挑的源上。"),
+            "items": items,
+            "next": (
+                "只引用候选池里真实出现过的仓库/网址（同一仓库的子页面可以）；"
+                "候选里没有就重搜，或如实说明没有检索到。"),
+        })
+
+    # ---- 症状 B：命令/目录在源里无据 ----
+    if real_issues:
+        src_lines = source_command_lines(src)
+        items = []
+        for c in real_issues[:6]:
+            subject = _cmd_subject(c)
+            near = near_miss(subject, src, limit=1) if subject else []
+            if not near:
+                near = near_miss(c, src, limit=1)
+            if not src:
+                why = "本轮 0 条工具结果，这条命令没有任何来源"
+            else:
+                why = f"源里可执行命令行共 {len(src_lines)} 条，逐字比对没有这一条"
+                if near:
+                    why += f"；源里实际出现的是「{near[0]}」，与你写的不一致"
+                else:
+                    why += "；源里也没有任何近似写法，说明这段不是你读到的内容"
+            items.append({"value": c, "why": why})
+        next_text = (
+            "回源逐条核对。上面「依据」里源内实际出现的写法只作**比对基准**，"
+            "不是给你的答案——命令要你自己按源重组；"
+            "源里没有这一段就如实说「官方文档未提供这一步的具体步骤」。")
+        if src and not src_lines:
+            next_text = (
+                "你抓到的这份源里**一条可执行命令行都没有**——它不是用法文档。"
+                "换成带安装与用法的源（实现仓库的 README）再写命令；拿不到就如实说明。")
+        findings.append({
+            "kind": "ungrounded_command",
+            "severity": "symptom",
+            "mistake": (
+                "给出的命令/目录在已抓取的源里不存在——把记忆里的通用写法当成了"
+                "读到的内容，属于凭记忆补全。"),
+            "items": items,
+            "next": next_text,
+        })
+
+    return {"ok": False, "findings": findings, "retrieval": retrieval,
+            "issues": issues, "refs": refs}
+
+
+def render_diagnosis(diag: dict, *, round_no: int = 1, max_rounds: int = 2) -> str:
+    """渲染凭证式打回消息：只说明「犯了什么错 + 依据」，不给正确答案。
+
+    边界（用户明确要求）：闸门负责**证伪**——证明这次答复为什么一定错；
+    正确答案必须由模型自己回源求，闸门不提供可照抄的成品。
+    """
+    if not diag or diag.get("ok"):
+        return ""
+    lines = [
+        f"【答复核查未通过 · 第 {round_no}/{max_rounds} 轮】",
+        "以下每条都有可复核的确定性依据，不是措辞建议——按现状不能交付。",
+        "请读懂「犯了什么错」和「依据」，自行回源改正。这里不会给出正确答案。",
+    ]
+    order = {"root": 0, "symptom": 1}
+    for f in sorted(diag.get("findings") or [],
+                    key=lambda x: order.get(x.get("severity"), 1)):
+        title = _KIND_TITLE.get(f.get("kind"), f.get("kind") or "问题")
+        n = len(f.get("items") or [])
+        lines.append("")
+        lines.append(f"— {title}" + (f"（{n} 条）" if n else ""))
+        if f.get("mistake"):
+            lines.append("  犯了什么错：" + f["mistake"])
+        for it in (f.get("items") or [])[:6]:
+            seg = "  · " + str(it.get("value") or "")
+            if it.get("why"):
+                seg += "\n     依据：" + it["why"]
+            near = it.get("nearest") or []
+            if near:
+                seg += "；源内出现的相关写法：" + "、".join(f"「{x}」" for x in near[:3])
+            lines.append(seg)
+        if f.get("next"):
+            lines.append("  → 该做的：" + f["next"])
+    lines.append("")
+    lines.append("改完再交。若确实拿不到可靠材料，就如实说明「没检索到 / 源里没提」——"
+                 "这比编一个像样的答案要好。")
+    return "\n".join(lines)

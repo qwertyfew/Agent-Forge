@@ -1050,61 +1050,24 @@ class Agent:
                 _g_cands = grounding.retrieval_candidates(history)
                 if (ground_blocks < 2 and not stopped()
                         and (grounding.is_howto_intent(user_text) or _g_cands.strip())):
-                    _g_issues = (grounding.reply_grounding_issues(
-                                     result.content or "", _g_src, intent=True)
-                                 if grounding.is_howto_intent(user_text) else [])
-                    # 证据准入（rerun56）：答复引用的仓库/网址必须来自本次检索候选，
-                    # 不许自己拼地址去抓一个「名字像」的源回来交差。
-                    _g_refs = (grounding.evidence_admission_issues(
-                                   result.content or "", _g_cands)
-                               if _g_cands.strip() else [])
-                    if _g_issues or _g_refs:
+                    # 诊断层（rerun57 后）：闸门不只判定「不合格」，还要说清
+                    # 「犯了什么错 + 确定性依据」，让下一轮有方向；但不给正确答案
+                    # （答案要模型自己回源求），避免它照抄闸门的提示蒙过去。
+                    _g_diag = grounding.diagnose(
+                        result.content or "", _g_src, _g_cands,
+                        task=user_text, intent=grounding.is_howto_intent(user_text))
+                    if not _g_diag.get("ok"):
                         ground_blocks += 1
                         _push({"role": "assistant",
                                "content": result.content or "", **replay_think})
-                        _parts: list[str] = []
-                        if _g_issues:
-                            if _g_src.strip():
-                                _parts.append(
-                                    "【操作类答复核查未通过】你这份最终答复里，下面这些操作指令在"
-                                    "你本次 fetch 的源（README / 网页 / 已读文件）里找不到对应内容"
-                                    "——它们看起来是通用模板，不是你实际读到的材料：\n- "
-                                    + "\n- ".join(f"`{c}`" for c in _g_issues))
-                            else:
-                                _parts.append(
-                                    "【操作类答复核查未通过】你这份答复属于「操作/使用类」问题，但本次"
-                                    "没有任何抓取记录（history 里没有 web_search / fetch 的工具结果），"
-                                    "却给出了具体运行命令或声称已参考官方文档：\n- "
-                                    + "\n- ".join(f"`{c}`" for c in _g_issues))
-                        if _g_refs:
-                            _parts.append(
-                                "【证据准入未通过】你答复里引用的这些源，不在本次检索给出的候选里"
-                                "——它们不是检索结果里的，是你自己拼出来的地址：\n- "
-                                + "\n- ".join(f"`{r}`" for r in _g_refs)
-                                + "\n  只允许引用 web_search / github_search / npm 检索结果里"
-                                  "**真实出现过**的仓库或网址（同一仓库下的子页面可以）。")
-                        if _g_issues and _g_src.strip():
-                            _tail = ("\n\n请回到你刚抓取的官方源，只陈述里面真正出现的命令/目录；"
-                                     "如果源里根本没讲「怎么修改前端 / 怎么运行」，就如实说明"
-                                     "「官方文档未提供这一步的具体步骤」，不要补通用套话。"
-                                     "改完给出最终答复。")
-                        elif _g_issues:
-                            _tail = ("\n\n在 PTC 常驻模式下，所有检索都必须经 ops_batch 脚本调用"
-                                     "（脚本内 tools.call('web_search', ...)）。请先用 ops_batch 调 web_search"
-                                     "抓到该项目的真实官方文档，再把文档里真实存在的命令/目录写进答复；"
-                                     "若确实没抓到，就如实说明「未抓取、无法确认」，不要凭记忆编造命令或"
-                                     "谎称已验证。改完给出最终答复。")
-                        else:
-                            _tail = ("\n\n请先用 web_search 检索到该项目，从返回的候选里选定"
-                                     "（★ 名字同名的那份为准，别按 star 猜），再用 fetch_url / "
-                                     "fetch_json 抓它的官方文档；引用的仓库/网址必须是候选里真的"
-                                     "出现过的。若检索确实没给出，就如实说明「没检索到该项目」，"
-                                     "不要自己拼一个地址去抓。改完给出最终答复。")
-                        _push({"role": "user", "content": "\n\n".join(_parts) + _tail})
-                        yield {"type": "grounding_gate", "issues": _g_issues,
-                               "refs": _g_refs,
+                        _push({"role": "user", "content": grounding.render_diagnosis(
+                            _g_diag, round_no=ground_blocks, max_rounds=2)})
+                        yield {"type": "grounding_gate",
+                               "issues": _g_diag.get("issues") or [],
+                               "refs": _g_diag.get("refs") or [],
                                "round": ground_blocks,
-                               "no_source": not bool(_g_src.strip())}
+                               "no_source": not bool(_g_src.strip()),
+                               "diagnosis": _g_diag}
                         continue
                 assistant_msg = {"role": "assistant", "content": result.content, **replay_think}
                 _push(assistant_msg)

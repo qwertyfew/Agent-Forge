@@ -159,8 +159,13 @@ def main() -> None:
           gates_ref and "marp-team/marp" in str(gates_ref[0].get("refs", [])),
           str(gates_ref[0].get("refs") if gates_ref else ""))
     _last_round = str([mm.get("content") for mm in (ag_ref.hub.rounds[-1] if ag_ref.hub.rounds else [])])
-    check("打回话术含「证据准入未通过」", "证据准入未通过" in _last_round,
-          _last_round[:200])
+    check("打回话术标题为「引用未准入」", "引用未准入" in _last_round, _last_round[:300])
+    # 诊断层要求：必须说清「犯了什么错」和「依据」，而不是只丢一句不合格
+    check("打回话术含「犯了什么错」", "犯了什么错" in _last_round, _last_round[:300])
+    check("打回话术含「依据」", "依据：" in _last_round, _last_round[:300])
+    check("打回话术不给正确答案（不出现可照抄的结论）",
+          "改抓实现仓库" not in _last_round or "描述里写明" in _last_round,
+          _last_round[:300])
     finals_ref = [e for e in evs_ref if e.get("type") == "assistant"]
     check("放行的是如实说明没检索到的答复",
           finals_ref and "没有给出 Marp" in finals_ref[-1]["content"],

@@ -241,6 +241,98 @@ def test_admission_ignores_non_retrieval_tools() -> None:
     _check("检索输出构成候选池", "marp-team/marp-cli" in G.retrieval_candidates(hist2))
 
 
+# ---------- 诊断层：说明「犯了什么错 + 依据」，且不给正确答案 ----------
+
+_META_SRC = (
+    "marp-team/marp — The entrance repository of Markdown presentation ecosystem. "
+    "This repository is the entry point for the ecosystem.\n"
+)
+_META_POOL = (
+    "[实测 · API] GitHub 官方搜索接口 · 查询「presentation」· 排序：相关度\n"
+    "  1. hyperoslo/Presentation  star=3068  https://github.com/hyperoslo/Presentation\n"
+    "  2. UnityTechnologies/Presentation  star=1130  https://github.com/UnityTechnologies/Presentation\n"
+    "  3. ChangbaFE/presentation  star=90  https://github.com/ChangbaFE/presentation\n"
+)
+
+
+def test_near_miss_points_to_longer_token() -> None:
+    # rerun56 的关键：模型写 @marp-team/marp，源里其实是 @marp-team/marp-cli
+    got = G.near_miss("@marp-team/marp", "install with npm i -g @marp-team/marp-cli")
+    _check("near_miss 指向前缀更长的真实写法",
+           any("marp-cli" in g for g in got), str(got))
+
+
+def test_near_miss_ignores_unrelated() -> None:
+    _check("near_miss 对无关内容返回空",
+           not G.near_miss("@marp-team/marp", "hello world nothing here"),
+           str(G.near_miss("@marp-team/marp", "hello world nothing here")))
+
+
+def test_pool_repos_from_render() -> None:
+    repos = G.pool_repos(_META_POOL)
+    _check("pool_repos 能从检索渲染里抽出仓库",
+           "hyperoslo/Presentation" in repos, str(repos))
+    # PDF/HTML 这类斜杠并列不是仓库
+    _check("pool_repos 排除 PDF/HTML 并列写法",
+           not any(r.lower() == "pdf/html" for r in G.pool_repos("见 PDF/HTML 两种导出")))
+
+
+def test_generic_flood_detected() -> None:
+    flood = G.generic_name_flood(G.pool_repos(_META_POOL, limit=40))
+    _check("识别「检索词落到通用词」（同名多 owner）",
+           "presentation" in flood, str(flood))
+
+
+def test_meta_source_detected() -> None:
+    _check("识别入口/总览仓库（无安装命令）", G.source_is_meta(_META_SRC))
+    _check("带安装命令的源不算总览页",
+           not G.source_is_meta(_META_SRC + "\nnpm install -g @marp-team/marp-cli\n"))
+
+
+def test_diagnose_clean_passes() -> None:
+    d = G.diagnose("见 README 的说明。", "nothing", "", task="怎么用")
+    _check("无问题时 ok=True", d["ok"] and not d["findings"])
+
+
+def test_diagnose_zero_source_has_mistake() -> None:
+    d = G.diagnose("运行 `python main.py` 即可。", "", "", task="怎么运行这个项目")
+    _check("零检索→判不合格", not d["ok"])
+    kinds = [f["kind"] for f in d["findings"]]
+    _check("零检索归为 zero_retrieval", "zero_retrieval" in kinds, str(kinds))
+    _check("每条 finding 都说明犯了什么错",
+           all(f.get("mistake") for f in d["findings"]), str(d["findings"]))
+
+
+def test_diagnose_grounded_reports_evidence() -> None:
+    # 有源、命令无据：依据必须说明「源里命令行共 N 条，逐字比对没有」
+    src = "Some readme.\n```bash\nnpm install -g @marp-team/marp-cli\n```\n"
+    d = G.diagnose("安装：`npm install -g @marp-team/marp`。", src, "",
+                   task="怎么安装这个项目")
+    _check("有源无据→判不合格", not d["ok"])
+    txt = G.render_diagnosis(d)
+    _check("依据里给出源内命令行条数", "可执行命令行共" in txt, txt[:200])
+    _check("依据里给出源内实际写法作比对（指出不一致，非答案）",
+           "marp-cli" in txt, txt[:400])
+
+
+def test_render_says_why_without_answer() -> None:
+    # 用户明确要求：闸门只证伪，不给正确答案。
+    d = G.diagnose(
+        "这个项目是 marp-team/marp，安装：\n```bash\nnpm install -g @marp-team/marp\n```\n",
+        _META_SRC, _META_POOL, task="找一个 markdown 转 ppt 的工具并说明怎么装")
+    txt = G.render_diagnosis(d)
+    _check("打回含「犯了什么错」", "犯了什么错" in txt, txt[:300])
+    _check("打回含「依据」", "依据：" in txt, txt[:300])
+    _check("打回声明不给答案", "不会给出正确答案" in txt, txt[:300])
+    _check("识别检索落到通用词", "通用词" in txt, txt[:300])
+    _check("识别抓的是入口/总览仓库", "入口/总览仓库" in txt, txt[:300])
+    # 不得出现可照抄的成品答案
+    _check("不含「query 直接写 Marp」这类答案",
+           "query 直接写" not in txt, txt[:300])
+    _check("不含「候选里这几个像」这类推荐",
+           "候选里这几个像" not in txt, txt[:300])
+
+
 def main() -> None:
     test_intent()
     test_bad_reply_flagged()
@@ -264,6 +356,15 @@ def main() -> None:
     test_admission_no_substring_cross()
     test_admission_empty_pool_skips()
     test_admission_ignores_non_retrieval_tools()
+    test_near_miss_points_to_longer_token()
+    test_near_miss_ignores_unrelated()
+    test_pool_repos_from_render()
+    test_generic_flood_detected()
+    test_meta_source_detected()
+    test_diagnose_clean_passes()
+    test_diagnose_zero_source_has_mistake()
+    test_diagnose_grounded_reports_evidence()
+    test_render_says_why_without_answer()
     print("\n全部通过。")
 
 
