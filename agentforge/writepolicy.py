@@ -167,6 +167,7 @@ def reject_message(path: str, content: str, issues, kind: str, cfg) -> str:
         "citation": "引用核查未通过",
         "claims": "语义核查未通过",
         "syntax": "语法检查失败",
+        "evidence": "证据核查未通过",
     }.get(kind, "核查未通过")
     n = note_reject(path)
     lines = [f"[错误] {head}，目标文件未写入：{path}"]

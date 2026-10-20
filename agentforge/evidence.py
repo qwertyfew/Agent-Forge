@@ -231,6 +231,105 @@ _NUM_RX = re.compile(
 )
 
 
+# ---------- 表格证据列核查：表头即契约 ----------
+#
+# 为什么需要这一层：_extract_citations 只认反引号 / 圆括号包裹的引用，rerun37
+# 的差距清单把引用写成表格单元格里的**裸文本**（learn_claude-code/.../code.py: …），
+# 提取器抓到 0 条，整条核查链空转——19 处引用 0 拦截（rerun25 的教训换了形状重演）。
+# 与其追着模型的格式习惯扩提取器，不如消费骨架表头这份契约文件：表头写明
+# 「附证据：…行号」的列就是证据列，逐行要求至少 1 处可定位的 `path:行号`，
+# 且行号必须落在 read_file 读过的区间。判据全部确定性，失败半径一行。
+
+# 表头含这些词的列视为证据列（任务书硬要求「附证据」会落进骨架表头）
+EVIDENCE_COL_RX = re.compile(r"证据|行号|出处")
+
+# 单元格里的 path:line 形状。先宽松抓取，再在代码里过滤：
+# 路径须含分隔符（裸文件名歧义，与主核查口径一致）、末段带扩展名点、非 URL。
+_ROW_ANCHOR_RX = re.compile(
+    r"([A-Za-z0-9_\-\u4e00-\u9fff]+(?:[./\\][A-Za-z0-9_\-\u4e00-\u9fff]+)*):"
+    r"(\d+)(?:-(\d+))?"
+)
+_PLACEHOLDER_CELLS = {"（待填）", "待填", "todo", "tbd", "n/a", "-"}
+
+
+def _anchor_problem(cell: str, ledger, root) -> str | None:
+    """证据列单元格必须含至少 1 处可定位的 path:行号。返回问题描述，None=通过。"""
+    fallback = ("需要至少 1 处 `path:起-止` 形式的可定位证据"
+                "（行号必须在 read_file 读过的区间内）")
+    for m in _ROW_ANCHOR_RX.finditer(cell):
+        rel, a = m.group(1).strip(), int(m.group(2))
+        b = int(m.group(3) or m.group(2))
+        if "://" in rel:                       # URL 不是仓库内证据
+            continue
+        if "/" not in rel and "\\" not in rel:
+            continue                            # 裸文件名歧义，跳过（与主核查一致）
+        if "." not in rel.replace("\\", "/").rsplit("/", 1)[-1]:
+            continue                            # 末段无扩展名 → 目录/符号，不算证据
+        p = Path(root) / rel
+        if not p.is_file():
+            fallback = f"`{rel}` 在工作区里不存在（路径为真才谈得上回源）"
+            continue
+        if ledger is not None and not ledger.was_read(p):
+            fallback = (f"`{rel}` 本任务从未 read_file 过"
+                        "（search_code / list_dir 片段不算已读）")
+            continue
+        n = ledger.line_count(p) if ledger else None
+        if n is None:
+            try:
+                n = sum(1 for _ in p.open("r", encoding="utf-8", errors="replace"))
+            except OSError:
+                n = None
+        if n is not None and a > n:
+            fallback = f"`{rel}:{a}` 超出文件实际行数（共 {n} 行）"
+            continue
+        ranges = ledger.read_ranges(p) if ledger is not None else []
+        if ranges and not any(x <= a and b <= y for x, y in ranges):
+            span = "、".join(f"{x}-{y}" for x, y in ranges[:4])
+            fallback = f"`{rel}:{a}-{b}` 不在你读过的区间（读过：{span}）"
+            continue
+        return None                             # 该列有一处可定位证据即通过
+    return fallback
+
+
+def check_row_evidence(header, row, *, ledger, root,
+                       skip_placeholder_rows: bool = False) -> str | None:
+    """校验一行表格的证据列。返回错误文案；None = 通过 / 无证据列约束。"""
+    if not header or not row:
+        return None
+    if skip_placeholder_rows and any(
+            (row[i] if i < len(row) else "").strip().lower() in _PLACEHOLDER_CELLS
+            for i in range(len(header))):
+        return None                              # 骨架行 / 半成品行交给「未填」判定
+    cols = [i for i, h in enumerate(header)
+            if i and EVIDENCE_COL_RX.search(h or "")]
+    if not cols:
+        return None
+    for i in cols:
+        cell = (row[i] if i < len(row) else "").strip()
+        if cell.lower() in _PLACEHOLDER_CELLS:
+            return f"第 {i + 1} 列「{header[i]}」还是占位符，没有可核查的证据"
+        verdict = _anchor_problem(cell, ledger, root)
+        if verdict:
+            return f"第 {i + 1} 列「{header[i]}」{verdict}"
+    return None
+
+
+def check_table_evidence(text: str, *, ledger, root,
+                         skip_placeholder_rows: bool = False) -> list[str]:
+    """整份内容里的表格逐行核查证据列。返回问题列表（空 = 通过 / 无此类表格）。"""
+    from . import skeleton as _sk
+    header = _sk.table_header(text)
+    if not header or not EVIDENCE_COL_RX.search("".join(header)):
+        return []
+    out: list[str] = []
+    for row in _sk.table_data_rows(text):
+        err = check_row_evidence(header, row, ledger=ledger, root=root,
+                                 skip_placeholder_rows=skip_placeholder_rows)
+        if err:
+            out.append(f"「{row[0] if row else ''}」行：{err}")
+    return out
+
+
 def audit_citations(
     content: str,
     guard,

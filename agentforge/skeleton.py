@@ -762,6 +762,36 @@ def _row_index(text: str) -> tuple[list[str], list[tuple[int, str]]]:
     return lines, rows
 
 
+def table_header(text: str) -> list[str] | None:
+    """表格的表头单元格（紧邻分隔行的第一行）；没有表格返回 None。"""
+    lines = _lines(text)
+    for i, s in enumerate(lines):
+        if s.strip().startswith("|") and i + 1 < len(lines) \
+                and _TABLE_SEP_RX.match(lines[i + 1].strip()):
+            return [c.strip() for c in s.strip().strip("|").split("|")]
+    return None
+
+
+def table_data_rows(text: str) -> list[list[str]]:
+    """全部数据行的完整单元格（含首列）。"""
+    lines, rows = _row_index(text)
+    return [[c.strip() for c in lines[idx].strip().strip("|").split("|")]
+            for idx, _ in rows]
+
+
+def row_cells(text: str, label: str) -> list[str] | None:
+    """`label` 行的完整单元格（含首列）。找不到 / 命中多行返回 None。"""
+    _, rows = _row_index(text)
+    want = _norm(label)
+    hit = [i for i, lab in rows if _norm(lab) == want]
+    if not hit:
+        hit = [i for i, lab in rows if want and (want in _norm(lab) or _norm(lab) in want)]
+    if len(hit) != 1:
+        return None
+    cells = [c.strip() for c in _lines(text)[hit[0]].strip().strip("|").split("|")]
+    return cells or None
+
+
 def fill_row(text: str, label: str, content: str) -> tuple[str, str | None]:
     """把表格里 `label` 这一行的其余单元格填上。返回 (新全文, 错误文案)。
 

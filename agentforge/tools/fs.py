@@ -5,7 +5,7 @@ import ast
 import json
 
 from .base import SAFE, WRITE, make_tool
-from ..evidence import audit_claims, audit_citations
+from ..evidence import audit_claims, audit_citations, check_row_evidence, check_table_evidence
 from .. import writepolicy
 from ..record import RECORDER_CTX
 from .. import skeleton
@@ -185,6 +185,16 @@ def build_fs_tools(guard, cfg):
         err, cit_audit = _content_gate(path, content)
         if err:
             return err
+        # 表格证据列核查（整表写入同样受约，跳过占位行——骨架行交给「未填」判定）。
+        # rerun37：整篇 write_file 把裸文本引用的表带过了闸，这里补上最后一道。
+        ev_problems = check_table_evidence(
+            content, ledger=getattr(guard, "ledger", None),
+            root=cfg.workspace_root, skip_placeholder_rows=True)
+        if ev_problems:
+            return writepolicy.reject_message(
+                path, content,
+                [(p.split("」行：")[0].lstrip("「") or "表格行", p) for p in ev_problems],
+                "evidence", cfg)
 
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8", newline="")
@@ -275,6 +285,20 @@ def build_fs_tools(guard, cfg):
                 err = row_err
         if err:
             return err
+        # 表格证据列核查（表头即契约）：表头写明「证据/行号/出处」的列，刚填的
+        # 这一行必须给出至少 1 处可定位的 path:行号（行号落在已读区间）。rerun37
+        # 实证裸文本引用让整条提取链空转，这里按单元格形状直接验，不靠提取器。
+        if row_mode:
+            ev_err = check_row_evidence(
+                skeleton.table_header(new_text) or [],
+                skeleton.row_cells(new_text, heading) or [],
+                ledger=getattr(guard, "ledger", None), root=cfg.workspace_root)
+            if ev_err:
+                return (f"[错误] 证据核查未通过，本行未写入：{path}\n"
+                        f"  - {ev_err}\n"
+                        "（本次只丢了这一行；已填好的行原样保留。）"
+                        "引用请写成 `path:起-止`，行号取你 read_file 回显区间内"
+                        "真实支撑该结论的行。")
         # 核查目标就是本节内容：这正是「骨架先行」的收益——单次失败的成本
         # 等于一节的生成，而不是整篇。
         gate_err, _ = _content_gate(path, content, tool="fill_section")

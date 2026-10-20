@@ -173,6 +173,61 @@ def main() -> int:
         out9c = wf6.run(path="notes/sparse.md", content=sparse)
         check("非密集文档裸引用不拦（checked<2）", out9c.startswith("已"), out9c[:150])
 
+        # ---------- 10. 表格证据列闸门（表头即契约；rerun37 现场回归） ----------
+        # rerun37：引用写成表格单元格里的裸文本，提取器抓到 0 条、核查链空转。
+        # 修法：表头写明「证据/行号」的列逐行验可定位 path:行号，不靠提取器。
+        cfg7, guard7, registry7 = setup(tmp / "g")
+        wf7 = registry7.get("write_file")
+        fs7 = registry7.get("fill_section")
+        for name in ("context.py", "permissions.py", "loop.py", "tasksession.py"):
+            guard7.ledger.mark_file(tmp / "g" / "agentforge" / name, lines=502,
+                                    read=True, ranges=[(1, 502)])
+        (tmp / "g" / "agentforge" / "extra.py").write_text("x = 1\n", encoding="utf-8")
+        hdr = ("| 对比点 | 对方做法（附证据：仓库/文件/行号） | "
+               "AgentForge 现状（附证据：文件/行号） | 建议 |\n| --- | --- | --- | --- |\n")
+        good_row = ("| agent loop | `agentforge/loop.py:3-14` 状态机驱动 | "
+                    "`agentforge/context.py:3-14` 台账 | 借鉴 |\n")
+        out10 = wf7.run(path="evals/tbl.md", content="# 清单\n\n" + hdr + good_row)
+        check("证据列带可定位行号 → 放行", out10.startswith("已"), out10[:200])
+        bare_row = ("| 工具调用 | external/learn-claude-code/s02_tool_use/code.py: "
+                    "标准 JSON Schema | agentforge/toolselect.py: 动态匹配 | 借鉴 |\n")
+        out10b = wf7.run(path="evals/tbl2.md", content="# 清单\n\n" + hdr + bare_row)
+        check("证据列裸文本引用 → 拒收（rerun37 现场形状）",
+              out10b.startswith("[错误] 证据核查未通过"), out10b[:300])
+        check("拒收点名证据列并教格式", "对方做法" in out10b and "path:起-止" in out10b,
+              out10b[:400])
+        check("裸文本表没有落盘", not (tmp / "g" / "evals" / "tbl2.md").exists())
+        unread_row = ("| 子代理 | `agentforge/extra.py:1-1` 隔离 | "
+                      "`agentforge/loop.py:3-14` 调度 | 借鉴 |\n")
+        out10c = wf7.run(path="evals/tbl3.md", content="# 清单\n\n" + hdr + unread_row)
+        check("证据列引用从未读过的文件 → 拒收", "从未 read_file" in out10c, out10c[:300])
+        out10d = wf7.run(path="evals/tbl4.md",
+                         content="# 清单\n\n" + hdr +
+                         good_row.replace("agentforge/loop.py:3-14",
+                                          "agentforge/loop.py:9999"))
+        check("行号超出文件长度 → 拒收",
+              "9999" in out10d and "超出" in out10d, out10d[:300])
+        skel_tbl = hdr + "| agent loop | （待填） | （待填） | （待填） |\n"
+        out10e = wf7.run(path="evals/tbl5.md", content="# 清单\n\n" + skel_tbl)
+        check("骨架占位行 → 放行（交给未填判定）", out10e.startswith("已"), out10e[:200])
+        plain_tbl = "| 优先级 | 建议项 | 预期收益 |\n| --- | --- | --- |\n| 1 | 压缩 | 省 token |\n"
+        out10f = wf7.run(path="evals/tbl6.md", content="# 借鉴\n\n" + plain_tbl)
+        check("无证据列表头 → 不约束", out10f.startswith("已"), out10f[:200])
+        # fill_section 行级闸门
+        wf7.run(path="evals/tbl7.md", content="# 清单\n\n" + hdr +
+                "| agent loop | （待填） | （待填） | （待填） |\n")
+        r10 = fs7.run(path="evals/tbl7.md", heading="agent loop",
+                      content="`agentforge/loop.py:3-14` 状态机 | "
+                              "`agentforge/context.py:3-14` 台账 | 借鉴")
+        check("fill_section 行证据校验通过 → 已填充", "已填充表格行" in r10, r10[:200])
+        r10b = fs7.run(path="evals/tbl7.md", heading="agent loop",
+                       content="裸文本引用没有行号 | agentforge/toolselect.py: 动态 | 借鉴")
+        check("fill_section 证据列裸文本 → 拒收本行",
+              r10b.startswith("[错误] 证据核查未通过") and "对方做法" in r10b, r10b[:300])
+        check("被拒行未写入（原内容还在）",
+              "`agentforge/loop.py:3-14` 状态机" in
+              (tmp / "g" / "evals" / "tbl7.md").read_text(encoding="utf-8"))
+
     print("\n全部断言通过。")
     return 0
 
