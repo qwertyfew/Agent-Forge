@@ -340,7 +340,11 @@ def _anchor_problem(cell: str, ledger, root) -> str | None:
 
 def check_row_evidence(header, row, *, ledger, root,
                        skip_placeholder_rows: bool = False) -> str | None:
-    """校验一行表格的证据列。返回错误文案；None = 通过 / 无证据列约束。"""
+    """校验一行表格的证据列。返回错误文案；None = 通过 / 无证据列约束。
+
+    门槛口径（2026-10-20 用户裁定，去任务过拟合）：**整行至少 1 处**可定位的
+    `path:行号` 即可，不要求每个证据列各自达标——防伪造（坐标必须真实且落在
+    已读区间）保持全量校验，完备性要求退回任务书本身的措辞。"""
     if not header or not row:
         return None
     if skip_placeholder_rows and any(
@@ -351,14 +355,20 @@ def check_row_evidence(header, row, *, ledger, root,
             if i and EVIDENCE_COL_RX.search(h or "")]
     if not cols:
         return None
+    problems: list[str] = []
     for i in cols:
         cell = (row[i] if i < len(row) else "").strip()
         if cell.lower() in _PLACEHOLDER_CELLS:
-            return f"第 {i + 1} 列「{header[i]}」还是占位符，没有可核查的证据"
+            problems.append(f"第 {i + 1} 列「{header[i]}」还是占位符")
+            continue
         verdict = _anchor_problem(cell, ledger, root)
-        if verdict:
-            return f"第 {i + 1} 列「{header[i]}」{verdict}"
-    return None
+        if verdict is None:
+            return None                          # 行内有一处可定位证据即通过
+        problems.append(f"第 {i + 1} 列「{header[i]}」{verdict}")
+    if not problems:
+        return None
+    return ("；".join(problems[:2])
+            + "——整行至少要有 1 处可定位的 `path:起-止`（行号须在已读区间内）")
 
 
 def check_table_evidence(text: str, *, ledger, root,

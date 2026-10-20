@@ -200,14 +200,22 @@ def main() -> int:
               "可直接引用这些已读到的坐标" in out10b and "L1:" in out10b, out10b[:500])
         check("裸文本表没有落盘", not (tmp / "g" / "evals" / "tbl2.md").exists())
         unread_row = ("| 子代理 | `agentforge/extra.py:1-1` 隔离 | "
-                      "`agentforge/loop.py:3-14` 调度 | 借鉴 |\n")
+                      "`agentforge/nothere.py:1-5` 调度 | 借鉴 |\n")
         out10c = wf7.run(path="evals/tbl3.md", content="# 清单\n\n" + hdr + unread_row)
-        check("证据列引用从未读过的文件 → 拒收", "从未 read_file" in out10c, out10c[:300])
+        check("整行无可定位锚点 → 上游引用核查即拒收",
+              out10c.startswith("[错误]"), out10c[:400])
+        relax_row = ("| 子代理 | agentforge/extra.py 的隔离描述（裸文本无行号） | "
+                     "`agentforge/loop.py:3-14` 调度 | 借鉴 |\n")
+        out10c2 = wf7.run(path="evals/tbl3b.md", content="# 清单\n\n" + hdr + relax_row)
+        check("放宽口径：整行有 1 处可定位锚点即放行（另一列可裸文本）",
+              out10c2.startswith("已"), out10c2[:250])
         out10d = wf7.run(path="evals/tbl4.md",
                          content="# 清单\n\n" + hdr +
                          good_row.replace("agentforge/loop.py:3-14",
-                                          "agentforge/loop.py:9999"))
-        check("行号超出文件长度 → 拒收",
+                                          "agentforge/loop.py:9999")
+                                 .replace("agentforge/context.py:3-14",
+                                          "agentforge/context.py:9999"))
+        check("两处行号都越界 → 拒收",
               "9999" in out10d and "超出" in out10d, out10d[:300])
         skel_tbl = hdr + "| agent loop | （待填） | （待填） | （待填） |\n"
         out10e = wf7.run(path="evals/tbl5.md", content="# 清单\n\n" + skel_tbl)
