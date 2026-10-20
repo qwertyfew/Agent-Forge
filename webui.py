@@ -2022,11 +2022,15 @@ class _Handler(BaseHTTPRequestHandler):
             # 案卷副本：按声明路径把本任务的产出镜像到 history/<任务>/output/。
             # 交付物留在任务书写的位置（代码类任务改的就是仓库文件，搬走会把
             # 工程改坏），output/ 是给复盘用的那一份——「产物对不对」只看它。
-            try:
-                layout.mirror_outputs(merged, self.cfg.workspace_root,
-                                      getattr(self.cli.agent, "outdir", "") or "")
-            except Exception:  # noqa: BLE001
-                pass
+            # 未交付的任务不镜像：layout 文档约定「没有交付物就没有 output/」，
+            # 骨架半成品留在 record/work/ 才是事实（rerun40-46 审计发现未交付
+            # 也会生成 output/，复盘时会把「没交出来」误读成「交了」）。
+            if not (err_msg or "").startswith("任务未交付"):
+                try:
+                    layout.mirror_outputs(merged, self.cfg.workspace_root,
+                                          getattr(self.cli.agent, "outdir", "") or "")
+                except Exception:  # noqa: BLE001
+                    pass
             self.tasks.finish(
                 task_id,
                 "stopped" if was_stopped else ("error" if err_msg else "done"),
