@@ -249,6 +249,15 @@ def build_fs_tools(guard, cfg):
                     "先用 write_skeleton 写骨架（只放小节标题），再逐节 fill_section。")
         text = p.read_text(encoding="utf-8", errors="replace")
         new_text, err = skeleton.fill(text, heading, content, mode)
+        row_mode = False
+        if err and "未找到小节" in err:
+            # 表格型骨架（任务书按「对比点 / 对方做法 / 现状 / 建议」铺的那种）没有
+            # `## 小节`，只有一行一个待填项。这里退一步按「行」填：单次失败的
+            # 成本仍然是一行，而不是整篇——rerun32 就是因为没有这个入口，只能
+            # 整篇重写，一次引用错误全篇作废，五轮下来零交付。
+            row_text, row_err = skeleton.fill_row(text, heading, content)
+            if row_err is None:
+                new_text, err, row_mode = row_text, None, True
         if err:
             return err
         # 核查目标就是本节内容：这正是「骨架先行」的收益——单次失败的成本
@@ -267,13 +276,14 @@ def build_fs_tools(guard, cfg):
                     [("", f"语法错误：{check}（文件已回滚到本次填充前）")],
                     "syntax", cfg)
         pr = skeleton.progress(cfg.workspace_root, p)
-        msg = (f"已填充小节「{heading}」（{len(content)} 字符，{mode}）→ {p}{ver}\n"
+        what = "表格行" if row_mode else "小节"
+        msg = (f"已填充{what}「{heading}」（{len(content)} 字符）→ {p}{ver}\n"
                + skeleton.progress_text(cfg.workspace_root, p))
         # rerun28 实测误用：模型把整张表格当成一节，逐行 fill_section(默认 replace)，
         # 十一次调用各自「成功」，前面填的行全被后一次替换掉——文件只剩最后一行，
         # 模型只好整篇 write_file 重写，骨架先行的收益归零。
         # 回执必须把「整节替换」这件事说清楚，并在文件没变长时明确点出来。
-        if str(mode or "").strip().lower() not in ("append", "a", "add"):
+        if not row_mode and str(mode or "").strip().lower() not in ("append", "a", "add"):
             if len(new_text) <= len(text):
                 msg += (f"\n⚠ 这次是整节替换，文件没有变长（{len(text)} → {len(new_text)} 字符）。"
                         f"同一节第二次 replace 会把上一次填的内容丢掉——表格行、分段续写"
@@ -400,15 +410,19 @@ def build_fs_tools(guard, cfg):
         ),
         make_tool(
             "fill_section",
-            "把一段正文填进骨架里的某一个 `## 小节`。内容核查只针对这一节，"
-            "被拒不牵连其他小节；mode='append' 用于把长章节分几次续写。"
+            "把一段正文填进骨架里的某一个 `## 小节`，或者表格骨架里的某一行。"
+            "内容核查只针对这一节/这一行，被拒不牵连别处；mode='append' 用于把长章节分几次续写。"
+            "如果骨架是表格（`| 首列 | … |`），heading 传**首列的单元格文字**"
+            "（如 `agent loop 结构`），content 用 `|` 分隔其余单元格（如 `对方做法 | 本仓现状 | 建议`），"
+            "系统会逐格填进这一行。表格骨架请一律逐行填，不要整篇 write_file 重写。"
             "注意 replace 是**整节替换**：同一节第二次 replace 会丢掉上一次填的内容，"
             "逐行/逐段追加同一个节必须用 mode='append'。",
             {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "骨架文件路径"},
-                    "heading": {"type": "string", "description": "小节标题（不含 #，如「3. 结论」）"},
+                    "heading": {"type": "string",
+                                "description": "小节标题（不含 #，如「3. 结论」）；表格骨架则填首列单元格文字"},
                     "content": {"type": "string", "description": "这一节的完整正文（Markdown）"},
                     "mode": {"type": "string", "enum": ["replace", "append"],
                              "description": "replace=替换该节正文（默认）；append=接在已有正文之后续写"},

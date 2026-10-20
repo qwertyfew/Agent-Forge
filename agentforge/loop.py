@@ -160,15 +160,18 @@ WRITE_RULES_TEMPLATE = """
 - 每次成功写盘都会在 `{rec}/versions/` 留一份全文快照（同一次任务里连续改写
   就是多个版本，谁也不覆盖谁）。所以：写错了**不用整篇重生成**，用 edit_file 改点到的几行即可；
   真要覆盖整篇也不会丢上一版，事后可从版本目录取回。
-- 中间/过渡文件（草稿、提取的数据、临时脚本、对比档）**可以照常写**，放进产出目录即可，
-  不进交付物清点（清空任务时可一并清理）；交付物仍然只有任务书点名的那几个文件。
+- 中间/过渡文件（草稿、提取的数据、临时脚本、对比档）**可以照常写**：相对路径会自动
+  落到任务目录的 `{rec}/work/`（保留你给的子目录），不进交付物清点。{out_note}
+  交付物仍然只有任务书点名的那几个文件。
 - 超过两节的文档**先写骨架再分段填**：write_skeleton 只放 `## 小节标题` + 一句意图，
   再 fill_section 一节一节填；同一节要续写用 mode="append"（replace 是整节替换）。
   骨架不算交付：空着小节的文件，收尾核查判未交付。
 - 任务书里点名「必须覆盖的项」时，harness 会在开工前按这些项建好骨架文件
   （表格型任务就是一表头 + 每项一行「（待填）」）。**直接在那个文件上逐项填**：
-  表格用 edit_file 换掉「（待填）」，分节骨架用 fill_section。首列/标题不要删改，
+  表格用 fill_section（heading 传首列文字，content 用 `|` 分隔其余格子）或 edit_file
+  换掉「（待填）」，分节骨架用 fill_section 填小节。首列/标题不要删改，
   收尾按这一列对账——少一项就是未交付，跟写得多顺没关系。
+  表格骨架**不要整篇 write_file 重写**：一次引用错误就全篇作废，逐行填只废一行。
 - 引用密集的文档（≥3 处项目内路径）在写之前必须读过被引用的文件，否则写前门槛拒收并列出必读清单。
 - 工具调用方式随模式走：PTC 常驻时这些都写在 ops_batch 脚本里，
   如 `call("write_skeleton", path=..., outline=...)`、`call("fill_section", path=..., heading=..., content=...)`。
@@ -471,7 +474,10 @@ class Agent:
             outside_rule=OUTSIDE_RULE[self.full_access],
             # 记录目录随任务产出目录走；没有产出目录（CLI 直连）时退到 history/_records
             write_rules=WRITE_RULES_TEMPLATE.format(
-                rec=(f"{self.outdir}/_records" if self.outdir else "history/_records")),
+                rec=(f"{self.outdir}/record" if self.outdir else "history/record"),
+                out_note=(f"收尾时 harness 会把交付物按声明路径镜像一份到 "
+                          f"`{self.outdir}/output/`，供复盘对照。"
+                          if self.outdir else "")),
         )
         # 产出目录规则放在「工作环境」之后：目录名由编排层按任务发起时间算好，
         # 员工只管往里写；不设置（普通闲聊等）就不占提示词字节。
@@ -1262,8 +1268,8 @@ class Agent:
                                   "（例如带「推测」「大概」字样、或你并未真正读到的行号）。"
                                   "请在脚本里删除无法复现的引用、只保留你真正读到的文件与行号，"
                                   "然后用 call('write_file', path=..., content=...) 重新写入同一份交付物。"
-                                  "若文件里已经有骨架、只是有空着的小节，"
-                                  "用 call('fill_section', path=..., heading=..., content=...) 逐节填完即可，"
+                                  "若文件里已经有骨架、只是有空着的小节或表格行，"
+                                  "用 call('fill_section', path=..., heading=..., content=...) 逐节/逐行填完即可，"
                                   "不必整篇重写。"
                                   "写完后给出最终答复。若你确认该文件不该由本轮写出，"
                                   "请在最终答复里明确说明原因，不要声称已写入。")})

@@ -175,6 +175,29 @@ def main() -> None:
     check("D 没有 file_log 时由记录兜底出现在产出清单",
           len(merged2) == 1 and merged2[0]["path"] == "docs/rep.md", repr(merged2))
 
+    # ---------- E) 表格骨架逐行填：粒度与骨架一致 ----------
+    # rerun32 零交付的根因：fill_section 只认 `## 小节`，表格骨架没有逐行入口，
+    # 模型只能整篇 write_file，一次引用错误全篇作废。
+    tbl = (root / "evals/gap.md").read_text(encoding="utf-8")
+    one, err = skel.fill_row(tbl, "上下文压缩策略",
+                             "s08 压缩后重放 | context.py 只截断 | 可借鉴")
+    check("E 按首列定位行并逐格填满", err is None and "| 上下文压缩策略 | s08 压缩后重放 |"
+          " context.py 只截断 | 可借鉴 |" in one, repr(err))
+    check("E 填行后待填位少一个", one.count("（待填）") == tbl.count("（待填）") - 3,
+          f"{tbl.count('（待填）')} → {one.count('（待填）')}")
+    check("E 列数不足时报错且不动原文",
+          skel.fill_row(tbl, "上下文压缩策略", "只有一格")[1] is not None
+          and skel.fill_row(tbl, "上下文压缩策略", "只有一格")[0] == tbl)
+    check("E 列数超出也报错", skel.fill_row(tbl, "上下文压缩策略", "a | b | c | d")[1]
+          is not None)
+    miss = skel.fill_row(tbl, "不存在的项", "a | b | c")
+    check("E 首列不存在时报错并列出可用行",
+          miss[0] == tbl and "可用的行" in (miss[1] or ""), repr(miss[1]))
+    # 首列带括注时按归一化匹配
+    check("E 括注差异也能定位同一行",
+          skel.fill_row(tbl, "会话恢复", "a | b | c")[1] is None,
+          repr(skel.fill_row(tbl, "会话恢复", "a | b | c")[1]))
+
     print("\n全部断言通过。")
 
 

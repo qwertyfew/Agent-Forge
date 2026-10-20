@@ -739,3 +739,75 @@ def required_missing(root: str | Path, rel: str, required: list[str]) -> list[st
     if text is None:
         return list(required or [])
     return coverage_missing(text, required)
+
+
+def _row_index(text: str) -> tuple[list[str], list[tuple[int, str]]]:
+    """返回 (全文行, [(行下标, 首列文本)])——只认真正的表格数据行（跳过表头/分隔）。"""
+    lines = _lines(text)
+    rows: list[tuple[int, str]] = []
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if s.startswith("|") and i + 1 < len(lines) \
+                and _TABLE_SEP_RX.match(lines[i + 1].strip()):
+            j = i + 2
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                cells = [c.strip() for c in lines[j].strip().strip("|").split("|")]
+                if cells and cells[0]:
+                    rows.append((j, cells[0]))
+                j += 1
+            i = j
+            continue
+        i += 1
+    return lines, rows
+
+
+def fill_row(text: str, label: str, content: str) -> tuple[str, str | None]:
+    """把表格里 `label` 这一行的其余单元格填上。返回 (新全文, 错误文案)。
+
+    为什么需要它：任务书骨架常常是表格（一表头 + 每个必填项一行），而
+    `fill_section` 只认 `## 小节`。没有逐行入口时，模型只能整篇 write_file，
+    一次引用错误就全篇作废——rerun32 就这样连撞五轮、最终零交付。
+    有了它，单次失败的成本和分节骨架一样：一行。
+    """
+    body = str(content or "").strip()
+    if not body:
+        return text, "[错误] content 为空，没有可填入的内容。"
+    lines, rows = _row_index(text)
+    if not rows:
+        return text, "[错误] 这个文件里没有表格（或表格还没有数据行），无法按行填充。"
+    want = _norm(label)
+    hit = [i for i, lab in rows if _norm(lab) == want]
+    if not hit:
+        hit = [i for i, lab in rows if want and (want in _norm(lab) or _norm(lab) in want)]
+    if len(hit) != 1:
+        avail = "、".join(lab for _, lab in rows[:12])
+        if not hit:
+            return text, (f"[错误] 表格里没有「{label}」这一行，文件未改动。\n"
+                          f"可用的行：{avail}")
+        return text, (f"[错误] 「{label}」匹配到多行（{len(hit)} 行），不猜。\n"
+                      f"可用的行：{avail}\n请用首列原文重新调用。")
+    idx = hit[0]
+    cells = [c.strip() for c in lines[idx].strip().strip("|").split("|")]
+    first = cells[0] if cells else str(label)
+    want_cols = len(cells) - 1
+    if body.startswith("|"):
+        new_row = body
+        got = len([c for c in new_row.strip().strip("|").split("|")])
+    else:
+        parts = [p.strip() for p in body.split("|")]
+        got = len(parts)
+        new_row = "| " + " | ".join([first] + parts) + " |"
+    if got != want_cols:
+        # 列数不符会让整张表错位（后面所有行都跟着歪），宁可拒掉这一行。
+        return text, (f"[错误] 这一行需要 {want_cols} 个单元格，"
+                      f"你给了 {got} 个，文件未改动。\n"
+                      f"表头是：{' | '.join(cells)}\n"
+                      f"content 用 `|` 分隔其余 {want_cols} 格，例如 "
+                      f"`证据A | 证据B | 建议`。")
+    out = list(lines)
+    out[idx] = new_row
+    joined = "\n".join(out)
+    if str(text or "").endswith("\n"):
+        joined += "\n"
+    return joined, None
