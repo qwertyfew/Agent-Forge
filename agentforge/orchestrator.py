@@ -1410,6 +1410,19 @@ def run_task(
     # 纯问答不占提示词字节。
     outdir = "history/" + time.strftime("%Y%m%d-%H%M%S")
     agent.outdir = outdir
+    # 任务级操作记录（文件）：读过哪些文件的哪些行、每次写盘的全文版本、引用核查
+    # 结论，全部 append-only 落在这个任务自己的目录里。它是「证据」的事实源，
+    # 台账只是它的内存视图——所以修正轮、重启、乃至另一个进程，看到的都是同一份。
+    # 记录由 harness 写，不需要模型有权限，也不会被算成任务的产出文件。
+    try:
+        from pathlib import Path as _P
+
+        from .record import Recorder
+
+        agent.recorder = Recorder(_P(agent.cfg.workspace_root) / outdir / "_records",
+                                  rel_root=agent.cfg.workspace_root)
+    except Exception:  # noqa: BLE001 —— 记录不可用不该阻断任务
+        agent.recorder = None
     if (auto_plan and not pinned
             and getattr(agent.cfg, "dispatcher_enabled", False)
             and _orchestration_wanted(message, agent.cfg)
@@ -1490,7 +1503,9 @@ def run_task(
     # 不该因为「换了步骤 / 换了模型重跑同一步」就当作没读过——否则第二步写
     # 交付物时，第一步读过的文件全被判「从未 read_file」，引用核查与写前
     # 门槛双杀（rerun27 的零交付就是这么来的）。
-    task_ledger = EvidenceLedger()
+    # 带上 recorder：即使这条对象因为某种路径没被传下去，新建的台账也会从
+    # evidence.jsonl 里把自己读回来（文件才是事实源）。
+    task_ledger = EvidenceLedger(recorder=getattr(agent, "recorder", None))
 
     def _step_events(step_idx: int, prompt_: str, relay_: list | None):
         """跑一步 agent：透传事件流，返回 (summary, failed, halted, hist)。

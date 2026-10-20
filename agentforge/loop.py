@@ -15,6 +15,7 @@ from . import verify as verify_gate
 from .artifact import FILE_TOOLS, classify_tool_write
 from .context import Compressor, measure
 from .evidence import EvidenceLedger
+from .record import RECORDER_CTX
 from .journal import Journal, new_sid
 from .llm import OllamaClient, parse_text_tool_calls
 from .toolselect import PTC_SURFACE
@@ -148,17 +149,24 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
 - 被拒绝时不要反复重试同一操作，换一种方式或向用户说明。
 - 禁止删除工作区之外的任何东西。
 
-## 写文件的三条硬规则（架构层真的会拦，不是建议）
-- 写需要引用代码事实的文档（分析 / 差距清单 / 逆向报告）之前，先用 read_file 真读过要引用的文件。
-  本任务一次都没读过就提交引用密集型内容，程序会直接拒收并列出必读清单——引用只能来自读过的代码，
-  凭印象写出来的路径即使存在，结论也多半是错的。
-- 超过两节的文档**先写骨架再分段填**：write_skeleton(path, outline) 只放 `## 小节标题`
-  和一句话意图（几百字符），然后 fill_section(path, heading, content) 一节一节填正文，
-  长章节用 mode="append" 续写。骨架几乎不会被内容核查拒，正文被拒也只丢这一节，
-  已经填好的小节原地保留。**骨架不算交付**：空着小节的文件，收尾核查一律判未交付。
-- 被核查拒绝时**不要整篇重写**：被拒内容会自动存成 .drafts/ 下的草稿，用 edit_file 只改点到的几行，
-  改完复制到目标路径。整篇重写会把已经写对的部分也改坏，还多烧一轮生成。
-- 工具调用方式随模式走：PTC 常驻时上面这些都写在 ops_batch 脚本里，
+{write_rules}
+"""
+
+WRITE_RULES_TEMPLATE = """
+## 写文件：系统按记录核对，你不需要自证
+- 你每次 read_file 读了哪些文件的哪些行，harness 都记在 `{rec}/evidence.jsonl`。
+  写文档时引用 `path:行号`，行号必须落在这份记录里你真正读过的区间内；否则程序直接拒收，
+  并回传「你实际读过的区间」。**不需要为了留痕额外写中间文件**——读这个动作本身已经被记录。
+- 每次成功写盘都会在 `{rec}/versions/` 留一份全文快照（同一次任务里连续改写
+  就是多个版本，谁也不覆盖谁）。所以：写错了**不用整篇重生成**，用 edit_file 改点到的几行即可；
+  真要覆盖整篇也不会丢上一版，事后可从版本目录取回。
+- 中间/过渡文件（草稿、提取的数据、临时脚本、对比档）**可以照常写**，放进产出目录即可，
+  不进交付物清点（清空任务时可一并清理）；交付物仍然只有任务书点名的那几个文件。
+- 超过两节的文档**先写骨架再分段填**：write_skeleton 只放 `## 小节标题` + 一句意图，
+  再 fill_section 一节一节填；同一节要续写用 mode="append"（replace 是整节替换）。
+  骨架不算交付：空着小节的文件，收尾核查判未交付。
+- 引用密集的文档（≥3 处项目内路径）在写之前必须读过被引用的文件，否则写前门槛拒收并列出必读清单。
+- 工具调用方式随模式走：PTC 常驻时这些都写在 ops_batch 脚本里，
   如 `call("write_skeleton", path=..., outline=...)`、`call("fill_section", path=..., heading=..., content=...)`。
 """
 
@@ -457,6 +465,9 @@ class Agent:
             model_desc=spec.desc,
             permission=self.permission_label,
             outside_rule=OUTSIDE_RULE[self.full_access],
+            # 记录目录随任务产出目录走；没有产出目录（CLI 直连）时退到 history/_records
+            write_rules=WRITE_RULES_TEMPLATE.format(
+                rec=(f"{self.outdir}/_records" if self.outdir else "history/_records")),
         )
         # 产出目录规则放在「工作环境」之后：目录名由编排层按任务发起时间算好，
         # 员工只管往里写；不设置（普通闲聊等）就不占提示词字节。
@@ -677,7 +688,11 @@ class Agent:
         if ledger is not None:
             self.guard.ledger = ledger
         else:
-            self.guard.ledger = EvidenceLedger()
+            # 新建台账也带上任务记录器：构造时从 evidence.jsonl 回填「读过什么、
+            # 读到哪些行」。于是不需要任何人在各轮之间传对象——换了 run、换了
+            # 步骤、甚至进程重启，证据都还在文件里（文件层级保证，而不是靠
+            # 调用方记得传参）。
+            self.guard.ledger = EvidenceLedger(recorder=getattr(self, "recorder", None))
         # ops_batch（PTC）脚本内的写操作要记入本任务台账；agent 实例本身在
         # 工具执行点临时挂到 OPS_AGENT_CTX（见主循环 _execute 调用处）。
         self._file_log = file_log
@@ -1298,6 +1313,14 @@ class Agent:
         # 产出目录 + 放行名单随调用注入：写类工具据此把相对路径强制落进产出目录
         ot = OUTDIR_CTX.set(self.outdir or None)
         wt = WRITE_ALLOW.set(getattr(self, "_write_allow", frozenset()))
+        # 任务记录器随调用注入：写类工具在真正落盘后，会把这一版全文快照进
+        # history/<task>/versions/。覆盖因此永不丢内容（每次写都是一个新文件），
+        # 整节替换、整篇重写都只是「多了一个版本」，而不是不可逆的破坏。
+        # 脚本线程里执行的内层调用也会经过这里，所以 PTC 路径自动覆盖。
+        rec_token = None
+        _rec = getattr(getattr(self.guard, "ledger", None), "recorder", None)
+        if _rec is not None:
+            rec_token = RECORDER_CTX.set(_rec)
         try:
             with claim_write(claim_key):
                 out = str(tool.run(**(args or {})))
@@ -1327,6 +1350,8 @@ class Agent:
             OUTSIDE_OK.reset(token)
             OUTDIR_CTX.reset(ot)
             WRITE_ALLOW.reset(wt)
+            if rec_token is not None:
+                RECORDER_CTX.reset(rec_token)
 
         # 证据台账：成功读取 / 检索 / 抓取到的路径记进来（架构层，供写报告校验引用）。
         # 只记成功结果（以 [错误] / [已拒绝] 开头视为失败，不记）。
@@ -1358,13 +1383,16 @@ class Agent:
                 if p.is_dir():
                     ledger.mark_dir(p)
                     return
-                # 成功回显头部带「(N 行, 显示 a-b)」，顺手记下总行数供行号校验
-                m = re.search(r"\((\d+)\s*行", out)
+                # 成功回显头部带「(N 行, 显示 a-b)」：总行数供行号越界校验，
+                # **显示区间**供「引用的行号是否真读过」校验（rerun28 前的核查
+                # 只到文件级：读过第 1-60 行，照样能引用第 300 行而没人拦）。
+                m = re.search(r"\((\d+)\s*行(?:,\s*显示\s*(\d+)-(\d+))?\)", out)
                 n = int(m.group(1)) if m else None
+                rng = [(int(m.group(2)), int(m.group(3)))] if (m and m.group(2)) else []
                 # read=True：read_file 是台账里唯一算「真读过」的通道。
                 # 交付物引用 external/ 仓库文件时，硬闸只认这个标记（rerun12 后
                 # 新增）——search_code 片段不算已读，防止片段结论直达交付物。
-                ledger.mark_file(p, lines=n, read=True)
+                ledger.mark_file(p, lines=n, read=True, ranges=rng)
             return
 
         if name in ("search_code", "find_files"):

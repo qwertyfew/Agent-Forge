@@ -7,6 +7,7 @@ import json
 from .base import SAFE, WRITE, make_tool
 from ..evidence import audit_claims, audit_citations
 from .. import writepolicy
+from ..record import RECORDER_CTX
 from .. import skeleton
 def _syntax_check(p: Path) -> str | None:
     try:
@@ -133,6 +134,40 @@ def build_fs_tools(guard, cfg):
         p = rfw(path) if rfw else guard.resolve(path)
         return p, p != guard.resolve(path)
 
+    def _snapshot(path: str, content: str, old: str) -> str:
+        """落盘后留一份全文版本，返回写进回执的说明（无记录器时返回空串）。
+
+        这是「用文件层级保证」的那一半：每次成功写盘都是一个**新文件**，
+        所以整节替换 / 整篇重写都不再是不可逆的破坏——上一版永远在
+        history/<task>/versions/ 里。模型被覆盖了内容也不需要重生成，直接
+        从版本恢复；人复盘时也能逐版对比。
+        """
+        rec = RECORDER_CTX.get()
+        if rec is None:
+            return ""
+        try:
+            rel, add, rem = rec.version(path, content, old=old)
+        except Exception:  # noqa: BLE001
+            return ""
+        if not rel:
+            return ""
+        stat = f"+{add}/-{rem} 行" if (add or rem) else "内容未变"
+        return f"\n  版本：{rel}（{stat}）"
+
+    def _record_citations(path: str, audit, version: str) -> None:
+        """把引用核查结论也落成文件（citations.jsonl），供复盘与自动评估。"""
+        rec = RECORDER_CTX.get()
+        if rec is None or audit is None:
+            return
+        try:
+            stats = getattr(audit, "stats", None) or {}
+            rec.citations(path, total=int(stats.get("total", 0)),
+                          with_line=int(stats.get("with_line", 0)),
+                          inside=int(stats.get("inside", 0)),
+                          outside=int(stats.get("outside", 0)), version=version)
+        except Exception:  # noqa: BLE001
+            pass
+
     # ---------- write_file ----------
     def write_file(path: str, content: str) -> str:
         # 产出目录的架构级保证：任务设有产出目录时，相对路径强制落进去
@@ -162,6 +197,10 @@ def build_fs_tools(guard, cfg):
         action = "覆盖" if existed else "新建"
         diff = "" if not existed else f"（原 {len(old)} 字符 → 现 {len(content)} 字符）"
         note = "（相对路径已按产出规则自动写入产出目录）" if redirected else ""
+        ver = _snapshot(path, content, old)
+        note += ver
+        if cit_audit is not None:
+            _record_citations(path, cit_audit, ver.split("版本：")[-1].split("（")[0] if ver else "")
         # 软警示（不阻断）：把引用核查的 warning 回传给模型，让它有机会修正
         if cit_audit is not None:
             warns = [i for i in cit_audit.issues if i.level == "warn"]
@@ -187,12 +226,13 @@ def build_fs_tools(guard, cfg):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(outline, encoding="utf-8", newline="")
         skeleton.record_skeleton(cfg.workspace_root, p, outline)
+        ver = _snapshot(path, outline, "")
         st = skeleton.status(outline)
         names = "、".join(s.heading for s in skeleton.body_sections(outline)[:12])
         note = "（相对路径已按产出规则自动写入产出目录）" if redirected else ""
         return (
             f"已{'覆盖' if existed else '新建'}骨架 {p}（{st['total']} 节 / "
-            f"{len(outline)} 字符）{note}\n"
+            f"{len(outline)} 字符）{note}{ver}\n"
             f"小节：{names}\n"
             "下一步：用 fill_section(path, heading, content) 一次填一节，"
             "长章节第二次用 mode='append' 续写同一节。\n"
@@ -217,6 +257,7 @@ def build_fs_tools(guard, cfg):
         if gate_err:
             return gate_err + "\n（本次只丢了这一节；已填好的小节原样保留在文件里。）"
         p.write_text(new_text, encoding="utf-8", newline="")
+        ver = _snapshot(path, new_text, text)
         if p.suffix.lower() in {".py", ".json"}:
             check = _syntax_check(p)
             if check:
@@ -226,7 +267,7 @@ def build_fs_tools(guard, cfg):
                     [("", f"语法错误：{check}（文件已回滚到本次填充前）")],
                     "syntax", cfg)
         pr = skeleton.progress(cfg.workspace_root, p)
-        msg = (f"已填充小节「{heading}」（{len(content)} 字符，{mode}）→ {p}\n"
+        msg = (f"已填充小节「{heading}」（{len(content)} 字符，{mode}）→ {p}{ver}\n"
                + skeleton.progress_text(cfg.workspace_root, p))
         # rerun28 实测误用：模型把整张表格当成一节，逐行 fill_section(默认 replace)，
         # 十一次调用各自「成功」，前面填的行全被后一次替换掉——文件只剩最后一行，
@@ -269,7 +310,8 @@ def build_fs_tools(guard, cfg):
         if check_result:
             p.write_text(src, encoding="utf-8", newline="")
             return f"[错误] 修改已回滚（语法检查失败）: {check_result}\n你的 new_text 引入了语法错误，请修正后重试。"
-        return f"已修改 {p}（1 处替换）"
+        ver = _snapshot(path, src.replace(old_text, new_text, 1), src)
+        return f"已修改 {p}（1 处替换）{ver}"
 
     # ---------- delete_file ----------
     def delete_file(path: str) -> str:

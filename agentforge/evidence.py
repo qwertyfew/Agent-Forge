@@ -64,10 +64,44 @@ class EvidenceLedger:
     记进来。写报告做引用校验时，它用于判断「这个路径模型到底有没有真正读过」。
     """
 
-    def __init__(self) -> None:
-        # 解析后的绝对路径（小写）-> {"is_dir": bool, "lines": int|None, "read": bool}
+    def __init__(self, recorder=None) -> None:
+        # 解析后的绝对路径（小写）-> {"is_dir": bool, "lines": int|None, "read": bool,
+        #                              "ranges": [(a, b), …]}
         self._files: dict[str, dict] = {}
         self._web: set[str] = set()  # 抓过的网页 URL（二手来源标记）
+        # 文件化记录：给了 recorder 就把每次读取落进 history/<task>/evidence.jsonl，
+        # 并在构造时从该文件重建索引。这样「读过什么」不再依赖某个对象活着——
+        # 修正轮、重启、另一个进程都能看到同一份事实（rerun27 的失忆就是这么修的，
+        # 但那时只是把对象传来传去，进程一重启证据还是没了）。
+        self.recorder = recorder
+        if recorder is not None:
+            self.hydrate()
+
+    def hydrate(self) -> int:
+        """从 evidence.jsonl 重建「读过哪些文件、读到哪些行」。返回重建条数。"""
+        if self.recorder is None:
+            return 0
+        try:
+            reads = self.recorder.reads()
+        except Exception:  # noqa: BLE001
+            return 0
+        root = getattr(self.recorder, "rel_root", None)
+        n = 0
+        for rel, rec in reads.items():
+            p = Path(rel)
+            if root is not None and not p.is_absolute():
+                p = Path(root) / rel
+            key = self._key(p)
+            cur = self._files.get(key) or {}
+            ranges = list(cur.get("ranges") or []) + list(rec.get("ranges") or [])
+            self._files[key] = {
+                "is_dir": False,
+                "lines": rec.get("lines") or cur.get("lines"),
+                "read": True,
+                "ranges": ranges,
+            }
+            n += 1
+        return n
 
     @staticmethod
     def _key(p: Path) -> str:
@@ -77,8 +111,35 @@ class EvidenceLedger:
             return str(p).lower()
 
     def mark_file(self, p: Path, is_dir: bool = False, lines: int | None = None,
-                  read: bool = False) -> None:
-        self._files[self._key(p)] = {"is_dir": is_dir, "lines": lines, "read": read}
+                  read: bool = False, ranges: list[tuple[int, int]] | None = None,
+                  record: bool = True) -> None:
+        """登记一个文件。ranges 是本次**实际显示给模型**的行区间（read_file 回显里
+        的「显示 a-b」）——写盘时用它校验「引用的行号确实是你读过的行」，而不是
+        只看「这个文件读过没有」。record=False 用于 hydrate 回填，避免重复写记录。"""
+        key = self._key(p)
+        prev = self._files.get(key) or {}
+        merged = list(prev.get("ranges") or [])
+        for r in (ranges or []):
+            try:
+                rr = (int(r[0]), int(r[1]))
+            except (TypeError, IndexError, ValueError):
+                continue
+            if rr not in merged:
+                merged.append(rr)
+        self._files[key] = {
+            "is_dir": is_dir, "lines": lines if lines is not None else prev.get("lines"),
+            "read": bool(read) or bool(prev.get("read")), "ranges": merged,
+        }
+        if record and read and self.recorder is not None and not is_dir:
+            try:
+                self.recorder.read(p, ranges=ranges or [], total_lines=lines)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def read_ranges(self, p: Path) -> list[tuple[int, int]]:
+        """本任务对这个文件实际读过的行区间（空列表 = 只确认存在，没读过正文）。"""
+        rec = self._files.get(self._key(p)) or {}
+        return list(rec.get("ranges") or [])
 
     def mark_dir(self, p: Path) -> None:
         self.mark_file(p, is_dir=True)
@@ -128,6 +189,10 @@ class CitationIssue(NamedTuple):
 class CitationAudit(NamedTuple):
     issues: list[CitationIssue]
     checked: int    # 实际进入校验的引用数（含 / 且落在工作区内的）
+    # 统计口径（落 history/<task>/citations.jsonl，供复盘与自动评估）：
+    # refs=抽出的引用总数，with_line=带行号的，inside_read=行号落在读过区间，
+    # outside_read=行号在本任务读过的区间之外（＝凭印象写的行号）
+    stats: dict | None = None
 
 
 def _extract_citations(text: str) -> list[str]:
@@ -181,6 +246,7 @@ def audit_citations(
     checked = 0
     root = Path(workspace_root).resolve()
     candidates = _extract_citations(content)
+    stats = {"total": len(candidates), "with_line": 0, "inside": 0, "outside": 0}
 
     for token in candidates:
         is_dir_ref = token.endswith("/")
@@ -237,7 +303,10 @@ def audit_citations(
             continue
 
         # 行号越界校验（确定性）
-        if line_a is not None:
+        with_line = line_a is not None
+        inside = outside = False
+        if with_line:
+            stats["with_line"] += 1
             n = ledger.line_count(p) if ledger else None
             if n is None:
                 try:
@@ -248,6 +317,24 @@ def audit_citations(
                 issues.append(CitationIssue(
                     "error", "line_range", token,
                     f"行号 {line_a} 超出文件实际范围（共 {n} 行）: {p}"))
+            # 区间校验：读过第 1-60 行却引用第 300 行，等于没读过这一行。
+            # 判据完全来自记录文件（evidence.jsonl 里的「显示 a-b」），
+            # 不看模型自述、也不看这次生成什么——行号是不是编的，文件说了算。
+            ranges = ledger.read_ranges(p) if ledger is not None else []
+            line_b = int(m.group(3)) if (m and m.group(3)) else line_a
+            if ranges:
+                inside = any(a <= line_a and line_b <= b for a, b in ranges)
+                if not inside:
+                    outside = True
+                    span = "、".join(f"{a}-{b}" for a, b in ranges[:4])
+                    issues.append(CitationIssue(
+                        "error", "line_not_read", token,
+                        f"引用行号 {token} 落在本任务实际读过的区间之外（读过：{span}）"
+                        f"——这一行你没有见过，请先 read_file 覆盖该行再引用"))
+        if inside:
+            stats["inside"] += 1
+        elif outside:
+            stats["outside"] += 1
 
         # 以下为软警示（不阻断写入）；external/ 仓库文件例外——升为硬错误
         if ledger is not None:
@@ -276,7 +363,7 @@ def audit_citations(
             "报告含具体数字，但本任务仅抓取过网页（二手来源）；"
             "请确保数字来自仓库一手证据（代码 / README / 测试 / 官方 API），否则标注「（未核实）」"))
 
-    return CitationAudit(issues, checked)
+    return CitationAudit(issues, checked, stats)
 
 
 # ---------- 语义层核查：否定断言 vs 代码事实 ----------
