@@ -8,7 +8,7 @@
 - **Surface**：从内存事件列表按需重建的「上下文视图」。员工 prompt 注入的
   「任务现场」块、澄清自动答复，都从这里取材——蒸馏可以错，日志不会错。
 - **Inbox**（Follow-up / Steering / Inject 三通道）属于后续阶段，见
-  ``docs/harness-redesign-20261019.md``；本模块先落 Event Log + Surface。
+  ``docs/changes/harness-redesign-20261019.md``；本模块先落 Event Log + Surface。
 
 解决的具体问题（rerun13 实证）：leader 双环路径里员工上下文 = 空对话 + 自己的
 goal 文本，下游员工对前面员工的产出一无所知；步骤失败后，下游员工拿着 leader

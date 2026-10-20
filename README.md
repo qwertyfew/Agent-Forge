@@ -384,6 +384,12 @@ agentforge/
   sources.py           一手来源核查（外部事实看数字/时效措辞，本机事实看工作区读没读过）
   reveal.py            用系统默认程序打开文件/文件夹，并把窗口抬到前台（Windows 前台锁）
   artifact.py          产出文件追踪（快照对比）
+  record.py            过程记录：evidence.jsonl（读过哪些行、每次写盘落成哪一版）、
+                       引用登记、全文版本快照；台账不在内存里，重启不失忆
+  skeleton.py          任务书驱动的契约骨架：从任务书提取必填项，开工前铺成
+                       「表头 + 每项一行待填」或「## 小节 + 占位」，逐行/逐节填
+  layout.py            任务目录布局的唯一一处定义：record/ output/ work/ run/
+                       四个目录名与 output 镜像
   taskstore.py         任务台账（title 是摘要，prompt 是用户原话——界面的提问气泡用它）
   pricing.py           费用估算
   tools/               内置工具集（graph.py 影响路径分析、notes.py 任务笔记、
@@ -392,16 +398,54 @@ agentforge/
 skills/                内置技能（frontend-design / novel-writing / web-browsing / remote-ops /
                        self-verification / first-party-source / self-extension ...）
 tools/                 开发/运维工具（bench.py 模型性能基准、fastpull.py 模型拉取与体检、
-                       test_readcache.py / test_verify_gate.py / test_sources_gate.py /
-                       test_reveal.py / test_taskstore.py / test_planner.py /
-                       test_local_facts.py / test_web_tools.py / test_toolselect.py /
-                       test_skill_meta.py / test_artifacts.py 等常驻回归、
-                       test_tool_panel.mjs / test_task_view.mjs / test_reply_flow.mjs /
-                       test_edit_view.mjs / test_gaps_view.mjs / test_evals_view.mjs 前端回归）
-docs/                  参考资料（evolution.md 架构演进全文、contracts.md 契约与修复清单、
-                       foreign-models.md 外部模型说明、ref/ 外部仓库快照、legacy-ui.png 旧界面存档）
+                       test_*.py 常驻回归——全部可单跑，改完必须自证；test_*.mjs 是前端回归）
+scripts/               运维脚本：start.sh 启停、dispatch_task.py 派发一轮并归档运行日志、
+                       check_deliverable.py 交付物核查、migrate_task_layout.py 任务目录迁移、
+                       migrate_run_logs.py 运行日志归档
+docs/                  人写的文档：evolution.md 架构演进、contracts.md 契约清单、deploy.md 部署、
+                       internals/ 实现细节、ref/ 外部仓库快照；changes/ 放带日期的设计记录
+                       （如 layout-20261020.md 目录布局与「闸门读哪份文件」对照表）
 examples/              示例工作区（demo-excel、novel-sample）
+evals/                 评测：tasks.yaml 任务集、reports/ 评测分析报告、runs/ 历次交付物样本、
+                       results/ 结果 JSON、.run/ tasks.yaml 保存前的旧版备份（results/ 不入库）
+external/              收编的第三方仓库（mini-swe-agent、learn-claude-code、rea）——只读素材，
+                       clone 在本地，不入库
+history/               任务案卷：一次任务一个目录，里面是 record/ 与 output/（见下一节）
+debug/                 开发期临时脚本（rea_task3.py、probe_*.py 等一次性探针）；
+                       debug/archive/ 是历史事件日志与截图，可整体删
+config.yaml            通用配置（入库）；config.lanrun.yaml 本机配置（不入库）
+models.example.json    模型注册表模板；models.json 含密钥、models.local.json 是本机探测结果，均不入库
 ```
+
+`history/`、`debug/`、`external/`、`evals/results/`、`.run/`、`.tasks.json` 都是本机运行数据，
+都在 `.gitignore` 里——换台机器 clone 下来没有这些目录也能正常跑。
+
+### 一次任务 = 一个案卷（`history/<任务>/`）
+
+```
+history/20261020-105539/
+  record/                      过程：harness 自己记的，模型改不了
+    evidence.jsonl             每次 read 一行（带「显示 a-b」行区间）、每次 write 一行（带版本与 diff）
+    citations.jsonl            每次写盘的引用核查结论（带行号几条、落在读过的区间内几条）
+    versions/<扁平路径>/NNNN-HHMMSS-sha8.ext   每次成功写盘的全文快照，谁都不覆盖谁
+    work/                      模型写的中间/过渡文件（草稿、提取片段、临时脚本），保留子目录
+    run/                       这一轮怎么跑起来的：prompt.txt、dispatch.py、
+                               events.jsonl（SSE 全部事件）、raw.log、reply.txt、tools.txt
+  output/                      结果：收尾按交付物声明路径镜像一份（输出没有就没有这个目录）
+```
+
+复盘时只问两个问题，各看一处：**「产物对不对」看 `output/`**，**「过程有没有问题」看 `record/`**
+（读过什么、写过哪几版、闸门据什么下的判定）。以前两者混在同一个平铺目录里，中间脚本和
+交付物长得一样，出问题只能从头翻日志。
+
+边界要分清：
+
+- 交付物本身**仍在任务书写的位置**（代码类任务改的就是仓库里的文件，搬走会把工程改坏），
+  `output/` 是案卷副本；
+- 模型不许往仓库里乱写：中间文件一律落 `record/work/`，路径由 `permissions.py` 兜底改道；
+- 派发器跑完会把 `.run/` 里的运行日志自动归进 `record/run/`（`debug/dispatch_task.py` 收尾调
+  `layout.record_run_dir`）；历史遗留的用 `scripts/migrate_run_logs.py --apply` 补。
+
 
 ### 跨平台脚本的行尾与编码
 

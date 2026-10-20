@@ -3,7 +3,7 @@
 运行：python tools/test_ops_batch.py
 全部断言内建，退出码 0 = 全过。纯程序测试：模型用 stub hub 按剧本回话。
 
-核心纪律（docs/token-economy-20261019.md T1）：
+核心纪律（docs/changes/token-economy-20261019.md T1）：
 - SDK 调用走 Agent._execute 同一条管道：审批/证据台账/file_log 继承，
   脚本里的 read_file 一样记入 read 硬闸；
 - 只读工具自动放行；写类工具要求运行本身是完全访问权限；

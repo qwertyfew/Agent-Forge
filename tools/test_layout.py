@@ -84,6 +84,28 @@ def main() -> None:
     check("D 中间文件不进 output/",
           not (tmp / outdir / "output" / "record").exists())
 
+    # ---------- E) 轮次编号 → 案卷目录（运行日志归档用） ----------
+    import json
+    import time
+    from datetime import datetime
+    ts = datetime(2026, 10, 20, 10, 55, 39).timestamp()
+    (tmp / "history" / "20261020-105539").mkdir(parents=True, exist_ok=True)
+    (tmp / ".tasks.json").write_text(json.dumps({"tasks": [
+        {"id": "t1", "created_at": ts, "prompt": "【本轮编号：rerun31】\n# 任务…"}]},
+        ensure_ascii=False), encoding="utf-8")
+    d = layout.task_dir_for_run(tmp, "rerun31")
+    check("E 按台账把轮次编号映射到任务目录",
+          d is not None and d.name == "20261020-105539", str(d))
+    rd = layout.record_run_dir(tmp, "rerun31")
+    check("E 运行日志目录是 record/run/",
+          rd is not None and rd.parent.name == "record" and rd.name == "run", str(rd))
+    check("E 台账里没有的轮次返回 None", layout.task_dir_for_run(tmp, "rerun99") is None)
+    # 目录名与 created_at 差 1 秒（截断 vs 取整）也要能对上
+    (tmp / "history" / "20261020-105539").rename(tmp / "history" / "20261020-105540")
+    d2 = layout.task_dir_for_run(tmp, "rerun31")
+    check("E 目录名差 1 秒仍能按窗口匹配",
+          d2 is not None and d2.name == "20261020-105540", str(d2))
+
     print("\n全部断言通过。")
 
 

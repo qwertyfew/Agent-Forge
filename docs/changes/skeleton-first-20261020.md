@@ -1,6 +1,6 @@
 # 骨架先行：把单次生成的失败成本从「一整篇」压到「一节」
 
-（2026-10-20。接在 `docs/compact-journal-and-writepolicy-20261020.md` 之后，
+（2026-10-20。接在 `docs/changes/compact-journal-and-writepolicy-20261020.md` 之后，
 是「写前策略」再往前一步的那一层。）
 
 ## 一、要解决的问题还是「生成成本」

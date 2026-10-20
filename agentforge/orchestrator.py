@@ -271,7 +271,7 @@ def _worth_dispatch(message: str, pool_size: int) -> bool:
     return needs_plan(message, pool_size) or len((message or "").strip()) >= 60
 
 
-# T2（token 经济，docs/token-economy-20261019.md）：极简单循环是**默认路径**。
+# T2（token 经济，docs/changes/token-economy-20261019.md）：极简单循环是**默认路径**。
 # 「多个动作 / 长文本」不再触发多 agent 拆解——编号列表不等于要并行，任务书里的
 # 「1. 逆向分析 A 2. 对比 B」让单 agent 顺序做完就行。rerun14 实测仪式开销：
 # 11 个员工各付 7–9k 固定开销 + leader 6 轮判定（每轮 15–34k prompt），而其中

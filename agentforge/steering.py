@@ -1,6 +1,6 @@
 """中途补充（Steering）收件箱 —— DeepSeek Harness Inbox 三通道之一。
 
-参照口径（docs/harness-redesign-20261019.md）：任务执行中用户发现方向不对，
+参照口径（docs/changes/harness-redesign-20261019.md）：任务执行中用户发现方向不对，
 补一条提示，**当前 Turn 的下一个 Step 立刻采纳**，而不是只能停止重来。
 
 AgentForge 的映射：

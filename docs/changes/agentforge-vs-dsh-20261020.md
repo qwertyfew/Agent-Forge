@@ -37,7 +37,7 @@ AgentForge 的 `tasksession.py` 就是照 dsh 的 Session 三段式写的，`ste
 | **Inject** | 插件补信息，不唤醒空闲 Agent，下个 Step 前注入 | **只有隐式形态**：守卫/契约闸门/verify 的缺口直接 `_push({"role":"user", ...})`，不走收件箱、不区分来源、不排队 |
 
 所以用户那份描述里的三通道，AgentForge 实际是「1 个真通道 + 2 处硬编码回灌」。
-`docs/harness-redesign-20261019.md` 的 Phase 2 第 2 条（Inbox 三通道收尾）已把 Follow-up 与 Inject 队列列为待办，至今未做。
+`docs/changes/harness-redesign-20261019.md` 的 Phase 2 第 2 条（Inbox 三通道收尾）已把 Follow-up 与 Inject 队列列为待办，至今未做。
 
 ## 三、Step 四环节
 

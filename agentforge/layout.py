@@ -20,13 +20,19 @@
 """
 from __future__ import annotations
 
+import datetime as _dt
+import json
+import re
 from pathlib import Path
 
 RECORD = "record"
 OUTPUT = "output"
 WORK = "work"
+RUN = "run"
 # 旧版本目录名：迁移时保留读取兼容（历史任务里还有 _records）
 LEGACY_RECORD = "_records"
+
+_RUN_TAG_RX = re.compile(r"【本轮编号：([A-Za-z0-9_\-]+)】")
 
 
 def task_dir(outdir: str) -> str:
@@ -50,6 +56,59 @@ def under_history(rel: str) -> bool:
     """这个相对路径是不是已经在 history/ 任务目录里（镜像时跳过，避免自我嵌套）。"""
     parts = Path(str(rel)).parts
     return bool(parts) and parts[0].lower() == "history"
+
+
+def task_dir_for_run(root: str | Path, run: str,
+                     tolerance: float = 300.0) -> Path | None:
+    """按任务台账把「轮次编号」映射到 `history/<任务>`（找不到返回 None）。
+
+    派发器只知道本轮编号（rerun33），并不知道任务目录名——目录名是编排层按
+    发起时间算的。台账里的任务 prompt 带【本轮编号：X】，created_at 就是那个
+    时间，两边一对就能把「这一轮的运行日志」归进「这一轮的案卷」。
+
+    目录名与 created_at 可能差 1 秒（截断 vs 取整），所以先试算出来的名字，
+    再在 tolerant 窗口内找最近的目录。
+    """
+    base = Path(root)
+    ledger = base / ".tasks.json"
+    try:
+        tasks = json.loads(ledger.read_text(encoding="utf-8"))["tasks"]
+    except (OSError, ValueError, KeyError):
+        return None
+    ts = None
+    for t in tasks:
+        m = _RUN_TAG_RX.search(t.get("prompt") or t.get("title") or "")
+        if not m or m.group(1) != run:
+            continue
+        cand = float(t.get("created_at") or 0)
+        if cand and (ts is None or cand < ts):
+            ts = cand
+    if not ts:
+        return None
+    name = _dt.datetime.fromtimestamp(ts).strftime("%Y%m%d-%H%M%S")
+    exact = base / "history" / name
+    if exact.is_dir():
+        return exact
+    try:
+        dirs = [p for p in (base / "history").iterdir()
+                if p.is_dir() and not p.name.startswith("_")]
+    except OSError:
+        return None
+    best, gap = None, tolerance
+    for p in dirs:
+        try:
+            d = abs(_dt.datetime.strptime(p.name, "%Y%m%d-%H%M%S").timestamp() - ts)
+        except ValueError:
+            continue
+        if d <= gap:
+            best, gap = p, d
+    return best
+
+
+def record_run_dir(root: str | Path, run: str) -> Path | None:
+    """这一轮的运行日志该放哪：`history/<任务>/record/run/`。"""
+    d = task_dir_for_run(root, run)
+    return (d / RECORD / RUN) if d else None
 
 
 def mirror_outputs(files: list[dict] | None, root: str | Path, outdir: str,

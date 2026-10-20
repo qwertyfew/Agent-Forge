@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """ops_batch：程序化工具调用（PTC，Programmatic Tool Calling）。
 
-token 经济诊断（docs/token-economy-20261019.md）的 T1：一次分析往往要
+token 经济诊断（docs/changes/token-economy-20261019.md）的 T1：一次分析往往要
 「读 N 个文件 + 检索 M 次 + 汇总」，逐个工具调用意味着 N+M 轮 LLM 往返，
 每轮都重发整个上下文（实测 rerun14：prompt:completion ≈ 20:1，130 轮里
 九成轮次的模型输出只是几十 token 的工具调用）。

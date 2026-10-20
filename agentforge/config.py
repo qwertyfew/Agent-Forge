@@ -243,7 +243,7 @@ class Config:
     compact_auto: bool = True            # 是否自动压缩
     compact_keep_recent: int = 8         # T3：每轮只保留最近 N 条完整工具结果，更老的压成一行
 
-    # ---- 编排模式（T2，docs/token-economy-20261019.md）----
+    # ---- 编排模式（T2，docs/changes/token-economy-20261019.md）----
     # auto = 极简单循环是默认路径，只有用户明确要并行才拆多 agent；
     # always = 旧行为（多动作/长文即拆，评测对照用）；never = 永不拆。
     orchestration: str = "auto"
