@@ -164,11 +164,10 @@ def main() -> int:
         bare = (DENSE.replace(":190", "").replace(":363", "")
                 .replace(":36", "").replace(":99", ""))
         out9b = wf6.run(path="evals/bare.md", content=bare)
-        check("引用密集但裸路径 → 拒收",
-              out9b.startswith("[错误] 引用核查未通过"), out9b[:200])
-        check("拒收回执带已读区间", "你读过的区间：1-502" in out9b, out9b[:500])
-        check("教模型改成 path:起-止 形式", "path:起-止" in out9b, out9b[:500])
-        check("裸引用没有落盘", not (tmp / "f" / "evals" / "bare.md").exists())
+        check("裸路径引用 → 放行（行号要求归任务书，闸门只防伪造）",
+              out9b.startswith("已"), out9b[:250])
+        check("放行但带缺行号提醒（含已读区间与坐标）",
+              "引用缺行号" in out9b and "你读过的区间：1-502" in out9b, out9b[:600])
         sparse = "# 笔记\n\n参考 `agentforge/context.py` 的实现。\n"
         out9c = wf6.run(path="notes/sparse.md", content=sparse)
         check("非密集文档裸引用不拦（checked<2）", out9c.startswith("已"), out9c[:150])

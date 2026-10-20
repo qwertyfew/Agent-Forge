@@ -521,6 +521,11 @@ def audit_citations(
     # 引用密集型文档（checked>=2，与 fs._content_gate 的拒收阈值一致）里，裸路径
     # 引用升为硬错误。行号是引用者的声明，闸门验声明而不替它生成；回执必须带
     # 已读区间——模型读过（回执自带行前缀），补行号是抄，不是猜。
+    # 裸路径引用（有路径无行号）：只提醒，不拦截（2026-10-20 用户裁定）。
+    # 「引用必须带行号」是任务书层的要求，不是通用诚信底线——rerun48 实证：
+    # 任务书明说「不带行号也行」时，这道硬闸会把合法写入拦死（过拟合本尊）。
+    # 防伪造不受影响：未读文件、行号越界、行号不在已读区间仍然是 error。
+    # 提醒里保留已读区间与可锚定坐标——模型想写得更精确时，坐标随取随用。
     if checked >= 2 and bare_no_line and ledger is not None:
         for token, bp in bare_no_line:
             try:
@@ -528,13 +533,12 @@ def audit_citations(
             except Exception:  # noqa: BLE001
                 ranges = []
             span = "、".join(f"{a}-{b}" for a, b in ranges[:4]) or "（尚未 read_file）"
-            detail = (f"引用缺行号: {token} —— 没有行号就无法回源验证（路径为真 ≠ 结论为真）。"
-                      f"你读过的区间：{span}；请改成 `path:起-止` 形式，行号取区间内"
-                      f"真实支撑该结论的行")
+            detail = (f"引用缺行号: {token}（你读过的区间：{span}）。"
+                      "行号能让结论可回源——想加的话坐标现成：")
             anchors = anchor_lines(bp, ranges, max_n=6)
             if anchors:
-                detail += "\n    可直接引用这些已读到的坐标：" + "；".join(anchors)
-            issues.append(CitationIssue("error", "no_line", token, detail))
+                detail += "；".join(anchors)
+            issues.append(CitationIssue("warn", "no_line", token, detail))
 
     # 规则 4 架构层协助：报告含具体数字，但本任务只抓过网页（二手来源）
     if ledger is not None and ledger.has_web() and _NUM_RX.search(content):
