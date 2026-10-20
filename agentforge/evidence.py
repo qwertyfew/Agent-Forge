@@ -247,6 +247,8 @@ def audit_citations(
     root = Path(workspace_root).resolve()
     candidates = _extract_citations(content)
     stats = {"total": len(candidates), "with_line": 0, "inside": 0, "outside": 0}
+    # 裸路径引用（有路径无行号）：密集型文档里要升为硬错误，先收集
+    bare_no_line: list[tuple[str, Path]] = []
 
     for token in candidates:
         is_dir_ref = token.endswith("/")
@@ -304,6 +306,8 @@ def audit_citations(
 
         # 行号越界校验（确定性）
         with_line = line_a is not None
+        if not with_line:
+            bare_no_line.append((token, p))
         inside = outside = False
         if with_line:
             stats["with_line"] += 1
@@ -355,6 +359,24 @@ def audit_citations(
                 issues.append(CitationIssue(
                     "warn", "bare_line", token,
                     f"建议绑定符号锚点（如 `class X` 内 / `def run()` 处）而非裸行号 {token}"))
+
+    # rerun36 实证缺口：不带行号的引用完全逃出核查射程（19 处裸引用 0 拦截）——
+    # 路径为真只能证明文件存在，证明不了「结论出自哪一行」，更证明不了读过。
+    # 引用密集型文档（checked>=2，与 fs._content_gate 的拒收阈值一致）里，裸路径
+    # 引用升为硬错误。行号是引用者的声明，闸门验声明而不替它生成；回执必须带
+    # 已读区间——模型读过（回执自带行前缀），补行号是抄，不是猜。
+    if checked >= 2 and bare_no_line and ledger is not None:
+        for token, bp in bare_no_line:
+            try:
+                ranges = ledger.read_ranges(bp)
+            except Exception:  # noqa: BLE001
+                ranges = []
+            span = "、".join(f"{a}-{b}" for a, b in ranges[:4]) or "（尚未 read_file）"
+            issues.append(CitationIssue(
+                "error", "no_line", token,
+                f"引用缺行号: {token} —— 没有行号就无法回源验证（路径为真 ≠ 结论为真）。"
+                f"你读过的区间：{span}；请改成 `path:起-止` 形式，行号取区间内"
+                f"真实支撑该结论的行"))
 
     # 规则 4 架构层协助：报告含具体数字，但本任务只抓过网页（二手来源）
     if ledger is not None and ledger.has_web() and _NUM_RX.search(content):

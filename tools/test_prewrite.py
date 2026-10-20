@@ -151,6 +151,28 @@ def main() -> int:
               writepolicy.draft_ready("evals/gap2.md", cfg3))
         check("无草稿时返回空", writepolicy.draft_ready("evals/none.md", cfg3) == "")
 
+        # ---------- 9. 行号硬闸（rerun36 缺口：裸引用逃出核查射程） ----------
+        # 19 处裸路径引用 0 拦截 → 模型学会最省力合规。现在引用密集型文档里
+        # 裸路径升为硬错误，回执带已读区间（模型读过，补行号是抄不是猜）。
+        cfg6, guard6, registry6 = setup(tmp / "f")
+        wf6 = registry6.get("write_file")
+        for name in ("context.py", "permissions.py", "loop.py", "tasksession.py"):
+            guard6.ledger.mark_file(tmp / "f" / "agentforge" / name, lines=502,
+                                    read=True, ranges=[(1, 502)])
+        out9 = wf6.run(path="evals/lines.md", content=DENSE)
+        check("引用密集且全部带可定位行号 → 放行", out9.startswith("已"), out9[:200])
+        bare = (DENSE.replace(":190", "").replace(":363", "")
+                .replace(":36", "").replace(":99", ""))
+        out9b = wf6.run(path="evals/bare.md", content=bare)
+        check("引用密集但裸路径 → 拒收",
+              out9b.startswith("[错误] 引用核查未通过"), out9b[:200])
+        check("拒收回执带已读区间", "你读过的区间：1-502" in out9b, out9b[:500])
+        check("教模型改成 path:起-止 形式", "path:起-止" in out9b, out9b[:500])
+        check("裸引用没有落盘", not (tmp / "f" / "evals" / "bare.md").exists())
+        sparse = "# 笔记\n\n参考 `agentforge/context.py` 的实现。\n"
+        out9c = wf6.run(path="notes/sparse.md", content=sparse)
+        check("非密集文档裸引用不拦（checked<2）", out9c.startswith("已"), out9c[:150])
+
     print("\n全部断言通过。")
     return 0
 
