@@ -230,6 +230,39 @@ def main() -> int:
               "`agentforge/loop.py:3-14` 状态机" in
               (tmp / "g" / "evals" / "tbl7.md").read_text(encoding="utf-8"))
 
+        # ---------- 11. shell 落盘拦截 + 收尾证据列核查（rerun39 现场回归） ----------
+        # rerun39：模型被闸门拒绝后用 run_command cp 把无锚点草稿盖过写闸，
+        # 交付 0 引用还全绿。现在登记交付物对 shell 关闭，收尾核查只看磁盘。
+        import json as _json
+        from agentforge import skeleton as _sk
+        from agentforge import verify as _vg
+        tp = tmp / "g" / "evals" / "tbl.md"
+        sp = _sk.state_path(tmp / "g", "evals/tbl.md")
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.write_text(_json.dumps({"path": str(tp.resolve())}), encoding="utf-8")
+        rc = registry7.get("run_command")
+        out11 = rc.run(command="cp .drafts/x.md evals/tbl.md")
+        check("cp 到登记交付物 → 拦截",
+              out11.startswith("[错误] shell 落盘已被拦"), out11[:200])
+        out11b = rc.run(command="echo hi > evals/tbl.md")
+        check("重定向到登记交付物 → 拦截",
+              out11b.startswith("[错误] shell 落盘已被拦"), out11b[:200])
+        out11c = rc.run(command="cp evals/tbl.md evals/backup.md")
+        check("登记文件作为来源复制 → 放行",
+              not out11c.startswith("[错误] shell 落盘已被拦"), out11c[:150])
+        (tmp / "g" / "evals" / "tbl8.md").write_text(
+            "# 清单\n\n" + hdr + bare_row, encoding="utf-8")
+        issues11 = _vg.find_artifact_issues([("evals/tbl8.md", True)], tmp / "g")
+        check("收尾核查：无锚点表格 → status=evidence",
+              len(issues11) == 1 and issues11[0]["status"] == "evidence",
+              str(issues11))
+        check("收尾核查声明给修正指引",
+              "path:起-止" in _vg.issue_line(issues11[0]), _vg.issue_line(issues11[0]))
+        (tmp / "g" / "evals" / "tbl8.md").write_text(
+            "# 清单\n\n" + hdr + good_row, encoding="utf-8")
+        issues11b = _vg.find_artifact_issues([("evals/tbl8.md", True)], tmp / "g")
+        check("收尾核查：证据列有可定位锚点 → 通过", not issues11b, str(issues11b))
+
     print("\n全部断言通过。")
     return 0
 

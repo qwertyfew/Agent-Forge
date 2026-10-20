@@ -192,8 +192,8 @@ def reject_message(path: str, content: str, issues, kind: str, cfg) -> str:
         )
         lines.append(
             f"修正方式：edit_file(path='{draft}', old_string=<出问题的原文片段>, "
-            f"new_string=<改正后的片段>) 只改上面点到的几行；改完用 "
-            f"run_command 执行 cp 复制到目标路径，或再调一次 write_file 提交。"
+            f"new_string=<改正后的片段>) 只改上面点到的几行；改完后再调一次 "
+            f"write_file，把草稿当前内容原样提交（会重新过核查）。"
         )
     else:
         lines.append("（草稿暂存失败，请直接修正后重试。）")

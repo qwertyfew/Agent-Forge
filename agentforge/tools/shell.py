@@ -1,11 +1,61 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 from .base import EXEC, make_tool
+from .. import skeleton
+
+# 写盘类 shell 动词（Windows cmd + 常见 POSIX/PowerShell 形态）
+_WRITE_VERBS = {"cp", "mv", "copy", "move", "robocopy", "tee",
+                "set-content", "out-file", "add-content",
+                "copy-item", "move-item"}
+_REDIRECT_RX = re.compile(r">{1,2}\s*([^\s>]+)")
+
+
+def _shell_write_block(command: str, guard) -> str | None:
+    """登记过的交付物（骨架建档文件）禁止 shell 落盘。
+
+    写闸只覆盖 write_file / fill_section / edit_file 三个入口，shell 的
+    cp/重定向是第四条路——rerun39 实证：模型被证据列闸门拒绝后按旧话术用
+    run_command cp 把无锚点草稿盖过闸门，交付 0 引用还全绿。登记文件对
+    shell 关闭，内容变更必须走核查链覆盖的入口。
+    """
+    try:
+        registered = skeleton.registered_paths(guard.cfg.workspace_root)
+    except Exception:  # noqa: BLE001 —— 拦截失败不该影响命令执行
+        return None
+    if not registered:
+        return None
+    cmd = str(command or "")
+    tokens = re.findall(r"[^\s=]+", cmd)
+    targets: list[str] = []
+    words = [t.lower().strip("\"'") for t in tokens]
+    if words and words[0] in _WRITE_VERBS:
+        for t in reversed(tokens):              # 目的地 = 最后一个非 flag 参数
+            if t.lower().startswith(("-", "/")) and len(t) <= 3:
+                continue
+            targets.append(t)
+            break
+    for m in _REDIRECT_RX.finditer(cmd):
+        targets.append(m.group(1))
+    for t in targets:
+        t = t.strip("\"'")
+        if not t:
+            continue
+        try:
+            cand = guard.resolve(t)
+        except Exception:  # noqa: BLE001
+            continue
+        if str(Path(cand).resolve()).lower() in registered:
+            return ("[错误] shell 落盘已被拦：" + str(cand) +
+                    " 是登记过的交付物（骨架建档），cp/重定向会绕过证据核查链。"
+                    "内容变更请走 write_file（把草稿改好后原样提交）或 "
+                    "fill_section / edit_file。")
+    return None
 
 
 def build_shell_tools(guard, cfg):
@@ -13,6 +63,10 @@ def build_shell_tools(guard, cfg):
 
     def run_command(command: str, cwd: str = "", timeout: int = 120) -> str:
         guard.check_command(command)
+
+        block = _shell_write_block(command, guard)
+        if block:
+            return block
 
         # workspace_root 强转 Path：调用方（如 bench）若赋了 str，这里直接
         # AttributeError 会把整条 run_command 炸掉，宁在此处兜住。

@@ -389,6 +389,29 @@ def drop_state(root: str | Path, path: str) -> None:
         pass
 
 
+def registered_paths(root: str | Path) -> set[str]:
+    """骨架登记过的文件（resolve 后小写绝对路径集合）——shell 落盘拦截用。
+
+    登记过的文件就是本轮的交付物：内容变更必须走核查链覆盖的入口
+    （write_file / fill_section / edit_file）；shell 的 cp/重定向是第四条路，
+    会绕过全部写闸（rerun39 实证），对它关闭。
+    """
+    d = Path(root) / STATE_SUBDIR
+    out: set[str] = set()
+    try:
+        for f in d.glob("*.json"):
+            try:
+                rec = json.loads(f.read_text(encoding="utf-8"))
+                p = str(rec.get("path") or "").strip()
+                if p:
+                    out.add(str(Path(p).resolve()).lower())
+            except (OSError, ValueError):
+                continue
+    except OSError:
+        pass
+    return out
+
+
 def unfilled_against(text: str, st: dict) -> list[str]:
     """对照骨架记录：哪些待填位还没填（内容与建档时一模一样，或干脆没了）。
 

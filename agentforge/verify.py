@@ -40,6 +40,7 @@ import unicodedata
 from pathlib import Path
 
 from . import skeleton as skel
+from . import evidence as evid
 
 # 「验证：xxx」这类声明行。容忍 markdown 列表符、编号、「验证脚本/命令/方式」等变体。
 _DECLARE = re.compile(
@@ -687,6 +688,22 @@ def find_artifact_issues(entries: list[tuple[str, bool]],
                 issues.append({"path": p, "declared": True,
                                "status": "incomplete", "missing": miss})
                 continue
+        # 表格证据列核查（表头即契约）：不管文件是怎么落盘的（写闸、cp、手工改），
+        # 收尾只看磁盘内容——证据列缺可定位 path:行号 = 证据无法回源。rerun39
+        # 实证：run_command cp 把无锚点草稿盖过写闸，交付 0 引用还全绿。
+        # ledger=None：收尾只验结构（锚点存在、路径真实、行号在文件内），
+        # 「是否落在已读区间」由写入时的闸门负责。
+        if declared:
+            try:
+                ev = evid.check_table_evidence(
+                    target.read_text(encoding="utf-8", errors="replace"),
+                    ledger=None, root=root, skip_placeholder_rows=True)
+            except OSError:
+                ev = []
+            if ev:
+                issues.append({"path": p, "declared": True,
+                               "status": "evidence", "problems": ev[:6]})
+                continue
         # 执行轨迹权威记录（来自全局 file_log 的本任务真实写操作）：只要本任务
         # 确实写出过该文件，无论 mtime 快照怎么判（stale/ghost 都源于「开局快照
         # 早于最终写盘 / convo 缺写工具记录」的竞态），一律认定本轮产出、跳过判定。
@@ -747,6 +764,10 @@ def artifact_fixed(issue: dict, pre: dict[str, float | None],
         # 骨架补齐后 mtime 当然也变了，但真正的判据是「还有没有空小节」——
         # 又填了一节、还是空着一半，都算没修好。
         return not skel.unfinished_file(root, issue["path"])
+    if issue["status"] == "evidence":
+        # 证据列是内容判定，mtime 变了不算数：由调用方用 find_artifact_issues
+        # 重算（磁盘内容里证据列有可定位锚点才算修好）。
+        return False
     m0 = pre.get(issue["path"].lower())
     if m0 is None:
         return True
@@ -759,6 +780,7 @@ _STATUS_TEXT = {
     "ghost": "存在，但整个任务没有任何写文件/执行命令的操作——它不是本轮写出的",
     "incomplete": "存在，但任务书要求覆盖的项没写全",
     "skeleton": "只有骨架：小节标题在，正文还是空的或只有占位符——不算交付，用 fill_section 逐节填完",
+    "evidence": "已填完，但证据列缺可定位的 `path:行号`（或行号对不上真实文件）——证据无法回源",
 }
 
 
@@ -769,6 +791,10 @@ def issue_line(c: dict) -> str:
         miss = "、".join(str(x) for x in (c.get("missing") or [])[:10])
         return (f"`{c['path']}`（{tag}；缺任务书点名要覆盖的项：{miss}）"
                 "——把这些项各写一行/一节，附上证据行号")
+    if c.get("status") == "evidence":
+        probs = "；".join(str(x) for x in (c.get("problems") or [])[:4])
+        return (f"`{c['path']}`（{tag}；{probs}）"
+                "——证据列用 `path:起-止` 引用你 read_file 读过的行")
     return f"`{c['path']}`（{tag}；{_STATUS_TEXT.get(c['status'], c['status'])}）"
 
 
