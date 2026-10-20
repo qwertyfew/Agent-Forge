@@ -1171,6 +1171,14 @@ _NUM_RX = re.compile(r"\d[\d,]*(?:\.\d+)?(?:%|万|亿)?")
 # 不是要回显的事实，先掩掉再取数字。
 _PATH_RX = re.compile(r"(?:[\w\u4e00-\u9fff.-]+[\\/])+(?:[\w\u4e00-\u9fff.-]+)?")
 _CODE_RX = re.compile(r"`[^`\n]+`")
+# 三类「长得像事实、其实不是」的数字，先掩掉再取（rerun31 实测：它们让事实闸门
+# 误报『答复缺 2、5、31』，白烧一轮修正，模型还把这三个 token 抄进了交付物底部）：
+#   ① 标识符里的编号：rerun31 / s07 / v1.2 —— 数字属于名字，不是要回显的事实；
+#   ② 行首的序号：`2. 与 AgentForge 本体…` 的 2 是列表序号；
+#   ③ 数量上限：`最多 5 条` 的 5 是格式约束（答复按格式写自然会带上）。
+_IDENT_RX = re.compile(r"[A-Za-z][A-Za-z_\-]*\d+[\w.\-]*|\d+[A-Za-z][\w.\-]*")
+_ORDINAL_RX = re.compile(r"^\s*\d{1,2}[.、)）]", re.MULTILINE)
+_QUANTITY_RX = re.compile(r"(?:最多|至多|不超过)\s*\d+\s*[条个项类种行字]?")
 
 MAX_FACT_TOKENS = 8      # 要求句里最多取几个 token（防极端任务书刷屏）
 
@@ -1206,7 +1214,7 @@ def _tokens_from_sentence(s: str) -> list[str]:
             if t:
                 out.append(t)
             spans.append(m.span())          # 引号取内容，但掩掉整个引号跨度
-    for rx in (_CODE_RX, _PATH_RX):
+    for rx in (_CODE_RX, _PATH_RX, _IDENT_RX, _ORDINAL_RX, _QUANTITY_RX):
         for m in rx.finditer(s):
             spans.append(m.span())          # 只掩不取
     if spans:

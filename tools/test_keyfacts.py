@@ -62,6 +62,17 @@ def test_required_fact_tokens() -> None:
     check("没有要求句 → 空", vf.required_fact_tokens("随便写写，然后跑一下。") == [])
     check("空文本安全", vf.required_fact_tokens("") == [])
     check("None 安全", vf.required_fact_tokens(None) == [])
+    # rerun31 实测的三类噪声：标识符编号 / 行首序号 / 数量上限
+    toks = vf.required_fact_tokens("【本轮编号：rerun31】\n必须保留结论。")
+    check("标识符里的编号（rerun31）不算事实",
+          not any(t.strip("[]") == "31" for t in toks), repr(toks))
+    toks = vf.required_fact_tokens(
+        "1. 读源码。\n2. 与本体逐项对比，产出清单，写入 evals/gap-rerun31.md。")
+    check("行首序号（2.）不算事实", "2" not in toks, repr(toks))
+    toks = vf.required_fact_tokens(
+        "末尾附一节「借鉴清单」：最多 5 条，每条注明预期收益。")
+    check("数量上限（最多 5 条）不算事实", "5" not in toks, repr(toks))
+    check("同句里的引号内容仍被提取", "借鉴清单" in toks, repr(toks))
     # 上限
     toks = vf.required_fact_tokens(
         "必须包含 1、必须包含 2、必须包含 3、必须包含 4、必须包含 5、"
