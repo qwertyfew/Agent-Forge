@@ -19,6 +19,7 @@ from .record import RECORDER_CTX
 from .journal import Journal, new_sid
 from .llm import OllamaClient, parse_text_tool_calls
 from .toolselect import PTC_SURFACE
+from . import grounding
 from .memory import MemoryStore
 from .llm import GenerationStopped
 from .tasksession import contract_paths
@@ -824,6 +825,9 @@ class Agent:
         # 契约拦截计数（0-2）：同一回合最多拦两次，拦满放行交给收尾闸门兜底，
         # 防「模型就是不写」的死循环。
         contract_blocks = 0
+        # 操作类答复事实核查的打回次数上限（与 contract_blocks 同款自愈逻辑）：
+        # 模型宣布收工、但最终答复里的具体命令/目录指令在源里找不到时打回重述。
+        ground_blocks = 0
         # 契约对账辅助：路径是否「未交付」——不存在，或自本轮开始从未更新。
         def _owe(p: str) -> bool:
             f = Path(self.cfg.workspace_root) / p
@@ -1035,6 +1039,35 @@ class Agent:
                         yield {"type": "contract_gate", "missing": missing,
                                "round": contract_blocks}
                         continue
+                # 操作类答复事实核查（Option A，rerun51 实证）：任务问「怎么操作/修改/
+                # 使用」某项目时，最终答复里抽出的具体命令、目录指令必须能在源
+                # （README/网页/已读文件）里找到对应内容；找不到就打回——模型那次退化成
+                # 了 `python main.py`/`npm run dev`/`src/components` 等源里没有的通用模板。
+                # 源 = history 里所有 role=="tool" 的内容（即模型真正看到过的材料）。
+                # 只有「本任务确实 fetch 过源」且「意图是操作类」才启用；最多打回 2 次，
+                # 拦满放行交给收尾闸门兜底。
+                if (ground_blocks < 2 and not stopped()
+                        and grounding.is_howto_intent(user_text)):
+                    _g_src = grounding.sources_from_history(history)
+                    if _g_src.strip():
+                        _g_issues = grounding.reply_grounding_issues(
+                            result.content or "", _g_src, intent=True)
+                        if _g_issues:
+                            ground_blocks += 1
+                            _push({"role": "assistant",
+                                   "content": result.content or "", **replay_think})
+                            _push({"role": "user", "content": (
+                                "【操作类答复核查未通过】你这份最终答复里，下面这些操作指令在"
+                                "你本次 fetch 的源（README / 网页 / 已读文件）里找不到对应内容——"
+                                "它们看起来是通用模板，不是你实际读到的材料：\n- "
+                                + "\n- ".join(f"`{c}`" for c in _g_issues)
+                                + "\n\n请回到你刚抓取的官方源，只陈述里面真正出现的命令/目录；"
+                                  "如果源里根本没讲「怎么修改前端 / 怎么运行」，就如实说明"
+                                  "「官方文档未提供这一步的具体步骤」，不要补通用套话。"
+                                  "改完给出最终答复。")})
+                            yield {"type": "grounding_gate", "issues": _g_issues,
+                                   "round": ground_blocks}
+                            continue
                 assistant_msg = {"role": "assistant", "content": result.content, **replay_think}
                 _push(assistant_msg)
                 yield {"type": "assistant", "content": result.content, "history": history}
