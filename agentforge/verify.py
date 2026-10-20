@@ -472,6 +472,66 @@ def ran_writes(convo: list[dict] | None) -> bool:
             or _ptc_write_attempted(convo))
 
 
+# 写失败的回执特征：工具被拒（[错误]/[已拒绝]）、内容没落盘（未写入）、
+# 或 PTC 权威块判定失败（写入失败）。带这些标记的调用不算「写过」。
+_WRITE_FAIL_RX = re.compile(r"\[\s*错误\s*\]|\[\s*已拒绝\s*\]|未写入|写入失败|写入未通过")
+
+
+def wrote_ok(convo: list[dict] | None) -> bool:
+    """是否有一次写类调用**真的落了盘**（被核查拒绝 / 写入失败的不算）。
+
+    rerun27 事故：模型两次 write_file 都被拦（引用路径错、写前门槛没取证），
+    一个字没落盘，但「未交付硬闸」的豁免只看轨迹里出现过写类调用
+    （produced_possible），于是硬闸被绕过——任务状态记成 done，磁盘上空的。
+    豁免必须问「写成功过吗」，不能只问「试过吗」。
+
+    判定材料是轨迹本身：assistant 的 tool_calls 与随后 role="tool" 的回执按
+    顺序配对（回执消息不带工具名），写类工具 + 回执无失败标记 = 写成功。
+    run_command 一律按「可能已产出文件」从宽（脚本生成类任务不该被误判）。
+    """
+    pending: list[str] = []
+    for m in convo or []:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role == "assistant":
+            for tc in (m.get("tool_calls") or []):
+                fn = tc.get("function") or {}
+                name = fn.get("name") or tc.get("name") or ""
+                if name in WRITE_TOOLS:
+                    pending.append("write")
+                elif name == "run_command":
+                    pending.append("cmd")
+                elif name == "ops_batch":
+                    args = tc.get("arguments", fn.get("arguments"))
+                    if isinstance(args, dict):
+                        args = json.dumps(args, ensure_ascii=False)
+                    pending.append("ptc" if _PTC_WRITE_RX.search(str(args or "")) else "")
+                else:
+                    pending.append("")
+        elif role == "tool":
+            kind = pending.pop(0) if pending else ""
+            if not kind:
+                continue
+            text = str(m.get("content") or "")
+            if kind == "cmd":
+                return True
+            if kind == "write":
+                if not _WRITE_FAIL_RX.search(text[:400]):
+                    return True
+            elif kind == "ptc":
+                # 权威块明说已确认落盘；没有权威块（旧路径）时按「无失败标记」从宽
+                if "已写入磁盘" in text:
+                    return True
+                if not _WRITE_FAIL_RX.search(text):
+                    return True
+    # 有调用但没等到回执（上下文被压缩 / 接力只带了过去的一部分）：
+    # 不能说它没写成——拿不到回执就不许判死，宁可放过也不误伤真交付。
+    if any(k in ("write", "ptc", "cmd") for k in pending):
+        return True
+    return False
+
+
 def produced_possible(convo: list[dict] | None) -> bool:
     """任务里是否出现过任何可能产出文件的操作（写类工具或 run_command——
     命令也可能合法地产出文件，比如跑脚本生成报告；两者都没有时，

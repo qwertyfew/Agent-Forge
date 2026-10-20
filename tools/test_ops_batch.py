@@ -273,6 +273,35 @@ def main() -> None:
           "[参数]" in msg and "path" in msg and "query" not in msg.split("[参数]")[-1],
           msg[:200])
 
+    # 多位置参数：rerun27 实证模型写 call('write_file', 'a.md', '正文')，旧壳
+    # 「最多 1 个位置参数」直接抛 TypeError，白烧一整轮。必填参数按声明顺序对齐。
+    tmp_pos = Path(tempfile.mkdtemp())
+    ag_pos = _mk_agent(tmp_pos, [
+        _Res(tool_calls=[_TC("ops_batch", {"script":
+             "call('write_file', 'pos_out.md', 'from positional')\n"
+             "print('done')"})]),
+        _Res(content="收到。"),
+    ])
+    evs_pos = _run(ag_pos, "位置参数回归")
+    out_pos = (next((e for e in evs_pos if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("write_file 接受两个位置参数（path, content）",
+          (tmp_pos / "pos_out.md").exists()
+          and (tmp_pos / "pos_out.md").read_text(encoding="utf-8") == "from positional",
+          (out_pos or "")[:300])
+    check("多位置参数不再抛 TypeError", "TypeError" not in out_pos, (out_pos or "")[:200])
+
+    # 多余的位置参数仍要拦住（给错数量的调用不能被静默丢弃）
+    tmp_over = Path(tempfile.mkdtemp())
+    ag_over = _mk_agent(tmp_over, [
+        _Res(tool_calls=[_TC("ops_batch", {"script":
+             "call('read_file', 'a', 'b', 'c')"})]),
+        _Res(content="收到。"),
+    ])
+    evs_over = _run(ag_over, "位置参数过多")
+    out_over = (next((e for e in evs_over if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("超出必填个数的位置参数仍有明确报错",
+          "位置参数" in out_over, out_over[:300])
+
     print("\n结果：全部通过")
     sys.exit(0)
 

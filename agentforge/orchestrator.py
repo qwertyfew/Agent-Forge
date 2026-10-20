@@ -37,6 +37,7 @@ from .planner import (
     KIND_DIM, KIND_LABEL, Subtask, kind_of, looks_like_change, make_plan,
     needs_plan, plan_summary,
 )
+from .evidence import EvidenceLedger
 from .readcache import ReadCache
 from . import artifact
 from . import gaps
@@ -364,6 +365,10 @@ def _verify_gate(agent, message: str, holder: dict,
     cfg = agent.cfg
     if not getattr(cfg, "verify_gate", True):
         return
+    # 证据台账跨修正轮共用：首轮读过的文件，第二轮引用时仍算「读过」。
+    # 不共用的话每轮 run() 都会重置台账，引用核查与写前门槛在修正轮里
+    # 恒判「本任务从未 read_file 过」——rerun27 三轮读同一批文件、零交付。
+    evidence = getattr(getattr(agent, "guard", None), "ledger", None)
     convo = holder.get("convo") or []
     summary = holder.get("summary") or ""
     cmd = verify_gate.extract_verify_cmd(message, cfg.workspace_root)
@@ -413,7 +418,7 @@ def _verify_gate(agent, message: str, holder: dict,
             )
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
-                                read_cache=read_cache):
+                                read_cache=read_cache, ledger=evidence):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -473,7 +478,7 @@ def _verify_gate(agent, message: str, holder: dict,
             )
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
-                                read_cache=read_cache):
+                                read_cache=read_cache, ledger=evidence):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -499,7 +504,12 @@ def _verify_gate(agent, message: str, holder: dict,
             # ②写了骨架但正文一节没填（看上去动手了，交付物却是空壳）。
             # 其余「写了但没写到点子上」仍只提示，避免误伤。
             statuses = {c.get("status") for c in issues}
-            untouched = not verify_gate.produced_possible(convo)
+            # 「动过手」必须是**写成功过**，不是「调用过写类工具」。rerun27：
+            # 两次 write_file 全被核查拒绝（引用路径错 / 写前门槛），旧判据
+            # produced_possible 只看轨迹里出现过写类调用，于是放过硬闸——
+            # 任务状态照旧记 done，交付物一个字都没有。
+            # run_command 仍算「可能产出文件」，避免误伤脚本生成类任务。
+            untouched = not verify_gate.wrote_ok(convo)
             skeleton_only = ("skeleton" in statuses
                              and statuses <= {"missing", "skeleton"})
             if (getattr(cfg, "delivery_hard_gate", True)
@@ -532,7 +542,7 @@ def _verify_gate(agent, message: str, holder: dict,
                 )
                 for ev in agent.run(convo, prompt, auto_route=False,
                                     stop_check=stop_check, auto_approve=auto_approve,
-                                    read_cache=read_cache):
+                                    read_cache=read_cache, ledger=evidence):
                     k = ev.get("type")
                     if k in ("user", "route"):
                         continue
@@ -582,7 +592,7 @@ def _verify_gate(agent, message: str, holder: dict,
             )
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
-                                read_cache=read_cache):
+                                read_cache=read_cache, ledger=evidence):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -608,7 +618,7 @@ def _verify_gate(agent, message: str, holder: dict,
             prompt = honesty_guard.corrective_prompt(summary)
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
-                                read_cache=read_cache):
+                                read_cache=read_cache, ledger=evidence):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -637,7 +647,7 @@ def _verify_gate(agent, message: str, holder: dict,
             )
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
-                                read_cache=read_cache):
+                                read_cache=read_cache, ledger=evidence):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -1476,6 +1486,11 @@ def run_task(
     brief_relay = bool(getattr(agent.cfg, "relay_brief", True)) and multi
     done: list[dict] = []
     total = len(plan)
+    # 任务级证据台账：本任务所有步骤、所有重跑共用一份。取证是任务级的动作，
+    # 不该因为「换了步骤 / 换了模型重跑同一步」就当作没读过——否则第二步写
+    # 交付物时，第一步读过的文件全被判「从未 read_file」，引用核查与写前
+    # 门槛双杀（rerun27 的零交付就是这么来的）。
+    task_ledger = EvidenceLedger()
 
     def _step_events(step_idx: int, prompt_: str, relay_: list | None):
         """跑一步 agent：透传事件流，返回 (summary, failed, halted, hist)。
@@ -1489,7 +1504,7 @@ def run_task(
         hist_ = hist
         for ev in agent.run(hist_, prompt_, auto_route=False, stop_check=stopped,
                             auto_approve=auto_approve, file_log=file_log,
-                            relay=relay_, read_cache=read_cache,
+                            relay=relay_, read_cache=read_cache, ledger=task_ledger,
                             steer_check=lambda: steering.take(task_id, f"step{step_idx}")):
             t = ev.get("type")
             if t == "user":

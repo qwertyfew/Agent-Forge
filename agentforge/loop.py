@@ -633,6 +633,7 @@ class Agent:
         steer_check=None,
         contract: list[str] | None = None,
         session_id: str = "",
+        ledger=None,
     ) -> Iterator[dict[str, Any]]:
         """跑一轮完整任务。
 
@@ -656,6 +657,9 @@ class Agent:
         ReadCache，跨并行泳道/子任务共用）：同参数只读调用第二次起直接回放缓存
         结果并明说。不传就退回本 run 私有的 call_cache（行为同旧版）。任何
         非只读工具执行后缓存全量作废，防止「读了→改了→再读」拿到旧内容。
+
+        ledger 传进来时沿用这份证据台账（同一任务的修正轮共用，读过的文件不会
+        因为换了轮次就被判「从未读过」）；不传则新建并在本次 run 内独占。
         """
         stopped = stop_check or (lambda: False)
         # 小步骤兜底标记：缺口台账记录时要说明「当时在做哪一步」。编排层会为
@@ -664,7 +668,16 @@ class Agent:
         gaps.ensure_step(user_text)
         # 证据台账：本任务「实际核实过哪些文件」的唯一事实源（架构层记录，供写报告时
         # 校验引用）。每次 run 重置，避免跨任务串味。
-        self.guard.ledger = EvidenceLedger()
+        #
+        # rerun27 事故：修正轮也是「一次 run」，重置把前面读过的五十来个文件全忘了。
+        # 于是第二轮写交付物时，引用核查说「这个文件本任务从未 read_file 过」、
+        # 写前门槛说「一次 read_file 都没有」——模型把同一批文件又读一遍，第三轮
+        # 重置再忘一次，永远过不去，最后零交付。取证发生在任务里，不在某一轮里：
+        # 调用方（编排层修正轮）显式传 ledger，同一任务共用一份；不传才新建。
+        if ledger is not None:
+            self.guard.ledger = ledger
+        else:
+            self.guard.ledger = EvidenceLedger()
         # ops_batch（PTC）脚本内的写操作要记入本任务台账；agent 实例本身在
         # 工具执行点临时挂到 OPS_AGENT_CTX（见主循环 _execute 调用处）。
         self._file_log = file_log

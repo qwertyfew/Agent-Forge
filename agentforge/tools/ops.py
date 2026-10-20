@@ -121,34 +121,43 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                 end = kw.get("end", "\n")
                 out.write(sep.join(str(x) for x in a) + end)
 
-            def _first_param(tool_name: str) -> str:
-                """该工具的第一个必填参数名——位置参数映射到它。
+            def _required_params(tool_name: str) -> list[str]:
+                """该工具的必填参数名（按声明顺序）——位置参数逐个映射到它们。
 
                 各工具主参数不同（read_file→path、search_code→pattern、
-                run_command→command），不能一律当 path。
+                run_command→command），不能一律当 path。多必填的工具
+                （write_file→path,content；edit_file→path,old_text,new_text）
+                按声明顺序对齐，这是模型写 call("write_file", path, body) 时的
+                自然预期。
                 """
                 spec = agent.registry.get(tool_name)
                 params = getattr(spec, "parameters", None) or {}
-                req = params.get("required") or []
+                req = [str(x) for x in (params.get("required") or [])]
                 if req:
-                    return str(req[0])
+                    return req
                 props = params.get("properties") or {}
-                return next(iter(props), "path")
+                return [next(iter(props), "path")]
 
             def _with_positional(name: str, pos: tuple, kw: dict) -> dict:
                 # 容忍位置参数：模型爱写 call("list_dir", "external") 或
                 # tools.list_dir("external")。旧实现直接抛「只支持关键字参数」，
                 # rerun23 / rerun24 各白烧一轮。纯接口摩擦，壳该迁就调用习惯。
+                # rerun27 又栽一次：write_file(path, content) 两个位置参数被
+                # 「最多 1 个位置参数」挡掉，白烧一整轮。按必填顺序逐个对齐。
                 if not pos:
                     return kw
-                main = _first_param(name)
-                if len(pos) > 1:
+                req = _required_params(name)
+                if len(pos) > len(req):
                     raise TypeError(
-                        f"{name}() 最多 1 个位置参数（自动映射到 {main}），"
-                        f"其余请用关键字：call(\"{name}\", {main}=..., ...)")
-                if main in kw:
-                    raise TypeError(f"{name}() 参数重复：{main} 既按位置又按关键字给了")
-                return {**kw, main: pos[0]}
+                        f"{name}() 最多 {len(req)} 个位置参数（依次映射到 "
+                        f"{'、'.join(req)}），其余请用关键字："
+                        f"call(\"{name}\", {req[0]}=..., ...)")
+                out = dict(kw)
+                for key, val in zip(req, pos):
+                    if key in out:
+                        raise TypeError(f"{name}() 参数重复：{key} 既按位置又按关键字给了")
+                    out[key] = val
+                return out
 
             def sdk_call(name: str, *pos, **args) -> str:
                 if time.monotonic() > deadline:

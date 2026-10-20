@@ -788,6 +788,61 @@ def main() -> None:
     check("F 写过盘：不判未交付", not holder.get("delivery_failed"),
           repr(holder.get("delivery_failed")))
 
+    # 写「试过」不等于写「成功」：rerun27 两次 write_file 都被核查拒（引用路径错 /
+    # 写前门槛没取证），一个字没落盘，却因为轨迹里出现过写类调用而绕过硬闸，
+    # 任务状态记成 done。回执明说没写成的，必须仍判未交付。
+    ag = StubAgent()
+    holder = {"summary": "已完成，差距清单已写入 out/gap.md",
+              "convo": [
+                  {"role": "user", "content": brief_f},
+                  {"role": "assistant", "content": "", "tool_calls": [
+                      {"function": {"name": "ops_batch", "arguments": {"script":
+                          "call('write_file', path='out/gap.md', content='...')"}}}]},
+                  {"role": "tool", "content":
+                      "[ops_batch] 1 次工具调用（write_file×1）\n"
+                      "【系统核对·写盘结果】以下由 harness 实测得出，不是脚本里的 print：\n"
+                      "  - write_file → out/gap.md: 写入失败\n"},
+              ]}
+    list(_verify_gate(ag, brief_f, holder))
+    check("F 写失败（回执明说未写入）：仍判未交付",
+          holder.get("delivery_failed") == ["out/gap.md"],
+          repr(holder.get("delivery_failed")))
+
+    # 真写成功过的，不许判未交付（硬闸只抓「一次都没写成」）
+    ag = StubAgent()
+    holder = {"summary": "已完成", "convo": [
+        {"role": "user", "content": brief_f},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "ops_batch", "arguments": {"script":
+                "call('write_file', path='out/other.md', content='...')"}}}]},
+        {"role": "tool", "content":
+            "[ops_batch] 1 次工具调用（write_file×1）\n"
+            "【系统核对·写盘结果】\n  - write_file → out/other.md: 已写入磁盘\n"},
+    ]}
+    list(_verify_gate(ag, brief_f, holder))
+    check("F 写成功过（权威块确认）：不判未交付",
+          not holder.get("delivery_failed"), repr(holder.get("delivery_failed")))
+
+    # 证据台账跨修正轮共用：修正轮必须收到首轮那份台账，否则「本任务读过的文件」
+    # 在第二轮全部失效（rerun27 三轮读同一批文件、零交付的根因）。
+    sentinel = object()
+
+    class LedgerAgent(StubAgent):
+        def __init__(self):
+            self.guard = type("G", (), {"ledger": sentinel})()
+            self.seen = []
+
+        def run(self, convo, prompt, **kw):
+            self.seen.append(kw.get("ledger"))
+            yield from super().run(convo, prompt, **kw)
+
+    ag_l = LedgerAgent()
+    holder = {"summary": "我做完了，验证通过", "convo": []}
+    list(_verify_gate(ag_l, "任务……验收：python bad_script.py", holder))
+    check("修正轮拿到同一份证据台账",
+          bool(ag_l.seen) and all(g is sentinel for g in ag_l.seen),
+          f"{len(ag_l.seen)} 轮，回传 {[id(g) for g in ag_l.seen][:3]}")
+
     print("\n全部断言通过。")
 
 
