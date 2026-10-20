@@ -24,6 +24,7 @@ from __future__ import annotations
 import builtins
 import contextvars
 import io
+import re
 import threading
 import time
 import traceback
@@ -44,6 +45,77 @@ _DENIED_IN_SCRIPT = {"ops_batch", "ask_user"}
 _DEFAULT_BUDGET = 2400
 _DEFAULT_TIMEOUT = 60.0
 _MAX_TIMEOUT = 180.0
+
+# 模型控制标记：<|channel|> / <|im_start|> / <channel|> / <|channel> 等。
+# rerun56 实证：模型把整段「思考通道」连同这些标记一起写进了 script 文本——
+# `<|channel>thought ... <channel|>call("web_search", ...)`，编译直接
+# `SyntaxError: unterminated string literal`，第一次 ops_batch 因此 0 次工具调用。
+# 不是它不会写脚本，是脚本文本里混进了不该出现的控制标记 + 思考散文。
+_CTRL_TOKEN_RX = re.compile(
+    r"<\|[^|>\n]{0,40}\|>"           # <|channel|> / <|im_start|>
+    r"|<\|[^|>\n]{0,40}>"            # <|channel>（缺右侧竖线）
+    r"|<[A-Za-z_][\w:.-]{0,20}\|>"   # <channel|>
+)
+
+
+def _compiles(src: str) -> bool:
+    try:
+        compile(src, "<ops_batch>", "exec")
+        return True
+    except SyntaxError:
+        return False
+
+
+def _looks_like_code(line: str) -> bool:
+    """这一行像不像 Python 代码（用来定位混入的思考散文边界）。
+
+    只看「结构信号」不看语义：关键字开头、缩进续行、赋值、函数调用。
+    注意 `thought` 这种裸词是合法表达式语句（能编译、运行时才 NameError），
+    所以不能拿「能不能编译」当唯一判据——必须先把散文行认出来。
+    """
+    s = line.strip()
+    if not s:
+        return False
+    if line[:1] in (" ", "\t"):        # 缩进续行 / 块体内容
+        return True
+    if s.startswith("#"):
+        return True
+    if re.match(r"^(import|from|def|class|for|while|if|elif|else|try|except"
+                r"|finally|with|return|yield|assert|del|global|nonlocal"
+                r"|lambda|async|await|@|pass|break|continue|raise)\b", s):
+        return True
+    if re.match(r"^[A-Za-z_]\w*\s*(=|\+=|-=|\*=|/=|\()", s):
+        return True
+    if re.match(r"^[A-Za-z_][\w.]*\s*\(", s):   # call(...) / tools.call(...) / print(...)
+        return True
+    return False
+
+
+def sanitize_script(script: str) -> tuple[str, str]:
+    """剥掉混进脚本里的控制标记/思考文本，返回 (可用脚本, 处理说明)。
+
+    只在「原样编译不过」时才动手——能跑的脚本一个字都不改，绝不把好脚本改坏。
+    rerun56 实况：`<|channel>thought` + 整段推理散文 + `<channel|>call(...)` 混在
+    script 里，编译直接 SyntaxError，第一次 ops_batch 因此 0 次调用。
+    """
+    raw = script or ""
+    if not raw.strip() or _compiles(raw):
+        return raw, ""
+    cleaned = _CTRL_TOKEN_RX.sub("", raw)
+    if cleaned != raw and _compiles(cleaned):
+        return cleaned, "已剥离模型控制标记（如 <|channel|>）"
+    lines = cleaned.splitlines()
+    # 从「第一行真正的代码」起截，并剥掉尾部散落的思考行
+    for i, ln in enumerate(lines):
+        if not _looks_like_code(ln):
+            continue
+        block = list(lines[i:])
+        while block and block[-1].strip() and not _looks_like_code(block[-1]):
+            block.pop()
+        cand = "\n".join(block)
+        if cand.strip() and _compiles(cand):
+            return cand, "已剥离控制标记与混入的思考文本"
+    return raw, ""
 
 
 def _budget_cut(text: str, budget: int) -> str:
@@ -97,6 +169,10 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             if not (script or "").strip():
                 return "[错误] ops_batch 需要 script 参数：一段调用 tools.call(...) 的 Python 代码"
 
+            # 脚本预处理：把混进来的控制标记/思考文本剥掉（rerun56 首次调用因
+            # `<|channel>thought` 混入脚本而 SyntaxError，白烧一整轮）。
+            script, _fix_note = sanitize_script(script)
+
             budget = max(400, min(int(budget or _DEFAULT_BUDGET), 16000))
             timeout = max(5.0, min(float(timeout or _DEFAULT_TIMEOUT), _MAX_TIMEOUT))
             full = bool(getattr(agent, "full_access", False))
@@ -112,6 +188,10 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             # 权威结论必须排在模型自述之后，并用【系统核对】标记区分。
             echo_lines: list[str] = []
             out = io.StringIO()
+            if _fix_note:
+                # 明确告诉模型「你刚才提交的不是纯代码」，否则它会以为语法错在自己逻辑上。
+                out.write(f"[脚本预处理] {_fix_note}。请只提交纯 Python 代码，"
+                          f"不要带思考文本或 <|channel|> 这类通道标记。\n")
             box: dict = {"done": False}
 
             def _print(*a, **kw):

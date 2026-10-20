@@ -11,8 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from agentforge import grounding as G
 
 
-def _check(name: str, cond: bool) -> None:
-    print(("OK  " if cond else "FAIL") + "  " + name)
+def _check(name: str, cond: bool, detail: str = "") -> None:
+    print(("OK  " if cond else "FAIL") + "  " + name
+          + (f"  —— {detail}" if detail and not cond else ""))
     if not cond:
         raise SystemExit(f"测试未通过: {name}")
 
@@ -112,6 +113,22 @@ def test_correct_cmd_with_project_token() -> None:
     _check("含项目名的正确命令不误伤", not issues)
 
 
+def test_wrong_package_name_flagged() -> None:
+    # 收窄白名单：带具体包名的安装命令须要求包名在源里精确出现。
+    # `npm install -g @wrong-scope/wrong-pkg` 源里没有 → 必须拦
+    bad = "安装：`npm install -g @wrong-scope/wrong-pkg`，然后运行。"
+    issues = G.reply_grounding_issues(bad, SRC, intent=True)
+    joined = " / ".join(issues)
+    _check("错误包名必须拦", bool(issues) and "@wrong-scope/wrong-pkg" in joined)
+
+
+def test_correct_package_passes() -> None:
+    # 源里真实存在的包名（@akins20/ui-critic）应放行
+    good = "安装：`npm i -g @akins20/ui-critic`，然后运行 `ui-critic`。"
+    issues = G.reply_grounding_issues(good, SRC, intent=True)
+    _check("源里真实包名不误伤", not issues)
+
+
 def test_fenced_commands_extracted() -> None:
     # rerun55 盲区：命令写在 ```bash 围栏块里，抽取器必须抓到，且不能把语言提示行
     # `bash` 和命令黏成一条带换行的脏 claim
@@ -146,6 +163,84 @@ def test_no_pure_flag_or_package_name() -> None:
     _check("npm 包名 marp-core 不被当命令", "marp-core" not in joined)
 
 
+# ---------------- 证据准入（rerun56） ----------------
+
+# 一次真实检索的候选池形态：★ 同名段 + star 排序段
+POOL = """
+[实测 · API] GitHub 官方搜索接口 · 查询「Marp」· 排序：相关度 · 命中 3 个
+  1. marp-team/marp  star=12662  The entrance repository of Markdown presentation ecosystem
+     https://github.com/marp-team/marp
+  2. marp-team/marp-cli  star=3879  A CLI interface for Marp and Marpit based converters
+     https://github.com/marp-team/marp-cli
+"""
+
+
+def test_citations_extracted() -> None:
+    # 只认 URL 与 owner/repo；`HTML/JS`、`React/Vue`、路径、文件名都不算
+    reply = ("参考 https://github.com/marp-team/marp-cli 与 marp-team/marp-core。"
+             "前端技术栈是 React/Vue 与 HTML/JS，入口在 `src/components`，"
+             "幻灯片文件是 deck.md，下载 `https://marp.app/`。")
+    cites = G.extract_citations(reply)
+    joined = " / ".join(cites)
+    _check("抓到 github URL", "https://github.com/marp-team/marp-cli" in joined)
+    _check("抓到 owner/repo", "marp-team/marp-core" in joined)
+    _check("抓到官网 URL", "https://marp.app" in joined)
+    _check("React/Vue 不当仓库", "React/Vue" not in joined)
+    _check("HTML/JS 不当仓库", "HTML/JS" not in joined)
+    _check("src/components 不当仓库", "src/components" not in joined)
+    _check("deck.md 不当仓库", "deck.md" not in joined)
+
+
+def test_url_trailing_backtick_stripped() -> None:
+    # rerun56 实况：答复把 URL 写在反引号里，旧正则把尾反引号吞进了 URL
+    cites = G.extract_citations("见 `https://github.com/marp-team/marp` 。")
+    _check("URL 尾部反引号被剥掉",
+           cites == ["https://github.com/marp-team/marp"])
+
+
+def test_admission_flags_self_constructed() -> None:
+    # 池里只有 presentation 类的无关项目；答复却引用 marp-team/marp → 未准入
+    pool = ("[实测 · API] GitHub 官方搜索接口 · 查询「presentation」\n"
+            "  1. hyperoslo/Presentation  star=3068  https://github.com/hyperoslo/Presentation\n")
+    reply = "推荐 marp-team/marp，命令见 https://github.com/marp-team/marp"
+    bad = G.evidence_admission_issues(reply, pool)
+    _check("自构源被判未准入", bool(bad))
+    _check("未准入里包含该仓库", any("marp-team/marp" in b for b in bad), str(bad))
+
+
+def test_admission_passes_retrieved() -> None:
+    # 候选池里真有 marp-team/marp-cli → 引用它（含同仓库子页面）应放行
+    reply = ("见 marp-team/marp-cli，文档 "
+             "https://github.com/marp-team/marp-cli/blob/main/README.md")
+    bad = G.evidence_admission_issues(reply, POOL)
+    _check("检索候选里的源不误伤", not bad, str(bad))
+
+
+def test_admission_no_substring_cross() -> None:
+    # 关键边界：池里只有 marp-cli，答复引用 marp（入口仓库）——不能靠子串蒙过
+    pool = ("[实测 · API] GitHub 官方搜索接口 · 查询「Marp」\n"
+            "  2. marp-team/marp-cli  star=3879  https://github.com/marp-team/marp-cli\n")
+    bad = G.evidence_admission_issues("部署用 marp-team/marp。", pool)
+    _check("marp 不能靠 marp-cli 的子串被准入", bool(bad), str(bad))
+
+
+def test_admission_empty_pool_skips() -> None:
+    # 本次没做检索 → 谈不上准入（不误伤）
+    _check("空候选池不启用准入",
+           not G.evidence_admission_issues("参考 marp-team/marp", ""))
+
+
+def test_admission_ignores_non_retrieval_tools() -> None:
+    # 只把「检索发现」类输出当候选：模型自己 fetch 回来的正文不算候选，
+    # 否则它自构 URL 抓一次就自动「准入」，闸门等于没有。
+    hist = [
+        {"role": "tool", "content": "https://github.com/marp-team/marp 抓到的正文"}
+    ]
+    _check("fetch 正文不构成候选池", not G.retrieval_candidates(hist).strip())
+    hist2 = [{"role": "tool", "content": POOL}]
+    _check("检索输出构成候选池", "marp-team/marp-cli" in G.retrieval_candidates(hist2))
+
+
 def main() -> None:
     test_intent()
     test_bad_reply_flagged()
@@ -157,9 +252,18 @@ def main() -> None:
     test_zero_source_no_command_no_claim_passes()
     test_non_howto_skips()
     test_correct_cmd_with_project_token()
+    test_wrong_package_name_flagged()
+    test_correct_package_passes()
     test_fenced_commands_extracted()
     test_fenced_fabricated_flagged()
     test_no_pure_flag_or_package_name()
+    test_citations_extracted()
+    test_url_trailing_backtick_stripped()
+    test_admission_flags_self_constructed()
+    test_admission_passes_retrieved()
+    test_admission_no_substring_cross()
+    test_admission_empty_pool_skips()
+    test_admission_ignores_non_retrieval_tools()
     print("\n全部通过。")
 
 

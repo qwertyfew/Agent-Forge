@@ -422,11 +422,17 @@ _GENERIC_HOST_RX = re.compile(
 _SLUG_RX = re.compile(r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9._-]*[/-][A-Za-z][A-Za-z0-9._-]*)(?![A-Za-z0-9_.-])")
 _WORD_RX = re.compile(r"[A-Za-z][A-Za-z0-9.+-]*|[\u4e00-\u9fff]+")
 # 常见噪声词：查询里几乎必然出现，但从来不指向「要找的那个东西」
+# 功能词（to/in/of/or...）必须收进来：_key_word 会给「非领域泛词」加分，若不拦，
+# 「markdown to pptx cli」里那个 to 会凭加分胜出，搜出一堆垃圾（rerun56 复盘时实测）。
 _QUERY_STOP = {
     "git", "github", "the", "and", "for", "how", "what", "why", "with", "http", "https",
     "www", "com", "org", "api", "json", "url", "about", "info", "news", "doc", "docs",
     "one", "new", "top", "best", "get", "make", "use", "run", "open", "source", "code",
     "app", "web", "site", "star", "fork",
+    "to", "in", "of", "or", "is", "are", "was", "be", "been", "an", "a", "it", "on",
+    "at", "by", "as", "do", "does", "did", "if", "no", "so", "up", "my", "we", "you",
+    "me", "us", "its", "than", "then", "there", "here", "all", "any", "some", "can",
+    "will", "should", "would", "could", "from", "into", "using", "via", "not", "but",
 }
 
 
@@ -453,11 +459,34 @@ def results_look_generic(rows) -> bool:
     return n >= 2
 
 
+# 领域泛词：在这类任务里几乎必然出现，但从来不指向具体项目。
+# rerun56 实证：查询「Marp markdown presentation tool github repository」按「最长词」
+# 挑词，选出了 presentation（12 字符）而把真正的项目名 Marp（4 字符）丢掉——于是
+# ★ 同名兜底拿 presentation 去查，返回 14 个 Swift/Java/C# 的 Presentation 项目，
+# marp-team 一个都没出现，模型只好凭先验自己构造 URL 去抓元仓库。
+_DOMAIN_GENERIC = {
+    "presentation", "presentations", "slide", "slides", "deck", "decks",
+    "markdown", "pptx", "ppt", "pdf", "docx", "converter", "convert", "conversion",
+    "cli", "api", "sdk", "plugin", "theme", "template", "generator", "components",
+    "component", "library", "framework", "example", "demo", "tutorial",
+}
+
+
 def _key_word(w: str):
-    """挑「最像项目名」的那个词：全大写缩写 > 带数字 > 长词。"""
-    return (1 if (len(w) > 1 and w.isupper()) else 0,
-            1 if any(ch.isdigit() for ch in w) else 0,
-            len(w))
+    """挑「最像项目名」的那个词。
+
+    排序优先级（前者压后者）：全大写缩写 > 首字母大写专有名词 > 非领域泛词 >
+    带数字 > 长度。**长度必须排在最后**：presentation / markdown 这类又长又泛的
+    词如果按长度胜出，会把 Marp 这种真正的项目名挤掉（rerun56）。
+    """
+    return (
+        1 if (len(w) > 1 and w.isupper()) else 0,
+        1 if (w[:1].isupper() and not w.isupper()) else 0,
+        0 if (w.lower() in _DOMAIN_GENERIC
+              or w.lower() in _GENERIC_PROJECT_WORDS) else 1,
+        1 if any(ch.isdigit() for ch in w) else 0,
+        len(w),
+    )
 
 
 def tighten_query(query: str) -> tuple[str, str]:

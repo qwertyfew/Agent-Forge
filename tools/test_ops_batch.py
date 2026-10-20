@@ -302,6 +302,26 @@ def main() -> None:
     check("超出必填个数的位置参数仍有明确报错",
           "位置参数" in out_over, out_over[:300])
 
+    # ---------- 脚本污染：模型把 <|channel>thought 混进 script（rerun56 实况） ----------
+    # 现场：脚本文本是 `<|channel>thought ... <channel|>call("web_search", ...)`，
+    # 编译直接 SyntaxError: unterminated string literal → 0 次工具调用，白烧一轮。
+    tmp_pol = Path(tempfile.mkdtemp(prefix="af_ops_pol_"))
+    (tmp_pol / "note.txt").write_text("POLLUTED-OK", encoding="utf-8")
+    ag_pol = _mk_agent(tmp_pol, [
+        _Res(tool_calls=[_TC("ops_batch", {"script":
+             "<|channel>thought\n"
+             "I will read the note file first.\n"
+             "Then I will report it back.\n"
+             "<channel|>print(call('read_file', path='note.txt'))\n"})]),
+        _Res(content="已读取。"),
+    ])
+    evs_pol = _run(ag_pol, "读取 note.txt")
+    out_pol = (next((e for e in evs_pol if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("控制标记污染仍能执行（不再 SyntaxError）",
+          "POLLUTED-OK" in out_pol and "SyntaxError" not in out_pol, out_pol[:300])
+    check("污染脚本不是 0 次工具调用", "0 次工具调用" not in out_pol, out_pol[:200])
+    check("告知模型已做脚本预处理", "[脚本预处理]" in out_pol, out_pol[:200])
+
     print("\n结果：全部通过")
     sys.exit(0)
 

@@ -141,6 +141,42 @@ def main() -> None:
     gates_soft = [e for e in evs_soft if e.get("type") == "grounding_gate"]
     check("无源+无命令+未声称溯源：不拦", not gates_soft, str(len(gates_soft)))
 
+    # ---------- 证据准入（rerun56）：引用了检索候选里没有的源 → 打回 ----------
+    # 检索器只给出 presentation 类无关项目；答复却引用 marp-team/marp（自构地址抓来的）
+    pool_hist = [{"role": "tool", "content":
+                  "[实测 · API] GitHub 官方搜索接口 · 查询「presentation」\n"
+                  "  1. hyperoslo/Presentation  star=3068  "
+                  "https://github.com/hyperoslo/Presentation\n"}]
+    script_ref = [
+        _Res(content="这个项目是 marp-team/marp，官方入口仓库。"),
+        _Res(content="本次检索没有给出 Marp 相关仓库，无法确认具体项目。"),
+    ]
+    ag_ref = _mk_agent(tmp, script_ref)
+    evs_ref = _run(ag_ref, GOAL, history=list(pool_hist), contract=[])
+    gates_ref = [e for e in evs_ref if e.get("type") == "grounding_gate"]
+    check("引用未准入的源：触发 grounding_gate", len(gates_ref) == 1, str(len(gates_ref)))
+    check("打回点出未准入的引用（marp-team/marp）",
+          gates_ref and "marp-team/marp" in str(gates_ref[0].get("refs", [])),
+          str(gates_ref[0].get("refs") if gates_ref else ""))
+    _last_round = str([mm.get("content") for mm in (ag_ref.hub.rounds[-1] if ag_ref.hub.rounds else [])])
+    check("打回话术含「证据准入未通过」", "证据准入未通过" in _last_round,
+          _last_round[:200])
+    finals_ref = [e for e in evs_ref if e.get("type") == "assistant"]
+    check("放行的是如实说明没检索到的答复",
+          finals_ref and "没有给出 Marp" in finals_ref[-1]["content"],
+          finals_ref[-1]["content"][:60] if finals_ref else "无")
+
+    # ---------- 反例：引用的源就在候选池里 → 不拦 ----------
+    pool_ok = [{"role": "tool", "content":
+                "[实测 · API] GitHub 官方搜索接口 · 查询「Marp」\n"
+                "  2. marp-team/marp-cli  star=3879  A CLI interface for Marp\n"
+                "     https://github.com/marp-team/marp-cli\n"}]
+    script_ref_ok = [_Res(content="这个项目是 marp-team/marp-cli，官方 CLI 仓库。")]
+    ag_ref_ok = _mk_agent(tmp, script_ref_ok)
+    evs_ref_ok = _run(ag_ref_ok, GOAL, history=list(pool_ok), contract=[])
+    gates_ref_ok = [e for e in evs_ref_ok if e.get("type") == "grounding_gate"]
+    check("引用检索候选里的源不拦", not gates_ref_ok, str(len(gates_ref_ok)))
+
     print("\n结果：全部通过")
     sys.exit(0)
 

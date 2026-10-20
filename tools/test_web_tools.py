@@ -374,6 +374,17 @@ def test_repo_keyword() -> None:
           W.repo_keyword("帮我找找那个很出名的开源项目") == ""
           and W.repo_keyword("git 上的仓库") == "")
     check("空查询安全", W.repo_keyword("") == "" and W.repo_keyword(None) == "")
+    # rerun56：按「最长词」挑词会选中 presentation，把真正的项目名 Marp 丢掉，
+    # ★ 同名兜底于是拿 presentation 去查，返回一堆 Swift/Java 的 Presentation 项目。
+    check("专有名词优先于领域泛词（Marp 不被 presentation 盖过）",
+          W.repo_keyword("Marp markdown presentation tool github repository") == "Marp",
+          W.repo_keyword("Marp markdown presentation tool github repository"))
+    check("同类：Slidev 不被 slides 盖过",
+          W.repo_keyword("slidev markdown slides github") == "slidev")
+    check("领域泛词不与普通词争（vue components github → vue）",
+          W.repo_keyword("vue components github") == "vue")
+    check("功能词不当关键词（to 不抢）",
+          "to" != W.tighten_query("markdown to pptx cli open source")[0].split('"')[-2])
 
 
 def test_github_search_tool() -> None:
