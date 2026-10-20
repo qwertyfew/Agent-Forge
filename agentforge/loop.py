@@ -1049,25 +1049,36 @@ class Agent:
                 if (ground_blocks < 2 and not stopped()
                         and grounding.is_howto_intent(user_text)):
                     _g_src = grounding.sources_from_history(history)
-                    if _g_src.strip():
-                        _g_issues = grounding.reply_grounding_issues(
-                            result.content or "", _g_src, intent=True)
-                        if _g_issues:
-                            ground_blocks += 1
-                            _push({"role": "assistant",
-                                   "content": result.content or "", **replay_think})
-                            _push({"role": "user", "content": (
-                                "【操作类答复核查未通过】你这份最终答复里，下面这些操作指令在"
-                                "你本次 fetch 的源（README / 网页 / 已读文件）里找不到对应内容——"
-                                "它们看起来是通用模板，不是你实际读到的材料：\n- "
-                                + "\n- ".join(f"`{c}`" for c in _g_issues)
-                                + "\n\n请回到你刚抓取的官方源，只陈述里面真正出现的命令/目录；"
-                                  "如果源里根本没讲「怎么修改前端 / 怎么运行」，就如实说明"
-                                  "「官方文档未提供这一步的具体步骤」，不要补通用套话。"
-                                  "改完给出最终答复。")})
-                            yield {"type": "grounding_gate", "issues": _g_issues,
-                                   "round": ground_blocks}
-                            continue
+                    _g_issues = grounding.reply_grounding_issues(
+                        result.content or "", _g_src, intent=True)
+                    if _g_issues:
+                        ground_blocks += 1
+                        _push({"role": "assistant",
+                               "content": result.content or "", **replay_think})
+                        if _g_src.strip():
+                            _head = ("【操作类答复核查未通过】你这份最终答复里，下面这些操作指令在"
+                                     "你本次 fetch 的源（README / 网页 / 已读文件）里找不到对应内容"
+                                     "——它们看起来是通用模板，不是你实际读到的材料：")
+                            _tail = ("\n\n请回到你刚抓取的官方源，只陈述里面真正出现的命令/目录；"
+                                     "如果源里根本没讲「怎么修改前端 / 怎么运行」，就如实说明"
+                                     "「官方文档未提供这一步的具体步骤」，不要补通用套话。"
+                                     "改完给出最终答复。")
+                        else:
+                            _head = ("【操作类答复核查未通过】你这份答复属于「操作/使用类」问题，但本次"
+                                     "没有任何抓取记录（history 里没有 web_search / fetch 的工具结果），"
+                                     "却给出了具体运行命令或声称已参考官方文档。")
+                            _tail = ("\n\n在 PTC 常驻模式下，所有检索都必须经 ops_batch 脚本调用"
+                                     "（脚本内 tools.call('web_search', ...)）。请先用 ops_batch 调 web_search"
+                                     "抓到该项目的真实官方文档，再把文档里真实存在的命令/目录写进答复；"
+                                     "若确实没抓到，就如实说明「未抓取、无法确认」，不要凭记忆编造命令或"
+                                     "谎称已验证。改完给出最终答复。")
+                        _push({"role": "user", "content": (
+                            _head + "\n- "
+                            + "\n- ".join(f"`{c}`" for c in _g_issues)
+                            + _tail)})
+                        yield {"type": "grounding_gate", "issues": _g_issues,
+                               "round": ground_blocks, "no_source": not bool(_g_src.strip())}
+                        continue
                 assistant_msg = {"role": "assistant", "content": result.content, **replay_think}
                 _push(assistant_msg)
                 yield {"type": "assistant", "content": result.content, "history": history}

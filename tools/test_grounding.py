@@ -76,10 +76,27 @@ def test_universal_whitelisted() -> None:
     _check("git clone 白名单不拦截", "git clone" not in " / ".join(issues))
 
 
-def test_no_sources_no_flag() -> None:
-    # 没源可核时不拦（交给收尾闸门）
-    issues = G.reply_grounding_issues("运行 `python main.py`", "", intent=True)
-    _check("无源时不拦", not issues)
+def test_zero_source_with_command_flagged() -> None:
+    # 盲区已闭（rerun54）：操作类答复零抓取却含具体命令 → 必须拦
+    issues = G.reply_grounding_issues(
+        "运行 `python main.py` 启动，并 `npm run dev` 本地预览", "", intent=True)
+    _check("无源+含具体命令：必须拦", bool(issues))
+    _check("拦回指明需经 ops_batch 抓取", "ops_batch" in " / ".join(issues))
+
+
+def test_zero_source_asserts_sourced_flagged() -> None:
+    # rerun54 实况：零抓取却写「验证通过：所有命令均参考官方文档」
+    lie = ("推荐 Marp：`npm install -g @marp-team/marp-cli`，`marp deck.md --output deck.pdf`。"
+           "验证通过：所有命令均参考官方文档。")
+    issues = G.reply_grounding_issues(lie, "", intent=True)
+    _check("零抓取却谎称已溯源：必须拦", bool(issues))
+
+
+def test_zero_source_no_command_no_claim_passes() -> None:
+    # 操作类但只讲概念、无具体命令、未声称已溯源 → 不拦（避免误伤）
+    soft = "Marp 是 Markdown 转幻灯片的生态，核心思路是用 Markdown 写内容、由渲染器生成幻灯片。"
+    issues = G.reply_grounding_issues(soft, "", intent=True)
+    _check("无源+无命令+未声称溯源：不拦", not issues)
 
 
 def test_non_howto_skips() -> None:
@@ -101,7 +118,9 @@ def main() -> None:
     test_good_reply_passes()
     test_honest_disclaimer_passes()
     test_universal_whitelisted()
-    test_no_sources_no_flag()
+    test_zero_source_with_command_flagged()
+    test_zero_source_asserts_sourced_flagged()
+    test_zero_source_no_command_no_claim_passes()
     test_non_howto_skips()
     test_correct_cmd_with_project_token()
     print("\n全部通过。")

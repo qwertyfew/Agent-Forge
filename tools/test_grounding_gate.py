@@ -117,12 +117,29 @@ def main() -> None:
     gates_chat = [e for e in evs_chat if e.get("type") == "grounding_gate"]
     check("非操作类问题不拦（即便有未溯源命令）", not gates_chat, str(len(gates_chat)))
 
-    # ---------- 反例：本任务没 fetch 过源 → 不拦（无材料可核） ----------
-    script_no_src = [_Res(content="运行 `python main.py`。")]
+    # ---------- 盲区已闭：本任务没 fetch 过源，但给出了具体命令 → 必须拦，改对后放行 ----------
+    script_no_src = [
+        _Res(content="运行 `python main.py` 启动，前端在 src/components 目录。"),
+        _Res(content="本次未调用 web_search 抓取官方文档，无法确认具体运行命令；按 PTC 常驻要求应经 "
+                     "ops_batch 调 web_search 抓取后再引用。"),
+    ]
     ag_ns = _mk_agent(tmp, script_no_src)
     evs_ns = _run(ag_ns, GOAL, history=[], contract=[])  # 空 history，无源
     gates_ns = [e for e in evs_ns if e.get("type") == "grounding_gate"]
-    check("无 fetch 源时不拦（交给收尾闸门）", not gates_ns, str(len(gates_ns)))
+    check("无源+含具体命令：触发 grounding_gate（盲区已闭）", len(gates_ns) == 1, str(len(gates_ns)))
+    check("打回指明需经 ops_batch 抓取",
+          gates_ns and "ops_batch" in str(gates_ns[0]),
+          str(gates_ns[0] if gates_ns else ""))
+    finals_ns = [e for e in evs_ns if e.get("type") == "assistant"]
+    check("放行的是改为诚实声明的答复", finals_ns and "未调用 web_search" in finals_ns[-1]["content"],
+          finals_ns[-1]["content"][:60] if finals_ns else "无")
+
+    # ---------- 无源但只讲概念、无命令、未声称溯源 → 不拦（不误伤） ----------
+    script_soft = [_Res(content="Marp 是用 Markdown 写幻灯片、由渲染器生成页面的工具，思路很直接。")]
+    ag_soft = _mk_agent(tmp, script_soft)
+    evs_soft = _run(ag_soft, GOAL, history=[], contract=[])
+    gates_soft = [e for e in evs_soft if e.get("type") == "grounding_gate"]
+    check("无源+无命令+未声称溯源：不拦", not gates_soft, str(len(gates_soft)))
 
     print("\n结果：全部通过")
     sys.exit(0)

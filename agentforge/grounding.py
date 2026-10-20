@@ -74,6 +74,48 @@ _HONEST_RX = re.compile(
     re.I,
 )
 
+# 「声称已溯源 / 已核实」：模型若明示自己引用了官方文档、已验证，但本任务没抓过任何源，
+# 属于 rerun54 实况的谎称——零抓取却写「验证通过：所有命令均参考官方文档」。
+_ASSERT_SOURCED_RX = re.compile(
+    r"(参考(了|官方|官方文档)|根据官方|已验证|已核实|已确认.{0,6}(来自|基于)"
+    r"|验证通过|抓(到|取)了|fetch(了|到)|来自(官方|源码|仓库|文档)|一手来源|实际(读|抓))",
+    re.I,
+)
+# 反引号里的「命令行调用」形态（零抓取盲区用）：带 CLI 标志，或以已知命令/工具名开头。
+_CLI_BLOCK_RX = re.compile(r"`([^`]{2,160})`")
+_KNOWN_BIN_RX = re.compile(
+    r"^(?:npm|npx|pnpm|yarn|bun|node|python3?|py|pip3?|cargo|go|make|deno|ruby|php"
+    r"|tsc|docker|git|curl|wget|java|javac|gradle|mvn|kubectl|terraform|marp|slidev"
+    r"|vite|webpack|eslint|jest|ts-node|dotnet)\b",
+    re.I,
+)
+
+
+def _asserts_sourced(reply: str) -> bool:
+    return bool(_ASSERT_SOURCED_RX.search(reply or ""))
+
+
+def _has_cli_command(reply: str) -> bool:
+    """答复里是否出现「形如命令行调用」的反引号片段（带标志或以已知 bin 开头）。"""
+    for m in _CLI_BLOCK_RX.finditer(reply or ""):
+        s = m.group(1).strip()
+        if not s:
+            continue
+        if re.search(r"--?[A-Za-z]", s):      # 含 --opt / -x 标志
+            return True
+        if _KNOWN_BIN_RX.match(s):             # 以已知命令/工具名开头
+            return True
+    return False
+
+
+_ZERO_SRC_MSG = (
+    "你这份答复属于「操作/使用类」问题，但本次没有任何抓取记录"
+    "（history 里没有 web_search / fetch 的工具结果），却给出了具体运行命令或声称已参考官方文档。"
+    "在 PTC 常驻模式下，所有检索都必须经 ops_batch 脚本调用（脚本内 tools.call('web_search', ...)）。"
+    "请先用 ops_batch 调 web_search 抓到该项目的真实官方文档，再把文档里真实存在的命令/目录写进答复；"
+    "若确实没抓到，就如实说明「未抓取、无法确认」，不要凭记忆编造命令或谎称已验证。"
+)
+
 
 def is_howto_intent(text: str) -> bool:
     """任务书是不是「怎么操作/修改/使用」类问题。"""
@@ -162,18 +204,25 @@ def _claims_grounded_in(claims: list[str], sources: str) -> list[str]:
 def reply_grounding_issues(reply: str, sources: str, *, intent: bool = True) -> list[str]:
     """最终答复的操作类事实核查。
 
-    返回未在源里找到对应内容的指令列表；空列表=通过。
+    返回未通过核查的指令/问题列表；空列表=通过。
     `intent` 由调用方据任务书判定（只看「怎么操作/修改」类问题时才启用）。
+
+    两条路径：
+    - 有源：逐条核对具体指令是否在已 fetch 源里找得到（原逻辑）。
+    - 零源（rerun54 盲区）：操作类答复却零抓取、且含具体命令/谎称已溯源 → 打回，
+      逼模型回去用 ops_batch 真正抓取，而不是凭记忆编造或谎称已验证。
     """
     if not intent:
         return []
-    claims = extract_ops_claims(reply or "")
-    if not claims:
-        return []
-    if not (sources or "").strip():
-        # 没有任何源可核，无法判断——不拦（交给收尾闸门/人工）
-        return []
-    return _claims_grounded_in(claims, sources)
+    reply = reply or ""
+    claims = extract_ops_claims(reply)
+    if (sources or "").strip():
+        # 有源：逐条核对指令是否在源里找得到
+        return _claims_grounded_in(claims, sources)
+    # 零抓取盲区：操作类答复却零抓取，且含具体命令/声称已溯源 → 必须拦
+    if claims or _has_cli_command(reply) or _asserts_sourced(reply):
+        return [_ZERO_SRC_MSG]
+    return []
 
 
 def sources_from_history(history: list[dict]) -> str:
