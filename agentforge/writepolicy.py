@@ -208,6 +208,11 @@ def reject_message(path: str, content: str, issues, kind: str, cfg) -> str:
             "这是同一类问题：先把上面点到的**每个文件**都 read_file 一遍（一次脚本里"
             "连读即可），确认真实行号后一次性改草稿再提交——不要一条一条试探。"
         )
+        lines.append(
+            "表格类交付物的最快路径（实测可行）：在**同一个 ops_batch 脚本**里先"
+            " read_file 全部引用文件，紧接着对每一行连续 fill_section——脚本内读写"
+            "不增轮次，被拒也只丢一行。"
+        )
     return "\n".join(lines)
 
 
@@ -258,5 +263,7 @@ def rewrite_ban(path: str, content: str, cfg) -> str:
         f"  1. edit_file(path='{draft}', old_string=<错的片段>, "
         "new_string=<改正后的片段>) 修好草稿，再把草稿当前内容原样 write_file 提交；",
         "  2. 直接 edit_file 目标文件，只换出问题的几行（已填好的部分不受影响）。",
+        "表格类交付物的最快路径：在**同一个 ops_batch 脚本**里先 read_file 全部"
+        "引用文件，紧接着逐行 fill_section——被拒只丢一行，脚本内读写不增轮次。",
         "重新生成一整篇不会被接收——已经对的部分会在重写里被改坏。",
     ])
