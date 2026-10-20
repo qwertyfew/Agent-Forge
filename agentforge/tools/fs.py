@@ -228,6 +228,17 @@ def build_fs_tools(guard, cfg):
         pr = skeleton.progress(cfg.workspace_root, p)
         msg = (f"已填充小节「{heading}」（{len(content)} 字符，{mode}）→ {p}\n"
                + skeleton.progress_text(cfg.workspace_root, p))
+        # rerun28 实测误用：模型把整张表格当成一节，逐行 fill_section(默认 replace)，
+        # 十一次调用各自「成功」，前面填的行全被后一次替换掉——文件只剩最后一行，
+        # 模型只好整篇 write_file 重写，骨架先行的收益归零。
+        # 回执必须把「整节替换」这件事说清楚，并在文件没变长时明确点出来。
+        if str(mode or "").strip().lower() not in ("append", "a", "add"):
+            if len(new_text) <= len(text):
+                msg += (f"\n⚠ 这次是整节替换，文件没有变长（{len(text)} → {len(new_text)} 字符）。"
+                        f"同一节第二次 replace 会把上一次填的内容丢掉——表格行、分段续写"
+                        f"请改用 mode=\"append\"，只补局部用 edit_file。")
+            else:
+                msg += f"\n（整节替换：文件 {len(text)} → {len(new_text)} 字符）"
         if pr["pending"]:
             msg += "\n下一步：继续 fill_section 填：" + "、".join(str(x) for x in pr["pending"][:6])
         else:
@@ -348,7 +359,9 @@ def build_fs_tools(guard, cfg):
         make_tool(
             "fill_section",
             "把一段正文填进骨架里的某一个 `## 小节`。内容核查只针对这一节，"
-            "被拒不牵连其他小节；mode='append' 用于把长章节分几次续写。",
+            "被拒不牵连其他小节；mode='append' 用于把长章节分几次续写。"
+            "注意 replace 是**整节替换**：同一节第二次 replace 会丢掉上一次填的内容，"
+            "逐行/逐段追加同一个节必须用 mode='append'。",
             {
                 "type": "object",
                 "properties": {
