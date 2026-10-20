@@ -25,7 +25,7 @@ AgentForge 的 `tasksession.py` 就是照 dsh 的 Session 三段式写的，`ste
 
 **实质差异**：AgentForge 没有 turn 边界，所以：
 
-- 同一个会话里「再追加一件事」会被当成**新任务**，不是同一 Turn 的 Follow-up —— 现场靠 `TaskSession` 的事后摘要补，不是上下文延续；
+- 同一个会话里「再追加一件事」会开一次新的 `Agent.run`：对话历史（`session.py` 的 JSONL）是延续的，但 turn 的「欠工作」状态、契约清单、闸门计数全部归零 —— 相当于新任务借用了旧上下文，而不是同一 Turn 的续接；
 - 一个 Turn 内的「欠工作」判定没有统一出口：工具调用走正常路径，闸门回灌走 `continue`，两者在代码里是两处 `if`。
 
 ## 二、Inbox 三通道
