@@ -34,8 +34,8 @@ _CMD_TAIL_RX = re.compile(
     r"|pip3?\s+install|cargo\s+(run|build)|go\s+run|make\s+\w+)",
     re.I,
 )
-# 带反引号的整段命令（再判是不是上面的强信号）
-_BACKTICK_RX = re.compile(r"`([^`]{1,120})`")
+# 带反引号的整段命令（行内反引号，不允许跨换行——否则会误吞 ```bash 围栏块 的开闭符号）
+_BACKTICK_RX = re.compile(r"`([^`\n]{1,120})`")
 # 显式「运行/执行 X」
 _RUN_RX = re.compile(r"(?:运行|执行|使用命令|输入)\s*[`\"「]?([^`\"」\n]{2,60})", re.I)
 # 目录级强信号：这些是具体路径，不是泛词（尾部用 (?=\W|$) 而非 \b，
@@ -52,6 +52,8 @@ _UNIVERSAL_RX = re.compile(
     re.I,
 )
 
+# 围栏代码块（```bash ... ```），里面常写真正的运行命令
+_FENCE_RX = re.compile(r"```[^\n]*\n(.*?)```", re.S)
 # 命令/路径里的高频泛词：不作为「项目专属 token」来判定有据（避免 main/dev/components
 # 这类通用词在源里随便出现就误判为 grounded）。只有项目专属词（react/storybook/figma/
 # 项目名等）出现才放行。
@@ -81,12 +83,13 @@ _ASSERT_SOURCED_RX = re.compile(
     r"|验证通过|抓(到|取)了|fetch(了|到)|来自(官方|源码|仓库|文档)|一手来源|实际(读|抓))",
     re.I,
 )
-# 反引号里的「命令行调用」形态（零抓取盲区用）：带 CLI 标志，或以已知命令/工具名开头。
-_CLI_BLOCK_RX = re.compile(r"`([^`]{2,160})`")
+# 已知命令/工具名（用于判断一段文本是否「形如命令行调用」）。
+# 注意：bin 之后必须跟空白/标点/结尾，不能跟连字符——否则 `marp-core` 这类 npm 包名
+# 会被 `\b` 误判为命令（marp 与 -core 之间恰是词边界）。
 _KNOWN_BIN_RX = re.compile(
     r"^(?:npm|npx|pnpm|yarn|bun|node|python3?|py|pip3?|cargo|go|make|deno|ruby|php"
     r"|tsc|docker|git|curl|wget|java|javac|gradle|mvn|kubectl|terraform|marp|slidev"
-    r"|vite|webpack|eslint|jest|ts-node|dotnet)\b",
+    r"|vite|webpack|eslint|jest|ts-node|dotnet)(?=[\s.,;:!?]|$)",
     re.I,
 )
 
@@ -95,15 +98,59 @@ def _asserts_sourced(reply: str) -> bool:
     return bool(_ASSERT_SOURCED_RX.search(reply or ""))
 
 
+def _is_cli_shape(s: str) -> bool:
+    """一段文本是否「形如命令行调用」：匹配强信号命令形态、以已知 bin 开头、或带 --x 标志。
+
+    排除纯标志（如 `-o` / `--version` 单独出现，那只是参数说明不是命令）和 npm 包名
+    （如 `marp-core`，bin 后接连字符，已被 _KNOWN_BIN_RX 的边界排除）。
+    """
+    s = (s or "").strip()
+    if not s:
+        return False
+    if re.match(r"^[\u4e00-\u9fff]", s):        # 中文说明句
+        return False
+    if re.fullmatch(r"-{1,2}[A-Za-z0-9][\w-]*", s):  # 纯标志，无命令词
+        return False
+    return bool(_CMD_TAIL_RX.search(s) or _KNOWN_BIN_RX.match(s)
+                or re.search(r"(?<![\w-])--?[A-Za-z]", s))
+
+
+def _fence_command_lines(reply: str) -> list[str]:
+    """从围栏代码块（```bash ... ```）里抽取命令行。
+
+    只收「命令行形态」的行，跳过 JSON/HTML/中文说明等非命令内容，避免把样本配置或
+    说明文字当成操作指令。rerun55 实证：模型把 `marp deck.md --pptx` 写在围栏块里，
+    原抽取器只认行内反引号会漏掉，导致闸门对「正确格式化」的注水回复也放行。
+    """
+    out: list[str] = []
+    for m in _FENCE_RX.finditer(reply or ""):
+        for line in m.group(1).splitlines():
+            s = line.strip()
+            s = re.sub(r"^[`$>%]+\s*", "", s).strip()  # 去 shell 提示符 $ > %
+            if not s or s[0] in "<{([":                # JSON / HTML / 配置
+                continue
+            if _is_cli_shape(s):
+                out.append(s)
+    return out
+
+
+def _inline_backtick_commands(reply: str) -> list[str]:
+    """行内反引号 `` `cmd` `` 里的命令片段（去掉围栏块，围栏由 _fence_command_lines 处理）。"""
+    out: list[str] = []
+    for m in _BACKTICK_RX.finditer(reply or ""):
+        inner = m.group(1).strip()
+        if _is_cli_shape(inner):
+            out.append(inner)
+    return out
+
+
 def _has_cli_command(reply: str) -> bool:
-    """答复里是否出现「形如命令行调用」的反引号片段（带标志或以已知 bin 开头）。"""
-    for m in _CLI_BLOCK_RX.finditer(reply or ""):
-        s = m.group(1).strip()
-        if not s:
-            continue
-        if re.search(r"--?[A-Za-z]", s):      # 含 --opt / -x 标志
+    """答复里是否出现「形如命令行调用」的片段（行内反引号 或 围栏代码块，带标志或以已知 bin 开头）。"""
+    for s in _fence_command_lines(reply):
+        if _is_cli_shape(s):
             return True
-        if _KNOWN_BIN_RX.match(s):             # 以已知命令/工具名开头
+    for s in _inline_backtick_commands(reply):
+        if _is_cli_shape(s):
             return True
     return False
 
@@ -129,11 +176,11 @@ def _normalize(s: str) -> str:
 def extract_ops_claims(reply: str) -> list[str]:
     """从最终答复里抽出具体的操作指令（强信号），去重返回。"""
     raw: list[str] = []
-    # 1) 反引号命令
-    for m in _BACKTICK_RX.finditer(reply or ""):
-        inner = m.group(1).strip()
-        if _CMD_TAIL_RX.search(inner):
-            raw.append(inner)
+    # 1) 行内反引号命令 + 1.5) 围栏代码块里的命令（rerun55：命令写在 ```bash 块里，原抽取器漏抓）
+    for s in _inline_backtick_commands(reply or ""):
+        raw.append(s)
+    for s in _fence_command_lines(reply or ""):
+        raw.append(s)
     # 2) 显式「运行/执行 X」
     for m in _RUN_RX.finditer(reply or ""):
         seg = m.group(1).strip().strip("`\"「」")

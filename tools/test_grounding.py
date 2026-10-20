@@ -112,6 +112,40 @@ def test_correct_cmd_with_project_token() -> None:
     _check("含项目名的正确命令不误伤", not issues)
 
 
+def test_fenced_commands_extracted() -> None:
+    # rerun55 盲区：命令写在 ```bash 围栏块里，抽取器必须抓到，且不能把语言提示行
+    # `bash` 和命令黏成一条带换行的脏 claim
+    reply = ("安装并运行：\n"
+             "```bash\n"
+             "npm install -g @marp-team/marp-cli\n"
+             "marp deck.md --pptx\n"
+             "```\n"
+             "也可用 `marp --version` 查看版本。")
+    claims = G.extract_ops_claims(reply)
+    joined = " / ".join(claims)
+    _check("围栏块命令被抽取(marp deck.md --pptx)", "marp deck.md --pptx" in joined)
+    _check("围栏块命令被抽取(npm install -g ...)", "npm install -g @marp-team/marp-cli" in joined)
+    _check("行内命令也被抽取(marp --version)", "marp --version" in joined)
+    _check("无 bash\\n 脏 claim（每条 claim 不含换行）",
+           all("\n" not in c for c in claims))
+
+
+def test_fenced_fabricated_flagged() -> None:
+    # 有源、但围栏块里写了源里没有的命令（且非项目专属 token）→ 必须拦
+    reply = ("用法如下：\n```bash\nmarp deck.md --pptx\n```")
+    issues = G.reply_grounding_issues(reply, SRC, intent=True)
+    _check("围栏块里的编造命令被拦", bool(issues) and "marp deck.md --pptx" in " / ".join(issues))
+
+
+def test_no_pure_flag_or_package_name() -> None:
+    # 误报边界：纯标志 `-o` 和 npm 包名 `marp-core` 不该被当成命令 claim
+    reply = ("可用 `-o` 参数指定输出；也可集成 `marp-core` 做动态渲染。")
+    claims = G.extract_ops_claims(reply)
+    joined = " / ".join(claims)
+    _check("纯标志 -o 不被当命令", "-o" not in joined)
+    _check("npm 包名 marp-core 不被当命令", "marp-core" not in joined)
+
+
 def main() -> None:
     test_intent()
     test_bad_reply_flagged()
@@ -123,6 +157,9 @@ def main() -> None:
     test_zero_source_no_command_no_claim_passes()
     test_non_howto_skips()
     test_correct_cmd_with_project_token()
+    test_fenced_commands_extracted()
+    test_fenced_fabricated_flagged()
+    test_no_pure_flag_or_package_name()
     print("\n全部通过。")
 
 
