@@ -268,6 +268,11 @@ def build_fs_tools(guard, cfg):
             row_text, row_err = skeleton.fill_row(text, heading, content)
             if row_err is None:
                 new_text, err, row_mode = row_text, None, True
+            else:
+                # rerun35 实测：行回退失败时若仍返回小节层错误（「未找到小节」），
+                # 模型看到的是「可用小节：xxx」这种对不上号的指引，fill_row 那条
+                # 可操作的报错（列数/首列问题）被吞掉。行错误更具体，透传它。
+                err = row_err
         if err:
             return err
         # 核查目标就是本节内容：这正是「骨架先行」的收益——单次失败的成本

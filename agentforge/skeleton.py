@@ -791,26 +791,33 @@ def fill_row(text: str, label: str, content: str) -> tuple[str, str | None]:
     cells = [c.strip() for c in lines[idx].strip().strip("|").split("|")]
     first = cells[0] if cells else str(label)
     want_cols = len(cells) - 1
-    if body.startswith("|"):
-        # rerun34 实测：以 `|` 开头的 content 是「整行」形式（含首列），但列数
-        # 校验若仍按「其余格」（want_cols）对账，少一列也能通过——首列（覆盖
-        # 核查按它对账的行首标识）被一起覆盖，整张表从此错位。整行必须按
-        # len(cells) 对账，且首列必须仍是这一行的标识。
-        new_row = body
-        got = len([c for c in new_row.strip().strip("|").split("|")])
-        if got != len(cells):
-            return text, (f"[错误] content 以 `|` 开头视为整行（含首列），"
-                          f"需要 {len(cells)} 个单元格，你给了 {got} 个，文件未改动。\n"
-                          f"首列是「{first}」。要么去掉首尾的 `|` 只给其余 "
-                          f"{want_cols} 格（如 `证据A | 证据B | 建议`），"
-                          f"要么整行给全并在第一格保留「{first}」。")
-        new_first = [c.strip() for c in new_row.strip().strip("|").split("|")][0]
+    # 模型的格式习惯（rerun34/35 两次现场一致）：给「其余格」也包上首尾 `|`。
+    # 按格数消歧，不靠模型自觉：格数 == 其余格数 → 按其余格解释（首列保留）；
+    # 格数 == 整行列数 → 按整行对账（首列必须仍是本行标识）。两种都解释不了
+    # 的格数才拒收。
+    full_row = body.startswith("|")
+    if full_row:
+        inner = body.strip("|")
+        if len([p for p in inner.split("|")]) == want_cols:
+            full_row = False
+            body = inner
+    if full_row:
+        # 整行形式（含首列）：列数按整行对账——按「其余格」对账的话少一列也
+        # 能通过（rerun34：首列被覆盖、整表错位），且首列必须仍是本行标识。
+        row_cells = [p.strip() for p in body.strip("|").split("|")]
+        if len(row_cells) != len(cells):
+            return text, (f"[错误] content 以 `|` 开头且格数对不上：整行（含首列）"
+                          f"需要 {len(cells)} 个单元格，你给了 {len(row_cells)} 个，"
+                          f"文件未改动。\n首列是「{first}」。最省事的写法：去掉首尾的"
+                          f" `|`，只给其余 {want_cols} 格，如 `证据A | 证据B | 建议`。")
+        new_first = row_cells[0]
         got_first = _norm(new_first)
         if got_first != _norm(first) and not (
                 got_first and (got_first in _norm(first) or _norm(first) in got_first)):
             return text, (f"[错误] 整行 content 把首列从「{first}」改成了「{new_first}」，"
                           "文件未改动。行首列不要删改——覆盖核查按这一列对账；"
                           f"只填后面的 {want_cols} 格即可。")
+        new_row = body
     else:
         parts = [p.strip() for p in body.split("|")]
         got = len(parts)
@@ -821,7 +828,7 @@ def fill_row(text: str, label: str, content: str) -> tuple[str, str | None]:
                           f"你给了 {got} 个，文件未改动。\n"
                           f"表头是：{' | '.join(cells)}\n"
                           f"content 用 `|` 分隔其余 {want_cols} 格，例如 "
-                          f"`证据A | 证据B | 建议`。")
+                          f"`证据A | 证据B | 建议`（首尾带不带 `|` 都行）。")
     out = list(lines)
     out[idx] = new_row
     joined = "\n".join(out)

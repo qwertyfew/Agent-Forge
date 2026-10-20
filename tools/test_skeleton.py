@@ -117,12 +117,11 @@ def main() -> int:
     row, err = skeleton.fill_row(TABLE, "权限与沙箱", "证据A | 现状B | 建议C")
     check("表格行按其余格填充，首列保留",
           err is None and "| 权限与沙箱 | 证据A | 现状B | 建议C |" in row, str(err))
-    # rerun34 现场：模型给了以 | 开头的「3 格」content——旧校验按其余格对账，
-    # 少一列也通过，首列（对账标识）被覆盖，整张表从此错位。
+    # rerun35 现场：模型给「其余格」也包上首尾 `|`——按格数消歧，应按其余格
+    # 解释、首列保留（rerun34 的坏行就是被这个形状诱发，现在直接填对）。
     row2, err2 = skeleton.fill_row(TABLE, "权限与沙箱", "| 证据A | 现状B | 建议C |")
-    check("整行少一列 → 拒收且文件不动",
-          err2 is not None and row2 == TABLE and "整行" in err2,
-          f"{err2!r} / changed={row2 != TABLE}")
+    check("带首尾管道的其余格 → 正确填充且首列保留",
+          err2 is None and "| 权限与沙箱 | 证据A | 现状B | 建议C |" in row2, str(err2))
     full_ok = "| 权限与沙箱 | 证据A | 现状B | 建议C |"
     row3, err3 = skeleton.fill_row(TABLE, "权限与沙箱", full_ok)
     check("整行带全首列 → 接受", err3 is None and full_ok in row3, str(err3))
@@ -130,6 +129,9 @@ def main() -> int:
                                    full_ok.replace("权限与沙箱", "别的名字"))
     check("整行改掉首列 → 拒收（行首列不许删改）",
           err4 is not None and "首列" in err4 and row4 == TABLE, str(err4))
+    row5, err5 = skeleton.fill_row(TABLE, "权限与沙箱", "| A | B | C | D |")
+    check("格数对不上（多一列的管道形式）→ 拒收且文件不动",
+          err5 is not None and row5 == TABLE, str(err5))
 
     # ---------- 3. 骨架合法性 ----------
     check("单节骨架被拒", bool(skeleton.outline_error("# 报告\n\n正文一句话\n")),
@@ -211,10 +213,14 @@ def main() -> int:
               "| 权限与沙箱 | 证据A | 现状B | 建议C |" in tbody, tbody)
         tr2 = fs.run(path="evals/table.md", heading="权限与沙箱",
                      content="| 证据A2 | 现状B2 | 建议C2 |")
-        check("表格行整行少一列 → 工具层拒收", tr2.startswith("[错误]"), tr2[:200])
-        check("拒收后表格未被改坏",
-              "| 权限与沙箱 | 证据A | 现状B | 建议C |" in
+        check("表格行带首尾管道 → 工具层正确填充", "已填充表格行" in tr2, tr2[:200])
+        check("填充后首列保留、内容落位",
+              "| 权限与沙箱 | 证据A2 | 现状B2 | 建议C2 |" in
               (tmp / "evals" / "table.md").read_text("utf-8"))
+        tr3 = fs.run(path="evals/table.md", heading="权限与沙箱", content="只有一格")
+        check("行回退的具体报错要透传（不能被「未找到小节」盖掉）",
+              tr3.startswith("[错误]") and "单元格" in tr3 and "可用小节" not in tr3,
+              tr3[:200])
 
         fs.run(path="evals/gap.md", heading="3. 权限", content="权限这一段正文。")
         done = target.read_text("utf-8")
