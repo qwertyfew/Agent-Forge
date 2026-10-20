@@ -23,6 +23,8 @@ import re
 import time
 from pathlib import Path
 
+from .evidence import anchor_lines
+
 # 树与关键词扫描都跳过的目录：依赖、缓存、运行期状态、历史产出
 PRUNE_DIRS = {
     ".git", ".agentforge", ".sessions", "__pycache__", "node_modules",
@@ -279,11 +281,35 @@ def build_block(cfg, task_text: str) -> tuple[str, dict]:
                 scored.append((hit, str(rel)))
         scored.sort(key=lambda x: (-x[0], x[1]))
         if scored:
-            hits = [f"  {p}（命中 {h} 处）" for h, p in scored[:max_files]]
+            # rerun38/40 实证：被证据闸门拒绝的主要原因是模型不知道已读文件里
+            # 哪些行可锚定（class/def/标题），只能凭印象写裸路径，被拒后再重读。
+            # 把坐标在开局就给到：每个候选文件带行数 + 前 3 个可锚定行，
+            # 「写 → 拒 → 补读」的往返压成「一次写对」。坐标是程序从磁盘抽的，
+            # 不是模型编的——引用时仍须落在 read_file 读过的区间内。
+            hits: list[str] = []
+            for h, p in scored[:max_files]:
+                fp = root / p
+                try:
+                    if not fp.is_file() or fp.stat().st_size > 400_000:
+                        hits.append(f"  {p}（命中 {h} 处）")
+                        continue
+                    n_lines = sum(1 for _ in fp.open("r", encoding="utf-8",
+                                                     errors="replace"))
+                    anchors = anchor_lines(fp, None, max_n=3)
+                except OSError:
+                    hits.append(f"  {p}（命中 {h} 处）")
+                    continue
+                if anchors:
+                    hits.append(f"  {p}（{n_lines} 行；锚点 {'；'.join(anchors)}）")
+                else:
+                    hits.append(f"  {p}（{n_lines} 行，命中 {h} 处）")
             stats["hit_files"] = min(len(scored), max_files)
             note = f"（共 {len(scored)} 个文件命中，取前 {stats['hit_files']} 个）" \
                 if len(scored) > max_files else ""
-            parts.append("【与任务相关的文件】" + note + "\n" + "\n".join(hits))
+            parts.append("【与任务相关的文件 · 证据候选】"
+                         "引用格式 `path:起-止`，行号取锚点附近你读过的内容；"
+                         "read_file 回执尾部也会给锚点" + note + "\n"
+                         + "\n".join(hits))
 
     if len(parts) <= 1:
         return "", stats                    # 只有标题，工作区近乎是空的

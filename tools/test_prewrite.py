@@ -263,6 +263,19 @@ def main() -> int:
         issues11b = _vg.find_artifact_issues([("evals/tbl8.md", True)], tmp / "g")
         check("收尾核查：证据列有可定位锚点 → 通过", not issues11b, str(issues11b))
 
+        # ---------- 12. 锚点前置：预热注入 + read 回执（坐标在开局/读时就给到） ----------
+        from agentforge import warmup as _wu
+        (tmp / "g" / "agentforge" / "sample_mod.py").write_text(
+            "class Sample:\n"
+            "    def run(self):\n"
+            "        pass\n", encoding="utf-8")
+        block, _wstats = _wu.build_block(cfg7, "分析 sample_mod 的 run 方法")
+        check("预热注入的证据候选带锚点坐标",
+              "证据候选" in block and "L1: class Sample" in block, block[-500:])
+        r12 = registry7.get("read_file").run(path="agentforge/sample_mod.py")
+        check("read_file 回执尾部带可锚定行",
+              "【可锚定行】" in r12 and "L1: class Sample" in r12, r12[-300:])
+
     print("\n全部断言通过。")
     return 0
 

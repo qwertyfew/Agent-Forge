@@ -5,7 +5,7 @@ import ast
 import json
 
 from .base import SAFE, WRITE, make_tool
-from ..evidence import audit_claims, audit_citations, check_row_evidence, check_table_evidence
+from ..evidence import audit_claims, audit_citations, check_row_evidence, check_table_evidence, anchor_lines
 from .. import writepolicy
 from ..record import RECORDER_CTX
 from .. import skeleton
@@ -82,6 +82,15 @@ def build_fs_tools(guard, cfg):
             read_budget[str(p)] = nxt
         elif end >= len(lines):
             read_budget.pop(str(p), None)   # 完整读过了，恢复默认预算
+        # 回执尾部附本次区间的可锚定行（class/def/标题）：模型读到时就拿到坐标，
+        # 写引用时直接抄，不用「写 → 被拒 → 重读找行号」地往返（rerun38/40 实证）。
+        try:
+            anchors = anchor_lines(p, [(start, end)], max_n=6)
+        except Exception:  # noqa: BLE001
+            anchors = []
+        if anchors:
+            body += ("\n【可锚定行】引用这些位置时写 `path:行号`（坐标已核对真实存在）："
+                     + "；".join(anchors))
         return body
 
     # ---------- 内容核查（写盘前统一入口） ----------
