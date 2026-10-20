@@ -189,13 +189,15 @@ def main() -> int:
                     "`agentforge/context.py:3-14` 台账 | 借鉴 |\n")
         out10 = wf7.run(path="evals/tbl.md", content="# 清单\n\n" + hdr + good_row)
         check("证据列带可定位行号 → 放行", out10.startswith("已"), out10[:200])
-        bare_row = ("| 工具调用 | external/learn-claude-code/s02_tool_use/code.py: "
-                    "标准 JSON Schema | agentforge/toolselect.py: 动态匹配 | 借鉴 |\n")
+        bare_row = ("| 工具调用 | agentforge/permissions.py: 基于路径的权限控制 | "
+                    "agentforge/toolselect.py: 动态匹配 | 借鉴 |\n")
         out10b = wf7.run(path="evals/tbl2.md", content="# 清单\n\n" + hdr + bare_row)
         check("证据列裸文本引用 → 拒收（rerun37 现场形状）",
               out10b.startswith("[错误] 证据核查未通过"), out10b[:300])
         check("拒收点名证据列并教格式", "对方做法" in out10b and "path:起-止" in out10b,
               out10b[:400])
+        check("拒收回执直接带可锚定坐标（省一轮重读）",
+              "可直接引用这些已读到的坐标" in out10b and "L1:" in out10b, out10b[:500])
         check("裸文本表没有落盘", not (tmp / "g" / "evals" / "tbl2.md").exists())
         unread_row = ("| 子代理 | `agentforge/extra.py:1-1` 隔离 | "
                       "`agentforge/loop.py:3-14` 调度 | 借鉴 |\n")

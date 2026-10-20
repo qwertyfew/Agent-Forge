@@ -249,16 +249,51 @@ _ROW_ANCHOR_RX = re.compile(
     r"([A-Za-z0-9_\-\u4e00-\u9fff]+(?:[./\\][A-Za-z0-9_\-\u4e00-\u9fff]+)*):"
     r"(\d+)(?:-(\d+))?"
 )
+# 单元格里的路径「提及」（行号可有可无）——用于拒绝时回传可锚定行
+_ROW_PATH_RX = re.compile(
+    r"([A-Za-z0-9_\-\u4e00-\u9fff]+(?:[./\\][A-Za-z0-9_\-\u4e00-\u9fff]+)*)"
+    r"(?::(\d+)(?:-(\d+))?)?"
+)
+# 可锚定行：代码定义（class/def）与文档标题——它们是引用时最稳的坐标
+_ANCHOR_RX = re.compile(r"^\s*(?:class\s|def\s|async\s+def\s|#{1,4}\s)")
+
+
+def anchor_lines(p: Path, ranges, max_n: int = 8) -> list[str]:
+    """已读文件里的可锚定行（class/def/标题），带行号。
+
+    闸门的输出不该是「不合格请重想」，而是「下一步怎么一步改对」：把真实坐标
+    随拒绝一起回传，模型抄即可，省掉重读整个文件的轮次（rerun38 里模型为补
+    行号重读了 25 个文件、多跑 5 轮，时间从 272s 涨到 744s——大头是每轮重发历史）。
+    """
+    try:
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    out: list[str] = []
+    for i, ln in enumerate(lines, 1):
+        if ranges and not any(a <= i <= b for a, b in ranges):
+            continue
+        if _ANCHOR_RX.match(ln):
+            out.append(f"L{i}: {ln.strip()[:60]}")
+            if len(out) >= max_n:
+                break
+    return out
 _PLACEHOLDER_CELLS = {"（待填）", "待填", "todo", "tbd", "n/a", "-"}
 
 
 def _anchor_problem(cell: str, ledger, root) -> str | None:
-    """证据列单元格必须含至少 1 处可定位的 path:行号。返回问题描述，None=通过。"""
+    """证据列单元格必须含至少 1 处可定位的 path:行号。返回问题描述，None=通过。
+
+    拒绝时顺带回传单元格里提到过的已读文件的可锚定行（class/def/标题），
+    让模型一次改对，不用重读文件。
+    """
     fallback = ("需要至少 1 处 `path:起-止` 形式的可定位证据"
                 "（行号必须在 read_file 读过的区间内）")
-    for m in _ROW_ANCHOR_RX.finditer(cell):
-        rel, a = m.group(1).strip(), int(m.group(2))
-        b = int(m.group(3) or m.group(2))
+    mentions: list[tuple[str, Path]] = []
+    for m in _ROW_PATH_RX.finditer(cell):
+        rel = m.group(1).strip()
+        a = int(m.group(2)) if m.group(2) else None
+        b = int(m.group(3) or m.group(2)) if m.group(2) else None
         if "://" in rel:                       # URL 不是仓库内证据
             continue
         if "/" not in rel and "\\" not in rel:
@@ -273,6 +308,9 @@ def _anchor_problem(cell: str, ledger, root) -> str | None:
             fallback = (f"`{rel}` 本任务从未 read_file 过"
                         "（search_code / list_dir 片段不算已读）")
             continue
+        mentions.append((rel, p))
+        if a is None:
+            continue                            # 只是提及，无行号——留给回执带锚点
         n = ledger.line_count(p) if ledger else None
         if n is None:
             try:
@@ -288,6 +326,15 @@ def _anchor_problem(cell: str, ledger, root) -> str | None:
             fallback = f"`{rel}:{a}-{b}` 不在你读过的区间（读过：{span}）"
             continue
         return None                             # 该列有一处可定位证据即通过
+    # 拒绝时把提到过的已读文件的真实锚定行直接给出去——坐标在手，一次改对
+    tips: list[str] = []
+    for rel, p in mentions[:2]:
+        ranges = ledger.read_ranges(p) if ledger is not None else []
+        anchors = anchor_lines(p, ranges, max_n=6)
+        if anchors:
+            tips.append(f"{rel} 的可锚定行：{'；'.join(anchors)}")
+    if tips:
+        fallback += "\n    可直接引用这些已读到的坐标：" + "；".join(tips)
     return fallback
 
 
@@ -471,11 +518,13 @@ def audit_citations(
             except Exception:  # noqa: BLE001
                 ranges = []
             span = "、".join(f"{a}-{b}" for a, b in ranges[:4]) or "（尚未 read_file）"
-            issues.append(CitationIssue(
-                "error", "no_line", token,
-                f"引用缺行号: {token} —— 没有行号就无法回源验证（路径为真 ≠ 结论为真）。"
-                f"你读过的区间：{span}；请改成 `path:起-止` 形式，行号取区间内"
-                f"真实支撑该结论的行"))
+            detail = (f"引用缺行号: {token} —— 没有行号就无法回源验证（路径为真 ≠ 结论为真）。"
+                      f"你读过的区间：{span}；请改成 `path:起-止` 形式，行号取区间内"
+                      f"真实支撑该结论的行")
+            anchors = anchor_lines(bp, ranges, max_n=6)
+            if anchors:
+                detail += "\n    可直接引用这些已读到的坐标：" + "；".join(anchors)
+            issues.append(CitationIssue("error", "no_line", token, detail))
 
     # 规则 4 架构层协助：报告含具体数字，但本任务只抓过网页（二手来源）
     if ledger is not None and ledger.has_web() and _NUM_RX.search(content):
