@@ -792,19 +792,36 @@ def fill_row(text: str, label: str, content: str) -> tuple[str, str | None]:
     first = cells[0] if cells else str(label)
     want_cols = len(cells) - 1
     if body.startswith("|"):
+        # rerun34 实测：以 `|` 开头的 content 是「整行」形式（含首列），但列数
+        # 校验若仍按「其余格」（want_cols）对账，少一列也能通过——首列（覆盖
+        # 核查按它对账的行首标识）被一起覆盖，整张表从此错位。整行必须按
+        # len(cells) 对账，且首列必须仍是这一行的标识。
         new_row = body
         got = len([c for c in new_row.strip().strip("|").split("|")])
+        if got != len(cells):
+            return text, (f"[错误] content 以 `|` 开头视为整行（含首列），"
+                          f"需要 {len(cells)} 个单元格，你给了 {got} 个，文件未改动。\n"
+                          f"首列是「{first}」。要么去掉首尾的 `|` 只给其余 "
+                          f"{want_cols} 格（如 `证据A | 证据B | 建议`），"
+                          f"要么整行给全并在第一格保留「{first}」。")
+        new_first = [c.strip() for c in new_row.strip().strip("|").split("|")][0]
+        got_first = _norm(new_first)
+        if got_first != _norm(first) and not (
+                got_first and (got_first in _norm(first) or _norm(first) in got_first)):
+            return text, (f"[错误] 整行 content 把首列从「{first}」改成了「{new_first}」，"
+                          "文件未改动。行首列不要删改——覆盖核查按这一列对账；"
+                          f"只填后面的 {want_cols} 格即可。")
     else:
         parts = [p.strip() for p in body.split("|")]
         got = len(parts)
         new_row = "| " + " | ".join([first] + parts) + " |"
-    if got != want_cols:
-        # 列数不符会让整张表错位（后面所有行都跟着歪），宁可拒掉这一行。
-        return text, (f"[错误] 这一行需要 {want_cols} 个单元格，"
-                      f"你给了 {got} 个，文件未改动。\n"
-                      f"表头是：{' | '.join(cells)}\n"
-                      f"content 用 `|` 分隔其余 {want_cols} 格，例如 "
-                      f"`证据A | 证据B | 建议`。")
+        if got != want_cols:
+            # 列数不符会让整张表错位（后面所有行都跟着歪），宁可拒掉这一行。
+            return text, (f"[错误] 这一行需要 {want_cols} 个单元格，"
+                          f"你给了 {got} 个，文件未改动。\n"
+                          f"表头是：{' | '.join(cells)}\n"
+                          f"content 用 `|` 分隔其余 {want_cols} 格，例如 "
+                          f"`证据A | 证据B | 建议`。")
     out = list(lines)
     out[idx] = new_row
     joined = "\n".join(out)

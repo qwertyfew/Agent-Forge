@@ -214,3 +214,42 @@ def draft_ready(path: str, cfg) -> str:
         return f"{DRAFT_DIR}/{f.name}" if f.is_file() else ""
     except OSError:
         return ""
+
+
+def clear_rejects(path: str) -> None:
+    """该路径一次成功写盘后清零拒绝计数：ban 针对的是「连续重写」这个行为，
+    不是给路径判无期。下次再连续被拒，同样会被拦。"""
+    _rejects.pop(_key(path), None)
+
+
+def rewrite_ban(path: str, content: str, cfg) -> str:
+    """同路径被拒 ≥2 次后，write_file 的整篇重写禁令——程序层强制，不是叮嘱。
+
+    rerun34 实录：回执末尾的「禁止重写全文」（reject_message 里那句）被模型
+    无视，同一路径连撞三次整篇 write_file，每轮烧掉一整篇的生成成本。这里把
+    禁令上移到 A 层：被拒 ≥2 次且草稿已暂存时，write_file 只接受「草稿的当前
+    内容」——想改，先 edit_file 草稿再原样提交（仍会过常规核查），或直接
+    edit_file 目标文件做局部修改。没有草稿（暂存失败）时不拦，退回老路。
+    返回 "" 表示放行。
+    """
+    if reject_count(path) < 2:
+        return ""
+    draft = draft_ready(path, cfg)
+    if not draft:
+        return ""
+    try:
+        draft_text = (Path(cfg.workspace_root) / draft).read_text(
+            encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    if str(content or "").strip() == draft_text.strip():
+        return ""          # 走的就是「改草稿 → 原样提交」这条路，放行
+    n = reject_count(path)
+    return "\n".join([
+        f"[错误] 这是同一路径第 {n} 次被拒，write_file 整篇重写已被禁用：{path}",
+        f"上次被拒的内容已暂存为草稿 {draft}。只允许两条路：",
+        f"  1. edit_file(path='{draft}', old_string=<错的片段>, "
+        "new_string=<改正后的片段>) 修好草稿，再把草稿当前内容原样 write_file 提交；",
+        "  2. 直接 edit_file 目标文件，只换出问题的几行（已填好的部分不受影响）。",
+        "重新生成一整篇不会被接收——已经对的部分会在重写里被改坏。",
+    ])

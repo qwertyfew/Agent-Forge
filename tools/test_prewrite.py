@@ -7,7 +7,9 @@
 代价是整篇重写（rerun23 连拒 4 次，每次三千字从头来）。本测试卡三件事：
 1. 引用密集型内容 + 本任务零 read_file → 写之前就拒，并给出必读清单；
 2. 拒绝时内容存进 .drafts/ 草稿，回传「改哪几行」，第二次明确禁止重写全文；
-3. 正常场景不能误伤（读过一次就放行、引用少的普通文件不设门槛）。
+3. 正常场景不能误伤（读过一次就放行、引用少的普通文件不设门槛）；
+4. 同一路径被拒 ≥2 次后，write_file 整篇重写被程序层拒收、只认草稿当前内容
+   （rerun34：叮嘱版禁令被模型无视，连撞三次整篇重写）。
 """
 from __future__ import annotations
 
@@ -105,6 +107,24 @@ def main() -> int:
         # ---------- 5. 同一路径第二次被拒 → 禁止重写全文 ----------
         out5 = wf3.run(path="evals/gap2.md", content=bad)
         check("第二次被拒会升级措辞", "第 2 次被拒" in out5 and "禁止重写全文" in out5, out5[-200:])
+
+        # ---------- 5.5 重写禁令上移到程序层（rerun34 现场回归） ----------
+        # rerun34 实录：回执里的「禁止重写全文」被无视，同一路径连撞三次整篇
+        # write_file。现在 write_file 本身在 reject_count>=2 且草稿在时被拒收。
+        out5b = wf3.run(path="evals/gap2.md", content=bad + "\n\n补一段新的。")
+        check("被拒≥2次后整篇重写被程序层拒收",
+              out5b.startswith("[错误] 这是同一路径第 2 次被拒"), out5b[:200])
+        check("禁令给出两条出路", "edit_file" in out5b and "草稿" in out5b, out5b[:400])
+        check("被禁重写没有落盘", "（内容未变" not in out5b)
+        # 改草稿 → 原样提交：放行（仍走常规核查）
+        for name in ("context.py", "permissions.py", "loop.py", "tasksession.py"):
+            guard3.ledger.mark_file(tmp / "c" / "agentforge" / name, lines=502, read=True)
+        (tmp / "c" / ".drafts" / "evals__gap2.md").write_text(DENSE, encoding="utf-8")
+        out5c = wf3.run(path="evals/gap2.md", content=DENSE)
+        check("提交内容=草稿当前内容 → 放行", out5c.startswith("已"), out5c[:200])
+        check("成功写盘后拒绝计数清零",
+              writepolicy.reject_count("evals/gap2.md") == 0,
+              str(writepolicy.reject_count("evals/gap2.md")))
 
         # ---------- 6. 语义闸门拒绝也走草稿（同一出口） ----------
         cfg4, guard4, registry4 = setup(tmp / "d")

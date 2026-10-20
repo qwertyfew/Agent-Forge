@@ -85,13 +85,20 @@ def build_fs_tools(guard, cfg):
         return body
 
     # ---------- 内容核查（写盘前统一入口） ----------
-    def _content_gate(path: str, content: str):
-        """写盘前的完整核查链：证据门槛 → 引用核查 → 语义闸门。
+    def _content_gate(path: str, content: str, tool: str = "write_file"):
+        """写盘前的完整核查链：重写禁令 → 证据门槛 → 引用核查 → 语义闸门。
 
         返回 (拒绝文案 | None, cit_audit)。write_file / write_skeleton /
         fill_section 共用这一条链：分段填充时只核查**本节内容**，被拒的代价
         也就只有一节，不会牵连已经填好的部分。
         """
+        # rerun34：同路径多次被拒后，模型仍反复整篇 write_file 重写——回执里
+        # 的「禁止重写全文」只是叮嘱（C 层），模型直接无视。禁令上移到程序层：
+        # 只对 write_file（整篇入口）生效，fill_section / edit_file 不受限。
+        if tool == "write_file" and content and getattr(cfg, "prewrite_gate", True):
+            ban = writepolicy.rewrite_ban(path, content, cfg)
+            if ban:
+                return ban, None
         ledger = getattr(guard, "ledger", None)
         cit_audit = None
         # 写前策略（writepolicy.py）：先看证据，再谈内容。
@@ -193,6 +200,9 @@ def build_fs_tools(guard, cfg):
         # 整篇写出即视为「不再是骨架」：旧骨架记录若留着，收尾核查会拿
         # 建档时的正文去比对，把刚写完的整篇文档判成「还没填」。
         skeleton.drop_state(cfg.workspace_root, p)
+        # 一次成功写盘清零该路径的拒绝计数：重写禁令针对的是「连续重写」
+        # 这个行为，不是给路径判无期（writepolicy.clear_rejects）。
+        writepolicy.clear_rejects(path)
         
         action = "覆盖" if existed else "新建"
         diff = "" if not existed else f"（原 {len(old)} 字符 → 现 {len(content)} 字符）"
@@ -218,7 +228,7 @@ def build_fs_tools(guard, cfg):
         bad = skeleton.outline_error(outline)
         if bad:
             return bad
-        err, _ = _content_gate(path, outline)
+        err, _ = _content_gate(path, outline, tool="write_skeleton")
         if err:
             return err
         p, redirected = _write_target(path)
@@ -262,7 +272,7 @@ def build_fs_tools(guard, cfg):
             return err
         # 核查目标就是本节内容：这正是「骨架先行」的收益——单次失败的成本
         # 等于一节的生成，而不是整篇。
-        gate_err, _ = _content_gate(path, content)
+        gate_err, _ = _content_gate(path, content, tool="fill_section")
         if gate_err:
             return gate_err + "\n（本次只丢了这一节；已填好的小节原样保留在文件里。）"
         p.write_text(new_text, encoding="utf-8", newline="")

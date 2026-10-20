@@ -109,6 +109,28 @@ def main() -> int:
     check("空内容 → 报错", err5 is not None, str(err5))
     check("标题带 # 也能命中", skeleton.fill(BARE, "## 2. 压缩", "x")[1] is None)
 
+    # ---------- 2.5 表格逐行（fill_row；rerun34 现场回归） ----------
+    TABLE = ("# 差距清单\n\n"
+             "| 对比点 | 对方做法 | 现状 | 建议 |\n| --- | --- | --- | --- |\n"
+             "| 权限与沙箱 | （待填） | （待填） | （待填） |\n"
+             "| 会话恢复 | （待填） | （待填） | （待填） |\n")
+    row, err = skeleton.fill_row(TABLE, "权限与沙箱", "证据A | 现状B | 建议C")
+    check("表格行按其余格填充，首列保留",
+          err is None and "| 权限与沙箱 | 证据A | 现状B | 建议C |" in row, str(err))
+    # rerun34 现场：模型给了以 | 开头的「3 格」content——旧校验按其余格对账，
+    # 少一列也通过，首列（对账标识）被覆盖，整张表从此错位。
+    row2, err2 = skeleton.fill_row(TABLE, "权限与沙箱", "| 证据A | 现状B | 建议C |")
+    check("整行少一列 → 拒收且文件不动",
+          err2 is not None and row2 == TABLE and "整行" in err2,
+          f"{err2!r} / changed={row2 != TABLE}")
+    full_ok = "| 权限与沙箱 | 证据A | 现状B | 建议C |"
+    row3, err3 = skeleton.fill_row(TABLE, "权限与沙箱", full_ok)
+    check("整行带全首列 → 接受", err3 is None and full_ok in row3, str(err3))
+    row4, err4 = skeleton.fill_row(TABLE, "权限与沙箱",
+                                   full_ok.replace("权限与沙箱", "别的名字"))
+    check("整行改掉首列 → 拒收（行首列不许删改）",
+          err4 is not None and "首列" in err4 and row4 == TABLE, str(err4))
+
     # ---------- 3. 骨架合法性 ----------
     check("单节骨架被拒", bool(skeleton.outline_error("# 报告\n\n正文一句话\n")),
           str(skeleton.outline_error("# 报告\n\n正文一句话\n")))
@@ -174,6 +196,25 @@ def main() -> int:
         miss = fs.run(path="evals/gap.md", heading="9. 不存在", content="x")
         check("填不存在的小节 → 报错不改文件", miss.startswith("[错误]") and
               target.read_text("utf-8") == merged, miss[:120])
+
+        # 表格骨架：fill_section 未找到小节时回退按行填（rerun32/34 的现场）
+        tbl = ("# 差距清单\n\n"
+               "| 对比点 | 对方做法 | 现状 | 建议 |\n| --- | --- | --- | --- |\n"
+               "| 权限与沙箱 | （待填） | （待填） | （待填） |\n")
+        registry.get("write_file").run(path="evals/table.md", content=tbl)
+        check("表格骨架已落盘", (tmp / "evals" / "table.md").is_file())
+        tr = fs.run(path="evals/table.md", heading="权限与沙箱",
+                    content="证据A | 现状B | 建议C")
+        check("fill_section 表格行回退成功", "已填充表格行" in tr, tr[:200])
+        tbody = (tmp / "evals" / "table.md").read_text("utf-8")
+        check("表格行内容与首列都在",
+              "| 权限与沙箱 | 证据A | 现状B | 建议C |" in tbody, tbody)
+        tr2 = fs.run(path="evals/table.md", heading="权限与沙箱",
+                     content="| 证据A2 | 现状B2 | 建议C2 |")
+        check("表格行整行少一列 → 工具层拒收", tr2.startswith("[错误]"), tr2[:200])
+        check("拒收后表格未被改坏",
+              "| 权限与沙箱 | 证据A | 现状B | 建议C |" in
+              (tmp / "evals" / "table.md").read_text("utf-8"))
 
         fs.run(path="evals/gap.md", heading="3. 权限", content="权限这一段正文。")
         done = target.read_text("utf-8")
