@@ -26,6 +26,7 @@ payload = json.dumps({
     "history": [],
     "model_key": "auto",
     "permission": "full",
+    "no_user": True,   # 无人值守派发：ask_user 不弹窗不阻塞，直接降级
 }).encode("utf-8")
 
 req = urllib.request.Request(

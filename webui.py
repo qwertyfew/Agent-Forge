@@ -1672,8 +1672,14 @@ class _Handler(BaseHTTPRequestHandler):
 
         self._sse_headers()
         # ask_user 澄清弹窗：本线程进入交互模式——工具挂起等前端回传答复
-        # （POST /api/ask-answer）；收尾 finally 里退出，防串到评测线程同线程复用
-        interact.begin(interactive=True)
+        # （POST /api/ask-answer）；收尾 finally 里退出，防串到评测线程同线程复用。
+        # 无人值守（后台/定时/派发脚本）：发起方声明 no_user=True，或请求头带
+        # X-AgentForge-Unattended: 1——ask_user 不弹窗、不阻塞，直接降级。
+        # rerun50 实证：旧版无条件 interactive=True，让评测跑一半弹窗挂死 4.5 分钟。
+        unattended = (str(req.get("no_user") or "").strip().lower() in
+                      {"1", "true", "yes", "on"}
+                      or str(self.headers.get("X-AgentForge-Unattended") or "").strip() == "1")
+        interact.begin(interactive=True, no_user=unattended)
         try:
             emit(
                 "task",

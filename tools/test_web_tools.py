@@ -404,13 +404,31 @@ def test_github_search_tool() -> None:
 
 
 def test_repo_backstop() -> None:
-    """找某个仓库时，web_search 自动补一枪官方接口，并把权威候选排在最前。"""
+    """找某个仓库时，web_search 自动补官方接口（★同名 + star 候选 + npm）。"""
     tools = make_tools()
     search = tools["web_search"]
 
     def router(url, params):
+        q = str(params.get("q") or "")
         if "api.github.com/search/repositories" in url:
+            # 名字同名检索（精确词 / in:name）→ 给 ★同名的正主
+            if "in:name" in q or '"' in q:
+                return GhResp({"total_count": 2, "items": [
+                    {"full_name": "Akins20/ui-critic", "name": "ui-critic",
+                     "html_url": "https://github.com/Akins20/ui-critic",
+                     "stargazers_count": 0, "forks_count": 0, "language": "TypeScript",
+                     "license": {"spdx_id": "MIT"}, "pushed_at": "2026-09-10T00:00:00Z",
+                     "description": "A second pair of eyes for a UI: screenshots in, ranked Gemini critique out."}]})
+            # star 排序的常规候选
             return GhResp({"total_count": 6255050, "items": _GH_ITEMS})
+        if "registry.npmjs.org" in url:
+            return FakeResp(json.dumps({"total": 1, "objects": [
+                {"package": {"name": "ui-critic", "version": "1.2.0",
+                             "description": "Deterministic design lint for frontend",
+                             "date": "2026-05-01T00:00:00Z",
+                             "links": {"npm": "https://www.npmjs.com/package/ui-critic",
+                                       "repository": "https://github.com/alex410000/ui-critic"}}}]}),
+                            ctype="application/json")
         return FakeResp(bing_html([
             ("https://github.com/bbylw/rea-cn", "bbylw/rea-cn: REA：逆向一切",
              "通过一个 MCP 服务，逆向分析二进制文件"),
@@ -422,33 +440,37 @@ def test_repo_backstop() -> None:
     finally:
         restore()
 
-    api_calls = [(u, p) for u, p in calls if "api.github.com" in u]
-    check("识别到「在找仓库」后自动打了官方搜索接口", len(api_calls) == 1, repr(calls))
-    check("兜底那枪按 star 排序",
-          bool(api_calls) and api_calls[0][1].get("sort") == "stars", repr(calls))
-    check("兜底那枪搜的是挑出来的项目名（不是整句提问）",
-          bool(api_calls) and api_calls[0][1].get("q") == "REA", repr(calls))
+    gh_calls = [(u, p) for u, p in calls if "api.github.com" in u]
+    npm_calls = [(u, p) for u, p in calls if "registry.npmjs.org" in u]
+    check("识别到「在找仓库」后打了 GitHub 官方接口", len(gh_calls) >= 1, repr(calls))
+    check("star 候选那枪按 star 排序（问「哪个更有名」）",
+          any(p.get("sort") == "stars" for _, p in gh_calls), repr(calls))
+    check("查询词是挑出来的项目名（不是整句提问）",
+          any(p.get("q") == "REA" for _, p in gh_calls), repr(calls))
+    check("也打了 npm registry（项目可能是包）", len(npm_calls) == 1, repr(calls))
     check("权威候选排在最前面（先看到的是一手数据）",
           out.index("GitHub 官方搜索接口") < out.index("[搜索摘要"), out[:200])
     check("正主 morluto/rea 出现在输出里", "morluto/rea" in out, out[:600])
     check("候选带 star 数（不用去摘要里捡数字）", "star=193790" in out, out[:600])
-    check("原始网页结果没有被吞掉", "bbylw/rea-cn" in out, out[:800])
-    check("尾部点明「哪个是正主以官方候选为准」",
-          "别拿搜索摘要里的转述判断" in out, out[-600:])
+    check("npm 结果也在（包名/版本/源码仓库）",
+          "ui-critic" in out and "alex410000/ui-critic" in out, out[:1200])
+    check("原始网页结果没有被吞掉", "bbylw/rea-cn" in out, out[:1200])
+    check("尾部点明「哪个是正主以同名候选为准」", "别拿搜索摘要里的转述判断" in out, out[-600:])
     check("仍然要求抓一手来源核实", "fetch_json" in out)
 
-    # 不是仓库检索 → 不该多打这一枪
+    # 不是仓库检索 → 不该多打这些兜底
     calls2, restore2 = with_router(router)
     try:
         search.run(query="今天天气怎么样")
     finally:
         restore2()
-    check("普通查询不触发 GitHub 接口",
-          not any("api.github.com" in u for u, _ in calls2), repr(calls2))
+    check("普通查询不触发 GitHub/npm 接口",
+          not any("api.github.com" in u or "registry.npmjs.org" in u for u, _ in calls2),
+          repr(calls2))
 
     # 兜底接口挂了也不能把 web_search 拖死
     def broken(url, params):
-        if "api.github.com" in url:
+        if "api.github.com" in url or "registry.npmjs.org" in url:
             raise R.ConnectionError("down")
         return FakeResp(bing_html([("https://example.com/a", "结果", "摘要")]))
 
@@ -459,6 +481,109 @@ def test_repo_backstop() -> None:
         restore3()
     check("兜底接口失败时静默降级（不塞错误、也不抛）",
           "[搜索摘要" in out3 and "ConnectionError" not in out3, out3[:300])
+
+
+def test_exact_name_lookup() -> None:
+    """★名字同名检索：不按 star 排，0 star 的同名正主也能浮出来。"""
+    calls, restore = with_router(
+        lambda u, p: GhResp({"total_count": 1, "items": [{
+            "full_name": "Akins20/ui-critic", "name": "ui-critic",
+            "html_url": "https://github.com/Akins20/ui-critic",
+            "stargazers_count": 0, "forks_count": 0, "language": "TypeScript",
+            "license": {"spdx_id": "MIT"}, "pushed_at": "2026-09-10T00:00:00Z",
+            "description": "A second pair of eyes for a UI."}]}))
+    try:
+        got = W.exact_repo_lookup("UI-Critic")
+    finally:
+        restore()
+    check("名字归一化后认得出同名（UI-Critic == ui-critic）",
+          bool(got["items"]) and got["items"][0]["key"] == "uicritic", repr(got))
+    check("查询用的是精确词 + in:name（不靠 star 排序）",
+          any("in:name" in str(p.get("q")) or '"UI-Critic"' in str(p.get("q"))
+              for _, p in calls), repr(calls))
+    check("★同名条目带完整名与地址（下一步 fetch_json 直接用）",
+          got["items"][0]["full_name"] == "Akins20/ui-critic" and
+          "github.com/Akins20/ui-critic" in got["items"][0]["url"], repr(got["items"][0]))
+    # render_repo_rows 给同名候选打 ★
+    rendered = W.render_repo_rows({"items": got["items"], "total": 1, "error": ""},
+                                 "UI-Critic", "best-match")
+    check("★同名候选标出来了（0 star 的正主靠它浮出来）",
+          "★名字同名" in rendered and "Akins20/ui-critic" in rendered, rendered[:300])
+
+    # 没有同名时不报错，空列表
+    calls2, restore2 = with_router(
+        lambda u, p: GhResp({"total_count": 0, "items": []}))
+    try:
+        miss = W.exact_repo_lookup("ui-critic")
+    finally:
+        restore2()
+    check("没同名时返回空列表（不报错）", miss["items"] == [] and miss["error"] == "", repr(miss))
+
+
+def test_npm_search() -> None:
+    """npm 官方 registry 检索：项目可能是包不是 GitHub 热门仓库。"""
+    calls, restore = with_router(
+        lambda u, p: FakeResp(json.dumps({
+            "total": 1,
+            "objects": [{"package": {
+                "name": "ui-critic", "version": "1.2.0",
+                "description": "Deterministic design lint for frontend",
+                "date": "2026-05-01T00:00:00Z",
+                "links": {"npm": "https://www.npmjs.com/package/ui-critic",
+                          "repository": "https://github.com/alex410000/ui-critic"}}}]}),
+            ctype="application/json"))
+    try:
+        got = W.npm_package_search("ui-critic", limit=5)
+    finally:
+        restore()
+    check("打的是 npm 官方 registry 搜索接口",
+          calls and "registry.npmjs.org/-/v1/search" in calls[0][0], repr(calls))
+    check("解析出包名与版本", got["items"][0]["name"] == "ui-critic"
+          and got["items"][0]["version"] == "1.2.0", repr(got["items"]))
+    check("带出源码仓库地址（GitHub 正主可能藏在这里）",
+          "alex410000/ui-critic" in got["items"][0]["repo"], repr(got["items"][0]))
+    check("渲染出 npm 包名与仓库链接",
+          "ui-critic" in W.render_npm_rows(got, "ui-critic")
+          and "alex410000/ui-critic" in W.render_npm_rows(got, "ui-critic"),
+          W.render_npm_rows(got, "ui-critic"))
+
+    # 空查询不打接口
+    calls2, restore2 = with_router(lambda u, p: FakeResp("{}"))
+    try:
+        empty = W.npm_package_search("   ")
+    finally:
+        restore2()
+    check("空查询直接返回错误、不打接口",
+          empty["items"] == [] and bool(empty["error"]) and not calls2, repr(empty))
+
+
+def test_npm_search_tool() -> None:
+    """npm_search 是独立工具，不只是 web_search 的内部兜底。"""
+    tools = make_tools()
+    assert "npm_search" in tools, "npm_search 工具未注册"
+    npm = tools["npm_search"]
+    check("npm_search 是只读工具", npm.risk == "safe", npm.risk)
+    props = npm.parameters["properties"]
+    check("参数含 query / limit", {"query", "limit"} <= set(props), str(list(props)))
+    check("query 必填", npm.parameters.get("required") == ["query"],
+          str(npm.parameters.get("required")))
+    check("描述里点明是 npm registry 实测、并指引已知包名时 fetch_json",
+          "npm" in npm.description and "fetch_json" in npm.description,
+          npm.description[:80])
+
+    calls, restore = with_router(
+        lambda u, p: FakeResp(json.dumps({
+            "total": 1,
+            "objects": [{"package": {"name": "ui-critic", "version": "1.2.0",
+                                     "description": "lint tool",
+                                     "links": {"npm": "https://www.npmjs.com/package/ui-critic"}}}]}),
+            ctype="application/json"))
+    try:
+        out = npm.run(query="ui-critic")
+    finally:
+        restore()
+    check("工具真的打接口并渲染出包",
+          "ui-critic" in out and "lint tool" in out, out[:300])
 
 
 def main() -> None:
@@ -472,6 +597,9 @@ def main() -> None:
     test_repo_keyword()
     test_github_search_tool()
     test_repo_backstop()
+    test_exact_name_lookup()
+    test_npm_search()
+    test_npm_search_tool()
     print("\n全部通过。")
 
 

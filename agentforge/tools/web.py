@@ -165,8 +165,15 @@ def _gh_error(err: Exception) -> str:
 
 def _gh_item(raw: dict) -> dict:
     """从接口的仓库对象里只取要用的字段（原始对象有 80+ 字段、几十 KB）。"""
+    name = str(raw.get("name") or "")
+    full = str(raw.get("full_name") or "")
     return {
-        "full_name": str(raw.get("full_name") or ""),
+        "name": name,
+        "full_name": full,
+        # 名字归一化：比较「是不是同名」时用它，别让 UI-Critic / ui-critic
+        # 因大小写与连字符变成两个名字（rerun50 实证：精确引号查询能命中
+        # Akins20/ui-critic，但旧版渲染只给全名，模型看不出它就是 UI-Critic）
+        "key": re.sub(r"[^a-z0-9]", "", (name or full).lower()),
         "url": str(raw.get("html_url") or ""),
         "stars": int(raw.get("stargazers_count") or 0),
         "forks": int(raw.get("forks_count") or 0),
@@ -175,6 +182,151 @@ def _gh_item(raw: dict) -> dict:
         "pushed_at": str(raw.get("pushed_at") or "")[:10],
         "description": str(raw.get("description") or ""),
     }
+
+
+def smart_repo_query(query: str) -> str:
+    """把「UI-Critic 项目」这类检索串整理成 GitHub 搜索语法。
+
+    不能直接把原串丢给接口（rerun50 实证）：`GitHub UI-Critic project` 的
+    GitHub 搜索是「这几个词都出现在仓库元数据里」——命中 111 个，全是
+    含 ui / project 的无关仓库，排序按 star 还把它们顶到前面，正主一条没有。
+    把名字挑出来做**精确词**搜索（`"UI-Critic"`）后 total 只有 5，全是同名项目。
+    """
+    s = str(query or "").strip()
+    if not s:
+        return ""
+    slug = _SLUG_RX.search(s)
+    if slug:
+        return slug.group(1)
+    kw = repo_keyword(s)
+    return kw or s
+
+
+def exact_name_query(name: str) -> str:
+    """按名字查同名项目：精确词 + 限定在名字里（比裸搜更能命中真同名）。"""
+    return f'"{name}" in:name'
+
+
+def _norm_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+
+def _exact_name_hit(found: dict, name: str) -> dict | None:
+    """候选里有没有名字同名的项目（忽略大小写/连字符）；有就返回那一条。"""
+    k = _norm_key(name)
+    if not k:
+        return None
+    for it in (found or {}).get("items") or []:
+        if it.get("key") == k:
+            return it
+    return None
+
+
+def npm_package_search(query: str, limit: int = 5, timeout: int = 25) -> dict:
+    """按名字搜 npm 包（官方 registry 实测），返回精简候选清单。
+
+    形状对齐 github_repo_search：items / total / error。
+    「找某个叫 XX 的项目」时 GitHub 搜不到不代表不存在——rerun50 的
+    UI-Critic 正主是 npm 包（alex410000/ui-critic），GitHub 搜索接口
+    压根查不到它。包仓库是另一个生态入口，该由程序补上这一枪。
+    """
+    q = str(query or "").strip()
+    if not q:
+        return {"items": [], "total": 0, "error": "查询词为空，没东西可搜"}
+    try:
+        resp = requests.get(
+            "https://registry.npmjs.org/-/v1/search",
+            params={"text": q, "size": max(1, min(int(limit or 5), 20))},
+            timeout=timeout,
+            headers={"Accept": "application/json", **_UA},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:  # noqa: BLE001
+        return {"items": [], "total": 0, "error": f"{type(e).__name__}: {e}"}
+    items = []
+    for obj in (data.get("objects") or [])[: int(limit or 5)]:
+        pk = obj.get("package") or {}
+        if not isinstance(pk, dict):
+            continue
+        items.append({
+            "name": str(pk.get("name") or ""),
+            "key": _norm_key(pk.get("name") or ""),
+            "version": str(pk.get("version") or ""),
+            "url": str((pk.get("links") or {}).get("npm")
+                       or f"https://www.npmjs.com/package/{pk.get('name') or ''}"),
+            "repo": str((pk.get("links") or {}).get("repository") or ""),
+            "date": str(pk.get("date") or "")[:10],
+            "description": str(pk.get("description") or ""),
+        })
+    return {"items": items,
+            "total": int((data.get("total") if isinstance(data.get("total"), int) else len(items))),
+            "error": ""}
+
+
+def render_npm_rows(found: dict, query: str, note: str = "") -> str:
+    """把 npm_package_search 的结果渲染成工具输出（口径对齐 render_repo_rows）。"""
+    items = (found or {}).get("items") or []
+    if not items:
+        why = (found or {}).get("error") or "没有命中任何包"
+        return f"[实测 · API] npm 官方 registry 搜索「{query}」没拿到结果：{why}"
+    head = (f"[实测 · API] npm 官方 registry 搜索 · 查询「{query}」"
+            f" · 命中 {int((found or {}).get('total') or 0)} 个，取前 {len(items)}")
+    if note:
+        head += f"｜{note}"
+    lines = [head + "："]
+    for i, it in enumerate(items, 1):
+        bits = [it["name"] or "(无名)"]
+        if it["version"]:
+            bits.append(f"v{it['version']}")
+        if it["date"]:
+            bits.append(f"发布={it['date']}")
+        lines.append(f"  {i}. " + "  ".join(bits))
+        if it["description"]:
+            lines.append(f"     {it['description'][:140]}")
+        if it["url"]:
+            lines.append(f"     {it['url']}")
+        if it["repo"]:
+            lines.append(f"     源码仓库: {it['repo']}")
+    return "\n".join(lines)
+
+
+def exact_repo_lookup(name: str, timeout: int = 25) -> dict:
+    """按名字查「名字同名的 GitHub 项目」，返回接口原始条目（_gh_item 形状）。
+
+    两枪：精确词搜索（`"ui-critic"`）+ 名字限定（`"ui-critic" in:name`）。
+    谁同名谁算命中——**不按 star 排**：rerun50 的正主 Akins20/ui-critic 是
+    0 star 新项目，按 star 排永远轮不到它，模型于是去问用户。
+    """
+    name = str(name or "").strip()
+    if not name:
+        return {"items": [], "error": "名字为空"}
+    seen: set[str] = set()
+    picked: list[dict] = []
+    errs: list[str] = []
+    for q in (exact_name_query(name), f'"{name}" in:name in:readme'):
+        try:
+            resp = requests.get(
+                _GH_SEARCH_API,
+                params={"q": q, "per_page": 20},
+                timeout=timeout,
+                headers=_gh_headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:  # noqa: BLE001
+            errs.append(_gh_error(e))
+            continue
+        for raw in (data.get("items") or []):
+            if not isinstance(raw, dict):
+                continue
+            item = _gh_item(raw)
+            if item["key"] == _norm_key(name) and item["full_name"] not in seen:
+                seen.add(item["full_name"])
+                picked.append(item)
+        if picked:
+            break
+    return {"items": picked, "error": "; ".join(errs) if not picked and errs else ""}
 
 
 def github_repo_search(query: str, sort: str = _GH_DEFAULT_SORT,
@@ -228,6 +380,7 @@ def render_repo_rows(found: dict, query: str, sort: str = _GH_DEFAULT_SORT,
     if note:
         head += f"｜{note}"
     lines = [head + "："]
+    want = _norm_key(query)
     for i, it in enumerate(items, 1):
         bits = [it["full_name"] or "(无名)", f"star={it['stars']}", f"fork={it['forks']}"]
         if it["language"]:
@@ -237,6 +390,8 @@ def render_repo_rows(found: dict, query: str, sort: str = _GH_DEFAULT_SORT,
             bits.append(f"license={it['license']}")
         if it["pushed_at"]:
             bits.append(f"最近更新={it['pushed_at']}")
+        if want and it.get("key") == want:
+            bits.append("★名字同名")
         lines.append(f"  {i}. " + "  ".join(bits))
         if it["description"]:
             lines.append(f"     {it['description'][:140]}")
@@ -262,7 +417,9 @@ _GENERIC_HOST_RX = re.compile(
     r"(?:github|gitlab|bitbucket|zhihu|bilibili|csdn|juejin|cnblogs|wikipedia|baidu)\.(?:com|org|net)/?$",
     re.I,
 )
-_SLUG_RX = re.compile(r"(?<![A-Za-z0-9_.-])([A-Za-z][\w.]*[/-][A-Za-z][\w.]*)(?![A-Za-z0-9_.-])")
+# slug 只认 ASCII（rerun50：「git上的项目UI-Critic」被 \w 的 Unicode 语义粘成一坨，
+# 模型拿这坨去搜必空）。CJK 一律排除在 slug 外，让「UI-Critic」单独露出来。
+_SLUG_RX = re.compile(r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9._-]*[/-][A-Za-z][A-Za-z0-9._-]*)(?![A-Za-z0-9_.-])")
 _WORD_RX = re.compile(r"[A-Za-z][A-Za-z0-9.+-]*|[\u4e00-\u9fff]+")
 # 常见噪声词：查询里几乎必然出现，但从来不指向「要找的那个东西」
 _QUERY_STOP = {
@@ -326,8 +483,12 @@ def tighten_query(query: str) -> tuple[str, str]:
     return f'"{s}"', "加引号做精确匹配"
 
 
-# 查询里出现这些，说明是在找 GitHub 上的东西（不然「找最大的质数」也会被拖去搜仓库）
-_GH_INTENT_RX = re.compile(r"github|\bgit\b|仓库|开源项目|\brepo(?:sitory)?\b", re.I)
+# 查询里出现这些，说明是在找 GitHub 上的东西（不然「找最大的质数」也会被拖去搜仓库）。
+# 注意中文句里 git/github 常紧跟汉字（「git上的项目」「github仓库」），`\b` 在这种
+# 边界上认不出——用 lookaround 让 ASCII 字母与 CJK 都算边界。
+_GH_INTENT_RX = re.compile(
+    r"github|\bgit\b|git(?=[\u4e00-\u9fff])|[\u4e00-\u9fff]git"
+    r"|仓库|开源项目|\brepo(?:sitory)?\b", re.I)
 
 # 「找项目」这件事本身的词，不指向任何具体仓库——拿它去搜只会拉回一堆不相干的
 _GENERIC_PROJECT_WORDS = {
@@ -458,27 +619,49 @@ def build_web_tools(guard, cfg):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/126 Safari/537.36",
     }
+    # Bing 的国内入口：www.bing.com 偶发被劫到 cn.bing / 结果里塞满门户首页
+    # （rerun50 实证：`GitHub UI-Critic project` 搜回 GitHub 首页与知乎教程），
+    # 两个入口轮着试，谁返回具体条目用谁。
+    _BING_HOSTS = ("https://www.bing.com/search", "https://cn.bing.com/search")
 
     def _clean(s: str) -> str:
         return _WS_RE.sub(" ", _HTML_RE.sub("", html.unescape(s))).strip()
 
     def _search_bing(query: str, max_results: int) -> list[tuple[str, str, str]]:
-        """Bing（国内直连可用）。返回 (url, title, snippet) 列表。"""
-        r = requests.get(
-            "https://www.bing.com/search",
-            params={"q": query, "count": max(4, int(max_results))},
-            timeout=20,
-            headers=_BROWSER_UA,
-        )
-        r.raise_for_status()
-        out = []
-        for block in _BING_BLOCK_RE.findall(r.text)[:max_results]:
-            a = _BING_LINK_RE.search(block)
-            if not a:
+        """Bing（国内直连可用）。返回 (url, title, snippet) 列表。
+
+        两个入口都试：www.bing.com 与 cn.bing.com 返回的结果质量会因地区
+        劫持而不同，谁解析出更多具体条目用谁。
+        """
+        best: list[tuple[str, str, str]] = []
+        last_err: Exception | None = None
+        for base in _BING_HOSTS:
+            try:
+                r = requests.get(
+                    base,
+                    params={"q": query, "count": max(4, int(max_results))},
+                    timeout=20,
+                    headers=_BROWSER_UA,
+                )
+                r.raise_for_status()
+            except requests.RequestException as e:
+                last_err = e
                 continue
-            p = _BING_SNIP_RE.search(block)
-            out.append((a.group(1), _clean(a.group(2)), _clean(p.group(1)) if p else ""))
-        return out
+            out = []
+            for block in _BING_BLOCK_RE.findall(r.text)[:max_results]:
+                a = _BING_LINK_RE.search(block)
+                if not a:
+                    continue
+                p = _BING_SNIP_RE.search(block)
+                out.append((a.group(1), _clean(a.group(2)), _clean(p.group(1)) if p else ""))
+            # 优先返回「打到具体条目」的那份（不是门户首页堆）
+            if out and not results_look_generic(out):
+                return out
+            if len(out) > len(best):
+                best = out
+        if not best and last_err:
+            raise last_err
+        return best
 
     def _search_ddg(query: str, max_results: int) -> list[tuple[str, str, str]]:
         """DuckDuckGo HTML 端点（部分网络环境下不可用，作兜底）。"""
@@ -517,9 +700,22 @@ def build_web_tools(guard, cfg):
         return "\n".join(out)
 
     def github_search(query: str, sort: str = _GH_DEFAULT_SORT, limit: int = 5) -> str:
-        """按名字搜 GitHub 仓库，返回官方接口给出的候选清单（默认按 star 排序）。"""
-        found = github_repo_search(query, sort=sort, limit=limit)
-        return render_repo_rows(found, query, sort)[:max_out]
+        """按名字搜 GitHub 仓库，返回官方接口给出的候选清单（默认按 star 排序）。
+
+        程序先替模型把查询整理好（smart_repo_query），并补一枪「名字同名」
+        检索——按 star 排时 0 star 的同名正主会被淹掉（rerun50 实证），
+        名字同名的候选单独摆出来，并标 ★。
+        """
+        name = smart_repo_query(query)
+        found = github_repo_search(name or query, sort=sort, limit=limit)
+        sections = [render_repo_rows(found, name or query, sort)]
+        exact = exact_repo_lookup(name or query)
+        if exact["items"]:
+            sections.insert(0, render_repo_rows(
+                {"items": exact["items"], "total": len(exact["items"]), "error": ""},
+                name or query, "best-match",
+                note="★名字同名的项目（按名字匹配，不按 star）"))
+        return "\n\n".join(sections)[:max_out]
 
     def web_search(query: str, max_results: int = 8) -> str:
         """联网搜索：优先 Bing（国内直连），失败回退 DuckDuckGo。
@@ -527,13 +723,14 @@ def build_web_tools(guard, cfg):
         返回的是**搜索摘要**，只用来找入口。输出头显式标明「转述·未核实」——
         实测教训：摘要里的数字被直接当结论引用过（star 说 1w+，实际 17 万）。
 
-        两条程序侧兜底，都不指望模型自觉：
+        程序侧兜底（都不指望模型自觉）：
 
-        ① **仓库意图**——查询像在找 GitHub 上的某个项目时，顺手打一次官方搜索
-           接口，把「按 star 排序的候选」排在最前面。实测：搜 REA 回来的全是
-           中文镜像站与转载文章，19 万 star 的正主一条都没有，模型于是锚定了它
-           看到的第一个 GitHub 链接（一个 80 star 的镜像）。候选清单一摆出来，
-           「谁是正主」就不再取决于搜索结果的排序运气。
+        ① **仓库 / 包意图**——查询像在找某个具体项目时，顺手打官方接口：
+           a. GitHub 名字同名检索（`"名" in:name`）——按 star 排的候选会把
+              0 star 的同名正主淹掉，同名匹配的单独摆出来；
+           b. star 排序的常规候选（「哪个更有名」）；
+           c. npm 官方 registry 检索——项目可能根本不在 GitHub 生态
+              （rerun50 的 UI-Critic 正主是 npm 包，GitHub 搜索查不到）。
         ② **泛查询**——结果没打到具体条目时，自动补一枪收紧后的检索
            （`site:` + 精确词）。
         """
@@ -541,8 +738,16 @@ def build_web_tools(guard, cfg):
         sections: list[str] = []
         tighter = ""
         gh_key = ""
-        kw = repo_keyword(query)
+        kw = repo_keyword(query) or (smart_repo_query(query) if _GH_INTENT_RX.search(query or "") else "")
         if kw:
+            # ① 名字同名：0 star 的正主靠它浮出水面（不按 star 排）
+            exact = exact_repo_lookup(kw)
+            if exact["items"]:
+                sections.append(render_repo_rows(
+                    {"items": exact["items"], "total": len(exact["items"]), "error": ""},
+                    kw, "best-match",
+                    note="★名字同名的项目（按名字匹配，不按 star）——「是不是它」以这份为准"))
+            # ② star 排序的常规候选（「哪个更有名」）
             found = github_repo_search(kw, sort=_GH_DEFAULT_SORT, limit=5)
             # 接口抖了/限流了就当没补过——web_search 的本职是搜索，
             # 不该因为兜底失败往结果里塞一段错误（模型真要这个数据时
@@ -552,6 +757,12 @@ def build_web_tools(guard, cfg):
                 sections.append(render_repo_rows(
                     found, kw, _GH_DEFAULT_SORT,
                     note="系统侧自动补 ·「哪个更有名」以这份为准，别凭搜索摘要判断"))
+            # ③ npm 官方 registry：项目可能是包不是 GitHub 热门仓库
+            npm = npm_package_search(kw, limit=5)
+            if npm["items"]:
+                sections.append(render_npm_rows(
+                    npm, kw,
+                    note="系统侧自动补 · 项目可能是 npm 包（GitHub 搜不到 ≠ 不存在）"))
         # 判据是「这枪有没有打到具体条目」，不是「查询词长得像不像泛查询」——
         # 结果全是门户首页（或干脆没结果）就说没打到，程序补一枪精确的。
         # 打中了就不补（查询泛但一把命中，没什么可收紧的）。
@@ -576,8 +787,9 @@ def build_web_tools(guard, cfg):
                 "这里的数字、版本、日期都不可直接写进回复。")
         if gh_key:
             tail = (f"注：你要找的是 GitHub 上的项目，系统已直接查官方搜索接口"
-                    f"（查询「{gh_key}」，按 star 排序），候选清单排在最前面——"
-                    f"**哪个是正主以这份为准，别拿搜索摘要里的转述判断**；"
+                    f"（查询「{gh_key}」），★标记的是**名字同名**的候选——"
+                    f"「是不是它」以同名为准，别拿搜索摘要里的转述判断，"
+                    f"也别只看 star（新项目的 star 可能是 0）；"
                     f"选定后用它给的地址交给 fetch_json，拿 star / fork / 语言等权威字段。\n" + tail)
         if tighter:
             tail = (f"注：原查询过泛，系统已自动补搜 `{tighter}`（结果排在上面）。"
@@ -660,11 +872,12 @@ def build_web_tools(guard, cfg):
     return [
         make_tool(
             "web_search",
-            "联网搜索（Bing，失败回退 DuckDuckGo）。**只用来找入口**：返回的是搜索摘要"
+            "联网搜索（Bing 双入口，失败回退 DuckDuckGo）。**只用来找入口**：返回的是搜索摘要"
             "（转述），其中的数字 / 版本 / 日期一律不可直接引用。硬性要求：搜到候选 URL 后，"
             "必须用 fetch_url 或 fetch_json 抓至少一个一手来源核实，然后才下结论。"
-            "目标是某个具体项目 / 库 / 产品时，优先找它的官方地址（官网、GitHub、官方文档），"
-            "而不是第三方博客。",
+            "目标是某个具体项目 / 库 / 产品时，系统会自动补官方接口检索"
+            "（GitHub ★名字同名候选 + star 候选 + npm registry）——这些是实测数据，"
+            "优先看它们，而不是第三方博客的转述。",
             {
                 "type": "object",
                 "properties": {
@@ -678,14 +891,16 @@ def build_web_tools(guard, cfg):
         ),
         make_tool(
             "github_search",
-            "按名字搜 GitHub 仓库（官方接口实测）：一次调用返回候选清单——仓库全名、"
-            "star / fork 数、主语言、许可证、最近更新、简介与地址。想知道某个项目是哪个、"
-            "它有多少 star，就用它；由你按 star 与简介判断哪个是正主，别拿搜索摘要猜。"
+            "按名字搜 GitHub 仓库（官方接口实测）：一次调用返回候选清单——★名字同名的"
+            "项目（按名字匹配、不按 star，新项目 star 可能是 0）+ 按 star 排序的"
+            "「哪个更有名」候选，含 star / fork 数、主语言、许可证、最近更新、简介与地址。"
+            "想知道某个项目是哪个、它有多少 star，就用它；「是不是它」以★同名候选为准，"
+            "别拿搜索摘要猜。GitHub 搜不到时换 npm_search（项目可能是包）。"
             "已知仓库全名时，直接用 fetch_json 打 api.github.com/repos/<owner>/<repo>。",
             {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "仓库关键词，如 REA、whisper、openai/whisper"},
+                    "query": {"type": "string", "description": "仓库关键词，如 REA、UI-Critic、openai/whisper"},
                     "sort": {"type": "string", "enum": ["stars", "forks", "updated", "best-match"],
                              "description": "排序口径，默认 stars（最出名的排前面）"},
                     "limit": {"type": "integer", "description": "返回几个候选，默认 5，最多 20"},
@@ -693,6 +908,24 @@ def build_web_tools(guard, cfg):
                 "required": ["query"],
             },
             github_search,
+            SAFE,
+        ),
+        make_tool(
+            "npm_search",
+            "按名字搜 npm 包（官方 registry 实测）：返回包名、版本、发布时间、简介、"
+            "包页与源码仓库地址。GitHub 搜不到某个名字的项目时用它——很多前端工具"
+            "（lint / 插件 / CLI）只以 npm 包形式发布，GitHub 搜索接口查不到。"
+            "已知包名时直接用 fetch_json 打 https://registry.npmjs.org/<包名>。",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "包名关键词，如 ui-critic"},
+                    "limit": {"type": "integer", "description": "返回几个候选，默认 5，最多 20"},
+                },
+                "required": ["query"],
+            },
+            lambda query, limit=5: render_npm_rows(
+                npm_package_search(query, limit=limit), query)[:max_out],
             SAFE,
         ),
         make_tool(
