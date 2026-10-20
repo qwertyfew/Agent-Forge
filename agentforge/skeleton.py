@@ -534,14 +534,19 @@ def table_shape(brief: str) -> list[str] | None:
     这时候硬塞 `## 小节` 会跟格式要求打架——骨架应该长得像**将要交付的东西**。
     """
     lines = _lines(brief)
-    for i, ln in enumerate(lines):
-        s = ln.strip()
-        if not s.startswith("|") or i + 1 >= len(lines):
-            continue
-        if not _TABLE_SEP_RX.match(lines[i + 1].strip()):
+    for i, s in enumerate(x.strip() for x in lines):
+        if not s.startswith("|"):
             continue
         cells = [c.strip() for c in s.strip("|").split("|")]
-        if 2 <= len(cells) <= 8 and all(cells):
+        if not (2 <= len(cells) <= 8 and all(cells)):
+            continue
+        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        if _TABLE_SEP_RX.match(nxt):
+            return cells
+        # 没有分隔行也认：任务书里的表头常常是手写的一行（rerun29/30 就是这样），
+        # 只要上下都不是表格行，它就是「格式声明里的表头」而不是数据行。
+        prev = lines[i - 1].strip() if i else ""
+        if not nxt.startswith("|") and not prev.startswith("|"):
             return cells
     return None
 
@@ -670,8 +675,13 @@ def record_seeded(root: str | Path, rel: str, text: str, items: list[str],
         }
         if kind == "table":
             rows = _table_rows(text)
+            rec["rows"] = list(items)
             rec["row_bodies"] = {it: rows.get(it, "") for it in items}
         else:
+            # 分节形态：items 就是小节标题，记进 headings；rows 必须留空，
+            # 否则同一项被算两次（既等小节正文、又等表格行），永远填不完。
+            rec["rows"] = []
+            rec["row_bodies"] = {}
             lines = _lines(text)
             secs = body_sections(text)
             rec["headings"] = [s.heading for s in secs]
