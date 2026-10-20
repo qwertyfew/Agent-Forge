@@ -29,6 +29,9 @@ SKIP_DIRS = {
     ".mypy_cache", ".pytest_cache", ".ruff_cache", ".idea", ".vscode", ".next",
     ".nuxt", "dist", "build", "target", ".cache", ".gradle", ".tox",
     ".run", ".sessions", ".agentforge", ".tmp_research",
+    # 任务记录目录（history/<任务>/_records）：evidence.jsonl、版本快照、引用结论。
+    # 它是 harness 的运行痕迹，不是任务产出——不进产出清点，也不算交付物。
+    "_records",
 }
 
 MAX_DEPTH = 8
@@ -205,7 +208,7 @@ def merge(records: list[dict]) -> list[dict]:
 #   - 明显的临时扩展名：.tmp/.bak/.orig/.part/.swp/.log
 # 命令副作用（via=scan）也算中间文件：用户没有点名要它，多半是脚本/构建的副产品。
 _INTERMEDIATE_NAME = re.compile(
-    r"(^|[/\\])(tmp|temp|drafts?|scratch|debug|cache)([/\\\-_.\d ]|$)"
+    r"(^|[/\\])(tmp|temp|drafts?|scratch|debug|cache|_records)([/\\\-_.\d ]|$)"
     r"|[/\\][^/\\]*?(?:草稿|中间|过渡|临时|备份)[^/\\]*$"
     r"|\.(tmp|bak|orig|part|swp|log)$",
     re.I,
