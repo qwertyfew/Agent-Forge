@@ -204,6 +204,20 @@ def build_fs_tools(guard, cfg):
                 path, content,
                 [(p.split("」行：")[0].lstrip("「") or "表格行", p) for p in ev_problems],
                 "evidence", cfg)
+        # 契约结构核查：骨架登记过的文件，整篇重写必须保留登记的表头列——
+        # rerun42 实证模型换成自己的 ## 小节格式，证据列闸门失去约束对象，
+        # 0 引用还能过收尾。撕契约 = 拒收，请按骨架填。
+        try:
+            rec_f = skeleton.state_path(cfg.workspace_root, path)
+            rec = json.loads(rec_f.read_text(encoding="utf-8")) if rec_f.is_file() else {}
+            miss_hdr = skeleton.header_missing(content, rec.get("header") or [])
+        except Exception:  # noqa: BLE001
+            miss_hdr = []
+        if miss_hdr:
+            return (f"[错误] 契约结构核查未通过，文件未写入：{path}\n"
+                    f"  - 骨架登记的表头列在重写稿里找不到了：{'、'.join(miss_hdr[:6])}\n"
+                    "表头是覆盖核查的对账依据，整篇换格式等于把契约撕掉。"
+                    "请保留表头与行首列，用 fill_section 逐行填（被拒只丢一行）。")
 
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8", newline="")

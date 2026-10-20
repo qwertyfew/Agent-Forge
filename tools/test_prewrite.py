@@ -263,6 +263,23 @@ def main() -> int:
         issues11b = _vg.find_artifact_issues([("evals/tbl8.md", True)], tmp / "g")
         check("收尾核查：证据列有可定位锚点 → 通过", not issues11b, str(issues11b))
 
+        # ---------- 11.5 契约表头不可整篇换掉（rerun42 现场回归） ----------
+        sp2 = _sk.state_path(tmp / "g", "evals/tbl9.md")
+        sp2.parent.mkdir(parents=True, exist_ok=True)
+        sp2.write_text(_json.dumps({
+            "path": str((tmp / "g" / "evals" / "tbl9.md").resolve()),
+            "header": ["对比点", "对方做法（附证据：仓库/文件/行号）",
+                       "AgentForge 现状（附证据：文件/行号）", "建议"],
+        }), encoding="utf-8")
+        out115a = wf7.run(path="evals/tbl9.md",
+                          content="# 自由格式\n\n## 对比分析\n\n随便写的内容。\n")
+        check("登记文件整篇换掉表头 → 拒收",
+              out115a.startswith("[错误] 契约结构核查未通过"), out115a[:250])
+        check("拒收指名丢失的表头列", "对方做法" in out115a, out115a[:300])
+        out115b = wf7.run(path="evals/tbl9.md",
+                          content="# 清单\n\n" + hdr + good_row)
+        check("保留契约表头的重写 → 放行", out115b.startswith("已"), out115b[:200])
+
         # ---------- 12. 锚点前置：预热注入 + read 回执（坐标在开局/读时就给到） ----------
         from agentforge import warmup as _wu
         (tmp / "g" / "agentforge" / "sample_mod.py").write_text(

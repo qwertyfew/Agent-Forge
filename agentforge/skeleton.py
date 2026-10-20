@@ -373,6 +373,11 @@ def record_skeleton(root: str | Path, path: str, text: str) -> bool:
             "headings": [s.heading for s in secs],
             "bodies": {s.heading: _clean(s.body(lines)) for s in secs},
         }
+        # 表格骨架把表头也存进契约：rerun42 实证模型会整篇换掉格式（自己的
+        # ## 小节、没有证据列表头），证据列闸门失去约束对象，0 引用还能过收尾。
+        hdr = table_header(text)
+        if hdr:
+            rec["header"] = hdr
         f.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
         return True
     except (OSError, ValueError, TypeError):
@@ -387,6 +392,16 @@ def drop_state(root: str | Path, path: str) -> None:
             f.unlink()
     except OSError:
         pass
+
+
+def header_missing(content: str, header: list[str]) -> list[str]:
+    """契约表头里哪些列在内容中找不到（归一化比对，忽略空白与标点差异）。
+
+    「表头即契约」的另一半：骨架建档时表头随档案存下，write_file 整篇重写
+    必须保留这些列——rerun42 实证模型换掉格式后，证据列闸门就没有了约束对象。
+    """
+    cn = _norm(content)
+    return [c for c in (header or []) if _norm(c) and _norm(c) not in cn]
 
 
 def registered_paths(root: str | Path) -> set[str]:
