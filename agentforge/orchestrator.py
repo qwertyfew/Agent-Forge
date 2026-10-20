@@ -47,6 +47,7 @@ from .tasksession import TaskSession, batch_dependency_reason, contract_block, c
 from . import runcontrol
 from . import steering
 from . import sources as sources_gate
+from . import skeleton as skel
 from . import verify as verify_gate
 from . import warmup as warmup_gate
 
@@ -343,7 +344,8 @@ def _verify_gate(agent, message: str, holder: dict,
                  exhausted: set[str] | None = None,
                  files: list[dict] | None = None,
                  produced_paths: list[str] | None = None,
-                 task_start_ts: float | None = None):
+                 task_start_ts: float | None = None,
+                 file_log: list | None = None):
     """收尾验证闸门（系统侧强制）：模型只有解读权，没有裁定权。
 
     - 任务书里声明了验证命令（如「验证：python tools/x.py」）→ 程序亲自运行，
@@ -418,7 +420,8 @@ def _verify_gate(agent, message: str, holder: dict,
             )
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
-                                read_cache=read_cache, ledger=evidence):
+                                read_cache=read_cache, ledger=evidence,
+                                file_log=file_log):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -465,11 +468,17 @@ def _verify_gate(agent, message: str, holder: dict,
             cfg.workspace_root)
         produced = (verify_gate.ran_writes(convo)
                     or verify_gate.ran_verification(convo))
+        # 任务书必填项：显式列举的「覆盖这些…：A、B、C」在骨架阶段就铺成了
+        # 结构（skeleton.seed_from_brief），这里用同一份清单判「该写的写了没有」。
+        # 提取不到就不传（None），退回纯存在性/时效性核查，不猜。
+        required = skel.required_items(message) or None
         issues = verify_gate.find_artifact_issues(
             entries, cfg.workspace_root, snapshot=snapshot, produced=produced,
-            produced_paths=produced_paths, task_start_ts=task_start_ts)
+            produced_paths=produced_paths, task_start_ts=task_start_ts,
+            required=required)
         if issues and not corrected:
-            # 修正前先记下这些文件的 mtime：复查就看它本轮有没有真的变
+            # 修正前先记下这些文件的 mtime：非内容类问题（missing/stale/ghost）
+            # 复查就看它本轮有没有真的变
             pre = {c["path"].lower(): verify_gate.path_mtime(c["path"], cfg.workspace_root)
                    for c in issues}
             prompt = verify_gate.ARTIFACT_CORRECTIVE_PROMPT.format(
@@ -478,7 +487,8 @@ def _verify_gate(agent, message: str, holder: dict,
             )
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
-                                read_cache=read_cache, ledger=evidence):
+                                read_cache=read_cache, ledger=evidence,
+                                file_log=file_log):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -488,6 +498,19 @@ def _verify_gate(agent, message: str, holder: dict,
                 yield ev
             issues = [c for c in issues
                       if not verify_gate.artifact_fixed(c, pre, cfg.workspace_root)]
+            # 缺项（incomplete）例外：它是**内容判定**，mtime 变了不算修好——
+            # 补了两行、还缺两项的时候 mtime 早就不一样了，凭时间放行等于把
+            # 覆盖核查退化成「写过就算」。这一类重算覆盖，重算的成本是读一个文件。
+            if any(c.get("status") == "incomplete" for c in issues):
+                fresh = verify_gate.find_artifact_issues(
+                    entries, cfg.workspace_root, snapshot=snapshot, produced=produced,
+                    produced_paths=produced_paths, task_start_ts=task_start_ts,
+                    required=required)
+                still = {c["path"].lower() for c in fresh
+                         if c.get("status") == "incomplete"}
+                issues = [c for c in issues
+                          if c.get("status") != "incomplete"
+                          or c["path"].lower() in still]
         if issues:
             yield {"type": "verify", "cmd": "", "ok": False, "exit": "",
                    "duration": "",
@@ -542,7 +565,8 @@ def _verify_gate(agent, message: str, holder: dict,
                 )
                 for ev in agent.run(convo, prompt, auto_route=False,
                                     stop_check=stop_check, auto_approve=auto_approve,
-                                    read_cache=read_cache, ledger=evidence):
+                                    read_cache=read_cache, ledger=evidence,
+                                file_log=file_log):
                     k = ev.get("type")
                     if k in ("user", "route"):
                         continue
@@ -592,7 +616,8 @@ def _verify_gate(agent, message: str, holder: dict,
             )
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
-                                read_cache=read_cache, ledger=evidence):
+                                read_cache=read_cache, ledger=evidence,
+                                file_log=file_log):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -618,7 +643,8 @@ def _verify_gate(agent, message: str, holder: dict,
             prompt = honesty_guard.corrective_prompt(summary)
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
-                                read_cache=read_cache, ledger=evidence):
+                                read_cache=read_cache, ledger=evidence,
+                                file_log=file_log):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -647,7 +673,8 @@ def _verify_gate(agent, message: str, holder: dict,
             )
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
-                                read_cache=read_cache, ledger=evidence):
+                                read_cache=read_cache, ledger=evidence,
+                                file_log=file_log):
                 k = ev.get("type")
                 if k in ("user", "route"):
                     continue
@@ -890,7 +917,8 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                                    stop_check=stopped, read_cache=read_cache,
                                    snapshot=task_snap, exhausted=exhausted_cmds,
                                    files=task_files, produced_paths=step_paths,
-                                   task_start_ts=task_start_ts):
+                                   task_start_ts=task_start_ts,
+                                   file_log=local_log):
                 k = ev.get("type")
                 if k == "assistant":
                     convo = ev["history"]
@@ -1186,7 +1214,8 @@ def run_leader(agent, store, entries: list[dict], history: list[dict],
                                 snapshot=snap, exhausted=exhausted_cmds,
                                 files=gate_file_records,
                                 produced_paths=agg_paths,
-                                task_start_ts=task_start_ts)
+                                task_start_ts=task_start_ts,
+                                file_log=shared_log)
         final_answer = holder["summary"]
         # Leader 语义判定：只看 原文 + 拟回答，判语义完成度
         sem_pass, sem_reasons = True, []
@@ -1423,6 +1452,23 @@ def run_task(
                                   rel_root=agent.cfg.workspace_root)
     except Exception:  # noqa: BLE001 —— 记录不可用不该阻断任务
         agent.recorder = None
+
+    # 任务书骨架（契约骨架）：任务书里显式列举的必填项——「至少覆盖这些…：A、B、C」、
+    # 「末尾附一节「X」」——在任务开始就落成一个骨架文件，每个必填项一个待填位。
+    # 这样缺项在**骨架阶段**就露（进度里直接是「还没填：会话恢复」），而不是等到
+    # 收尾读一份「写得很顺但少两项」的成品（rerun29）。
+    # 只在文件还不存在时铺；模型已经写了的路径一律不碰。
+    for _rel in verify_gate.extract_declared_artifacts(message):
+        if not str(_rel).lower().endswith((".md", ".markdown", ".txt")):
+            continue
+        try:
+            _info = skel.seed_from_brief(agent.cfg.workspace_root, _rel, message)
+        except Exception:  # noqa: BLE001 —— 铺骨架失败不该阻断任务
+            _info = None
+        if _info:
+            yield {"type": "skeleton", "path": _info["path"], "kind": _info["kind"],
+                   "items": _info["items"], "source": "brief"}
+
     if (auto_plan and not pinned
             and getattr(agent.cfg, "dispatcher_enabled", False)
             and _orchestration_wanted(message, agent.cfg)
@@ -1666,7 +1712,8 @@ def run_task(
                                    read_cache=read_cache, snapshot=step_snap,
                                    exhausted=exhausted_cmds,
                                    produced_paths=new_files,
-                                   task_start_ts=task_start_ts):
+                                   task_start_ts=task_start_ts,
+                                   file_log=file_log):
                 k = ev.get("type")
                 if k == "assistant":
                     hist = ev["history"]
@@ -1694,7 +1741,8 @@ def run_task(
                             read_cache=read_cache, snapshot=gate_snap,
                             exhausted=exhausted_cmds,
                             produced_paths=task_files,
-                            task_start_ts=task_start_ts)
+                            task_start_ts=task_start_ts,
+                            file_log=file_log)
     if holder["summary"] != summary:
         summary, hist = holder["summary"], holder["convo"]
         yield {"type": "assistant", "content": summary, "history": hist}

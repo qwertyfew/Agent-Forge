@@ -621,7 +621,8 @@ def find_artifact_issues(entries: list[tuple[str, bool]],
                          snapshot: dict[str, float] | None = None,
                          produced: bool | None = None,
                          produced_paths: list[str] | None = None,
-                         task_start_ts: float | None = None) -> list[dict]:
+                         task_start_ts: float | None = None,
+                         required: list[str] | None = None) -> list[dict]:
     """产物核查的主判定：返回问题清单，每项 {path, declared, status}。
 
     - missing  文件不存在（原 find_missing_artifacts 的行为）
@@ -676,6 +677,16 @@ def find_artifact_issues(entries: list[tuple[str, bool]],
             issues.append({"path": p, "declared": bool(declared),
                            "status": "skeleton"})
             continue
+        # 覆盖核查（任务书必填项）：文件写全了、引用也对，但**该写的项没写**。
+        # rerun29 就是这种：十项要求写了八项，引用核查一处没错，缺的两项谁也没管。
+        # required 来自任务书里显式列举的项（skeleton.required_items），判据是
+        # 「字面是否出现在交付物里」——不要求按这个标题分节，只要求真的写了。
+        if required and declared:
+            miss = skel.required_missing(root, p, required)
+            if miss:
+                issues.append({"path": p, "declared": True,
+                               "status": "incomplete", "missing": miss})
+                continue
         # 执行轨迹权威记录（来自全局 file_log 的本任务真实写操作）：只要本任务
         # 确实写出过该文件，无论 mtime 快照怎么判（stale/ghost 都源于「开局快照
         # 早于最终写盘 / convo 缺写工具记录」的竞态），一律认定本轮产出、跳过判定。
@@ -728,6 +739,10 @@ def artifact_fixed(issue: dict, pre: dict[str, float | None],
         return False
     if issue["status"] == "missing":
         return True
+    if issue["status"] == "incomplete":
+        # 缺项是内容判定，mtime 变了不算数：由调用方用 find_artifact_issues
+        # 带上 required 重算（见 orchestrator 的产物核查修正轮）。
+        return False
     if issue["status"] == "skeleton":
         # 骨架补齐后 mtime 当然也变了，但真正的判据是「还有没有空小节」——
         # 又填了一节、还是空着一半，都算没修好。
@@ -742,6 +757,7 @@ _STATUS_TEXT = {
     "missing": "不存在于工作区",
     "stale": "存在，但修改时间与任务开始时的快照一致——本轮从未更新，现有内容不是本轮产出",
     "ghost": "存在，但整个任务没有任何写文件/执行命令的操作——它不是本轮写出的",
+    "incomplete": "存在，但任务书要求覆盖的项没写全",
     "skeleton": "只有骨架：小节标题在，正文还是空的或只有占位符——不算交付，用 fill_section 逐节填完",
 }
 
@@ -749,6 +765,10 @@ _STATUS_TEXT = {
 def issue_line(c: dict) -> str:
     """问题清单里的一行：修正轮提示与最终核查声明共用，保证口径一致。"""
     tag = "任务书明确要求的交付物" if c.get("declared") else "总结声称已写入"
+    if c.get("status") == "incomplete":
+        miss = "、".join(str(x) for x in (c.get("missing") or [])[:10])
+        return (f"`{c['path']}`（{tag}；缺任务书点名要覆盖的项：{miss}）"
+                "——把这些项各写一行/一节，附上证据行号")
     return f"`{c['path']}`（{tag}；{_STATUS_TEXT.get(c['status'], c['status'])}）"
 
 

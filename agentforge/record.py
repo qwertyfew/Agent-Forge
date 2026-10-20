@@ -173,6 +173,35 @@ class Recorder:
         })
         return f"versions/{_flat(rel)}/{name}", add, rem
 
+    def writes(self) -> list[dict]:
+        """本任务所有成功写盘的记录（按路径去重，保留最后一次）。
+
+        这是「产出清单」的文件级事实源：即使某个执行路径忘了把写操作塞进
+        file_log（rerun29 的修正轮就是这样，tasks.json 里 files=0），磁盘上
+        的记录仍然是全的。任务收尾用它兜底合并进产出清单。
+        """
+        out: dict[str, dict] = {}
+        f = self.root / "evidence.jsonl"
+        if not f.exists():
+            return []
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+        for raw in lines:
+            try:
+                row = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if row.get("kind") != "write":
+                continue
+            key = str(row.get("path") or "").replace("\\", "/").lower()
+            if not key:
+                continue
+            prev = out.get(key) or {}
+            out[key] = {**row, "first": bool(prev.get("first")) or bool(row.get("first"))}
+        return list(out.values())
+
     def wrote(self, path: Path | str, ok: bool, note: str = "") -> None:
         self._append("evidence.jsonl", {
             "kind": "write_result", "path": self._rel(path), "ok": bool(ok), "note": note[:200],

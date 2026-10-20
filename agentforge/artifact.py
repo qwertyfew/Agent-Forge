@@ -215,6 +215,25 @@ _INTERMEDIATE_NAME = re.compile(
 )
 
 
+def from_records(rows: list[dict] | None) -> list[dict]:
+    """把记录层的写盘行（record.Recorder.writes）翻成产出记录。
+
+    为什么要有这条通道：产出清单原先只来自 file_log 这一个内存列表，而它靠
+    「调用方记得传下去」。rerun29 的修正轮没传，交付物真落了盘、台账里 files
+    却是 0。记录层是落盘的，谁忘了传都改不了它——所以收尾时用它兜底合并。
+    via 标成 record（不是 tool），合并时工具记录优先，不会盖掉更准的动作。
+    """
+    out: list[dict] = []
+    for r in rows or []:
+        p = str((r or {}).get("path") or "")
+        if not p:
+            continue
+        out.append({"path": p,
+                    "action": "created" if r.get("first") else "modified",
+                    "via": "record", "tool": "record", "certain": True})
+    return out
+
+
 def is_intermediate(rec: dict) -> bool:
     """这条文件记录是不是「过渡 / 中间文件」（清空任务时默认清理的那类）。
 

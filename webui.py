@@ -1793,6 +1793,15 @@ class _Handler(BaseHTTPRequestHandler):
                                 + "、".join(str(m) for m in missing[:4])
                                 + "），已要求当场补写",
                     })
+                elif kind == "skeleton":
+                    # 任务书骨架：任务书里点名的必填项已铺成待填位。播成思考行——
+                    # 这是「程序替任务书建的清单」，不是模型的动作，必须可见。
+                    items = [str(x) for x in (ev.get("items") or [])]
+                    emit("thinking", {
+                        "text": f"程序已按任务书铺骨架（{len(items)} 项待填）"
+                                + ("：" + "、".join(items[:6]) if items else "")
+                                + " —— 缺项会在收尾核查里被拦",
+                    })
                 elif kind == "skill":
                     emit("skill", {"name": ev["name"], "detail": ev["detail"]})
                 elif kind == "stats":
@@ -1996,7 +2005,17 @@ class _Handler(BaseHTTPRequestHandler):
                     scanned = artifact.diff_snapshot(tree_before, after)
                 else:
                     scanned = []
-                merged = artifact.merge([*file_log, *scanned])
+                # 记录层兜底：history/<任务>/_records/evidence.jsonl 里每一次成功
+                # 写盘都有一行，它不依赖任何调用方传参。file_log 漏记（rerun29 的
+                # 修正轮没传 file_log，交付物真落了盘而 files=0）时由它补齐。
+                rec_rows = []
+                try:
+                    rec = getattr(self.cli.agent, "recorder", None)
+                    if rec is not None:
+                        rec_rows = artifact.from_records(rec.writes())
+                except Exception:  # noqa: BLE001
+                    rec_rows = []
+                merged = artifact.merge([*file_log, *scanned, *rec_rows])
             except Exception:  # noqa: BLE001
                 merged = file_log
             self.tasks.finish(

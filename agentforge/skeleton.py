@@ -167,13 +167,18 @@ def unfinished_file(root: str | Path, rel: str) -> bool:
     return unfinished(text)
 
 
+def _state_total(st: dict) -> int:
+    """骨架记录里的待填位数：小节数 + 表格行数（任务书骨架可能是表格）。"""
+    return len(st.get("headings") or []) + len(st.get("rows") or [])
+
+
 def progress(root: str | Path, rel: str) -> dict:
     """状态感知的进度：{total, filled, pending, unfinished}。"""
     text = _read_text(root, rel) or ""
     st = load_state(root, rel)
     if st:
         pend = unfilled_against(text, st)
-        total = len(st.get("headings") or [])
+        total = _state_total(st)
         return {"total": total, "filled": total - len(pend),
                 "pending": pend, "unfinished": bool(pend)}
     return status(text)
@@ -385,7 +390,11 @@ def drop_state(root: str | Path, path: str) -> None:
 
 
 def unfilled_against(text: str, st: dict) -> list[str]:
-    """对照骨架记录：哪些小节还没填（正文与建档时一模一样，或干脆没了）。"""
+    """对照骨架记录：哪些待填位还没填（内容与建档时一模一样，或干脆没了）。
+
+    两种形态都认：`write_skeleton` 建的分节骨架看小节正文；任务书骨架建的
+    表格看数据行（首列之外还全是「（待填）」= 这一项没写）。
+    """
     headings = [str(h) for h in (st.get("headings") or [])]
     bodies = st.get("bodies") or {}
     lines = _lines(text)
@@ -399,4 +408,324 @@ def unfilled_against(text: str, st: dict) -> list[str]:
         base = str(bodies.get(h) or "")
         if not cur or cur == _clean(base):
             out.append(h)
+    rows = [str(r) for r in (st.get("rows") or [])]
+    if rows:
+        cur_rows = _table_rows(text)
+        base_rows = st.get("row_bodies") or {}
+        for r in rows:
+            line = _lookup_row(cur_rows, r)
+            if line is None:
+                out.append(r)                   # 行被删了 = 这一项没写
+                continue
+            if _row_blank(line) or _norm(line) == _norm(str(base_rows.get(r) or "")):
+                out.append(r)
     return out
+
+
+# ---------------------------------------------------------------------------
+# 任务书驱动的骨架（契约骨架）
+# ---------------------------------------------------------------------------
+# 为什么骨架要由任务书生成：rerun29 的交付物「流程全对、内容缺两项」——任务书写明
+# 至少覆盖十个对比点，模型只写了八行，引用核查一处没错（它只判「写出来的对不对」），
+# 于是缺的两项谁也没发现。缺口不是模型写错了，是**没人把「该写什么」变成结构**。
+#
+# 所以：任务书里能确定性提取出的必填项（「覆盖这些…：A、B、C」/「附一节『X』」）
+# 在任务一开始就落成骨架——每个必填项一个待填位。缺项在骨架阶段就露（进度里直接
+# 显示「还没填：会话恢复」），收尾再按同一份清单做覆盖核查，与模型自述无关。
+#
+# 提取只认显式列举，不做语义猜测：提取不到两项就完全不插手（宁可不管，也不乱建）。
+
+# 「至少覆盖这些对比点：A、B、C」——冒号后是同一条列举
+_COVER_RX = re.compile(
+    r"(?:至少)?(?:必须|需要|务必要|要)?\s*(?:覆盖|包含|写明|列出|给出)"
+    r"[^：:\n]{0,16}[：:]\s*(.+)$")
+# 「清单末尾附一节「按性价比排序的借鉴清单」」——引号里的就是一个小节
+_QUOTED_SEC_RX = re.compile(
+    r"(?:附|加|补|带|给出)(?:一|上|一个)?(?:节|小节|章节|部分)[^「」\n]{0,8}"
+    r"「([^」]{2,30})」|「([^」]{2,30})」\s*(?:一节|小节|章节|部分)")
+# 任务书标题：「# 任务：逆向分析…」
+_TITLE_RX = re.compile(r"^#\s+(?:任务[：:]\s*)?(.+?)\s*$")
+# 表格分隔行：| --- | :---: | —— 只含 -、:、| 与空白
+_TABLE_SEP_RX = re.compile(r"^\|[\s:\-|]+\|$")
+_BULLET_RX = re.compile(r"^[-*+]\s+")
+
+# 一个必填项的长度边界：太短多半是符号，太长说明这一句不是列举项
+_ITEM_MIN, _ITEM_MAX = 2, 40
+# 骨架最多铺这么多项：再多就不是骨架，是任务书抄写
+_SEED_MAX = 16
+
+
+def _split_items(blob: str) -> list[str]:
+    """把「A、B、C（含括注）、D」切成条目，去掉序号与句末标点。"""
+    out: list[str] = []
+    for part in re.split(r"[、，,;；]|以及", str(blob or "")):
+        p = part.strip().strip("。.；;、|").strip()
+        p = re.sub(r"^(?:至少|还有|以及)\s*", "", p)
+        if not p:
+            continue
+        if _ITEM_MIN <= len(p) <= _ITEM_MAX:
+            out.append(p)
+    return out
+
+
+def _parse_items(brief: str) -> tuple[list[str], list[str]]:
+    """把任务书拆成 (逐项列举, 指名小节)。
+
+    前者来自「覆盖这些…：A、B、C」（多为表格行 / 对比项）；后者来自「附一节「X」」
+    （任务书自己说的是「一节」，那就该是独立小节，不该塞进表格当一行）。
+    """
+    cover: list[str] = []
+    secs: list[str] = []
+    for raw in str(brief or "").splitlines():
+        line = raw.strip().lstrip(">").strip()
+        line = _BULLET_RX.sub("", line).strip()
+        if not line:
+            continue
+        m = _COVER_RX.search(line)
+        if m:
+            cover.extend(_split_items(m.group(1)))
+        for a, b in _QUOTED_SEC_RX.findall(line):
+            q = (a or b).strip()
+            if q:
+                secs.append(q)
+    return cover, secs
+
+
+def _uniq(items: list[str], skip: set[str], limit: int = _SEED_MAX) -> list[str]:
+    out: list[str] = []
+    for it in items:
+        k = _norm(it)
+        if not k or k in skip:
+            continue
+        skip.add(k)
+        out.append(it)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def required_items(brief: str, limit: int = _SEED_MAX) -> list[str]:
+    """任务书里显式列举的「必须覆盖的项」（顺序保持，去重）。
+
+    只提取两种确定形态：①「覆盖/包含…：A、B、C」；②「附一节「X」」。
+    提取不到或不足两项就返回空列表——这时不插手，避免把普通句子当结构。
+    """
+    cover, secs = _parse_items(brief)
+    seen: set[str] = set()
+    return _uniq(cover, seen, limit) + _uniq(
+        secs, seen, max(0, limit - len(_uniq(cover, set(), limit))))
+
+
+def brief_title(brief: str) -> str:
+    """任务书的一级标题（去掉「任务：」前缀），拿不到就给个中性标题。"""
+    for raw in str(brief or "").splitlines():
+        m = _TITLE_RX.match(raw.strip())
+        if m:
+            t = m.group(1).strip()
+            if 2 <= len(t) <= 80:
+                return t
+    return "交付物"
+
+
+def table_shape(brief: str) -> list[str] | None:
+    """任务书里声明的表格列名（`| A | B |` + 分隔行）。没有就返回 None。
+
+    有表格就按表格铺骨架：任务书的格式要求是硬性的（rerun29 要求四列逐行），
+    这时候硬塞 `## 小节` 会跟格式要求打架——骨架应该长得像**将要交付的东西**。
+    """
+    lines = _lines(brief)
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if not s.startswith("|") or i + 1 >= len(lines):
+            continue
+        if not _TABLE_SEP_RX.match(lines[i + 1].strip()):
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if 2 <= len(cells) <= 8 and all(cells):
+            return cells
+    return None
+
+
+def outline_from_brief(brief: str) -> tuple[str, list[str], str] | None:
+    """按任务书生成骨架文本。返回 (全文, 待填项, 形态)；提取不到返回 None。
+
+    形态 table：任务书自己声明了表格 → 表头照抄，每个必填项一行待填；
+    形态 sections：否则每个必填项一个 `## 小节` + 一行待填占位。
+    """
+    cover, secs = _parse_items(brief)
+    items = required_items(brief)
+    if len(items) < 2:
+        return None
+    title = brief_title(brief)
+    head = [f"# {title}", "",
+            "> 本骨架由 harness 按任务书要求生成：每一项都要填，空的项收尾判未交付；"
+            "标题/行首列不要删改（覆盖核查按这一列对账）。", ""]
+    cols = table_shape(brief)
+    if cols and cover:
+        pad = ["（待填）"] * (len(cols) - 1)
+        body = ["| " + " | ".join(cols) + " |",
+                "| " + " | ".join(["---"] * len(cols)) + " |"]
+        for it in cover:
+            body.append("| " + " | ".join([it] + pad) + " |")
+        out = head + body + [""]
+        for it in secs:                    # 任务书点名「一节」的，单独给个小节
+            out += [f"## {it}", "", "（待填）", ""]
+        return "\n".join(out), items, "table"
+    body = []
+    for it in items:
+        body += [f"## {it}", "", "（待填）", ""]
+    return "\n".join(head + body), items, "sections"
+
+
+def _table_rows(text: str) -> dict[str, str]:
+    """文档里所有表格的数据行：{首列文本: 整行}（跳过表头与分隔行）。"""
+    lines = _lines(text)
+    rows: dict[str, str] = {}
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if (s.startswith("|") and i + 1 < len(lines)
+                and _TABLE_SEP_RX.match(lines[i + 1].strip())):
+            j = i + 2
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                raw = lines[j].strip()
+                cells = [c.strip() for c in raw.strip("|").split("|")]
+                if cells and cells[0]:
+                    rows[cells[0]] = raw
+                j += 1
+            i = j
+            continue
+        i += 1
+    return rows
+
+
+def _row_blank(row: str) -> bool:
+    """表格行是否只有首列有内容（其余都是空/占位符）——即「这一项还没写」。"""
+    cells = [c.strip() for c in str(row or "").strip().strip("|").split("|")]
+    if len(cells) <= 1:
+        return True
+    for c in cells[1:]:
+        if not c or PLACEHOLDER_RX.match(c) or c.strip("（）()【】 ") == "待填":
+            continue
+        return False
+    return True
+
+
+def _lookup_row(rows: dict[str, str], label: str) -> str | None:
+    if label in rows:
+        return rows[label]
+    key = _norm(label)
+    for k, v in rows.items():
+        if _norm(k) == key:
+            return v
+    for k, v in rows.items():
+        nk = _norm(k)
+        if len(key) >= 3 and (key in nk or nk in key):
+            return v
+    return None
+
+
+def seed_from_brief(root: str | Path, rel: str, brief: str) -> dict | None:
+    """按任务书在 rel 上铺骨架文件（已存在则不动）。返回 {path, items, kind}。
+
+    已存在的文件一律不碰：模型可能已经动手写了，覆盖它等于替模型做决定、还
+    会把它的进度抹掉。骨架只在「任务开始时这个路径还不存在」这一种情况下落地。
+    """
+    p = Path(str(rel))
+    if not p.is_absolute():
+        p = Path(root) / str(rel)
+    try:
+        if p.exists():
+            return None
+    except OSError:
+        return None
+    built = outline_from_brief(brief)
+    if built is None:
+        return None
+    text, items, kind = built
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8", newline="")
+    except OSError:
+        return None
+    record_seeded(root, rel, text, items, kind)
+    return {"path": str(rel), "items": items, "kind": kind}
+
+
+def record_seeded(root: str | Path, rel: str, text: str, items: list[str],
+                  kind: str) -> bool:
+    """给 harness 自己铺的骨架建档，让「待填项」在收尾核查里可判。"""
+    try:
+        f = state_path(root, rel)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        rec: dict = {
+            "path": _key(root, rel),
+            "ts": round(time.time(), 3),
+            "source": "brief",
+            "kind": kind,
+            "headings": [],
+            "bodies": {},
+            "rows": list(items),
+            "row_bodies": {},
+        }
+        if kind == "table":
+            rows = _table_rows(text)
+            rec["row_bodies"] = {it: rows.get(it, "") for it in items}
+        else:
+            lines = _lines(text)
+            secs = body_sections(text)
+            rec["headings"] = [s.heading for s in secs]
+            rec["bodies"] = {s.heading: _clean(s.body(lines)) for s in secs}
+        f.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _flat(s: str) -> str:
+    """覆盖比对用的归一化：去空白/标点/大小写差异，只留字。"""
+    s = str(s or "").lower()
+    s = re.sub(r"[（(][^）)]*[）)]", "", s)      # 括注是补充说明，不参与比对
+    return re.sub(r"[\s`*_：:，,。.、\-—~～·|/\\'\"]+", "", s)
+
+
+def coverage_missing(text: str, required: list[str]) -> list[str]:
+    """正文里没出现的必填项（顺序与任务书一致）。
+
+    判据只看「这一项的字面是否出现在交付物里」——不论它是表格首列、小节标题
+    还是正文一句话。任务书要求的是「覆盖」，不是「按这个标题分节」，所以不
+    强加结构。归一化后做子串匹配；括注里的备选写法（原生/文本兜底）额外认。
+    """
+    flat = _flat(text)
+    if not flat:
+        return list(required or [])
+    miss: list[str] = []
+    for it in required or []:
+        key = _flat(it)
+        if not key:
+            continue
+        if key in flat:
+            continue
+        # 括注里的备选写法也算覆盖（任务书用「（原生/文本兜底）」举例时，
+        # 交付物只写「原生工具调用」同样满足，不必逐字照抄）
+        alts = re.findall(r"[（(]([^）)]{2,40})[）)]", str(it))
+        hit = False
+        for alt in alts:
+            for piece in re.split(r"[/、，,]", alt):
+                k2 = _flat(piece)
+                if len(k2) >= 2 and k2 in flat:
+                    hit = True
+                    break
+            if hit:
+                break
+        if not hit:
+            miss.append(it)
+    return miss
+
+
+def required_missing(root: str | Path, rel: str, required: list[str]) -> list[str]:
+    """从磁盘上的交付物算「缺哪些必填项」。文件不在时返回全部。"""
+    text = _read_text(root, rel)
+    if text is None:
+        return list(required or [])
+    return coverage_missing(text, required)

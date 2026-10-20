@@ -165,6 +165,10 @@ WRITE_RULES_TEMPLATE = """
 - 超过两节的文档**先写骨架再分段填**：write_skeleton 只放 `## 小节标题` + 一句意图，
   再 fill_section 一节一节填；同一节要续写用 mode="append"（replace 是整节替换）。
   骨架不算交付：空着小节的文件，收尾核查判未交付。
+- 任务书里点名「必须覆盖的项」时，harness 会在开工前按这些项建好骨架文件
+  （表格型任务就是一表头 + 每项一行「（待填）」）。**直接在那个文件上逐项填**：
+  表格用 edit_file 换掉「（待填）」，分节骨架用 fill_section。首列/标题不要删改，
+  收尾按这一列对账——少一项就是未交付，跟写得多顺没关系。
 - 引用密集的文档（≥3 处项目内路径）在写之前必须读过被引用的文件，否则写前门槛拒收并列出必读清单。
 - 工具调用方式随模式走：PTC 常驻时这些都写在 ops_batch 脚本里，
   如 `call("write_skeleton", path=..., outline=...)`、`call("fill_section", path=..., heading=..., content=...)`。
@@ -742,6 +746,11 @@ class Agent:
         else:
             contract = list(contract)
         self._contract = contract
+        # 任务书里显式列举的必填项（「覆盖这些…：A、B、C」）：契约闸门除了看
+        # 「文件在不在、本轮有没有更新」，还要看「该写的项写了没有」——这正是
+        # rerun29 漏掉的那一类（文件写得很顺，少两项，谁也不管）。
+        self._required = skeleton.required_items(user_text or "")
+        self._owe_reasons: dict[str, str] = {}
 
         # auto_route 已停用：旧的信号词粗分（classify）选的是不存在的语义 key，
         # 实际永远落到 fallback，属于死逻辑；真正的路由在编排层
@@ -814,14 +823,34 @@ class Agent:
             f = Path(self.cfg.workspace_root) / p
             try:
                 if not f.exists():
+                    self._owe_reasons[p] = "文件不存在"
                     return True
                 # 骨架先行后，「文件存在」不再等于「已交付」：write_skeleton 会
                 # 真的落盘并刷新 mtime，但里面只有标题。空着小节就当没写。
                 if skeleton.unfinished_file(self.cfg.workspace_root, p):
+                    self._owe_reasons[p] = "骨架里的待填位还没填完"
                     return True
-                return f.stat().st_mtime <= self._t0
+                # 本轮压根没更新就不用再读内容了（mtime 先判，省一次全文读取）
+                if f.stat().st_mtime <= self._t0:
+                    self._owe_reasons[p] = "本轮从未更新（内容不是本轮写的）"
+                    return True
+                # 覆盖核查：写过、也填满了，但任务书点名要覆盖的项没写全。
+                req = getattr(self, "_required", None)
+                if req:
+                    miss = skeleton.required_missing(self.cfg.workspace_root, p, req)
+                    if miss:
+                        self._owe_reasons[p] = ("缺任务书要求覆盖的项：" +
+                                                "、".join(miss[:8]))
+                        return True
+                self._owe_reasons.pop(p, None)
+                return False
             except OSError:
                 return True
+        def _owe_line(p: str) -> str:
+            """闸门回灌里的一行：「路径 —— 具体差在哪」（有原因就带上）。"""
+            why = (getattr(self, "_owe_reasons", None) or {}).get(p)
+            return f"{p}（{why}）" if why else p
+
         # 任务内只读调用缓存：同样的（工具+参数）第二次出现时直接回放上次结果。
         # 小模型忘了自己查过什么时会用一模一样的参数再查一遍（实测 40+ 轮任务里
         # 同一个 search_code pattern 出现 3 次），重新执行毫无新信息，纯烧 GPU。
@@ -987,9 +1016,9 @@ class Agent:
                                "content": result.content or "", **replay_think})
                         _push({"role": "user", "content": (
                             "【停止拦截·交付物未落盘】你宣布任务完成，但程序核对磁盘发现"
-                            "任务书要求的交付物还不存在、自本轮开始后从未更新，"
-                            "或者只有骨架而正文是空的：\n- "
-                            + "\n- ".join(missing)
+                            "任务书要求的交付物还不存在、自本轮开始后从未更新、"
+                            "只有骨架而正文是空的，或者任务书点名要覆盖的项没写：\n- "
+                            + "\n- ".join(_owe_line(p) for p in missing)
                             + f"\n\n你刚才的分析内容都在上文——现在{_hint}"
                               "（内容不必重新分析，路径必须一字不差；已存在的"
                               "要重新写出，让修改时间晚于本轮开始）。"
@@ -1227,8 +1256,8 @@ class Agent:
                             _push({"role": "assistant", "content": result.content or ""})
                             _push({"role": "user", "content": (
                                 "【停止拦截·交付物未落盘】你刚才在 ops_batch 脚本里调用了写文件工具，"
-                                "但程序核对磁盘发现任务书要求的交付物仍不存在或本轮从未更新：\n- "
-                                + "\n- ".join(missing)
+                                "但程序核对磁盘发现任务书要求的交付物仍不达标：\n- "
+                                + "\n- ".join(_owe_line(p) for p in missing)
                                 + "\n\n常见原因：引用核查拒绝了编造的文件路径/行号"
                                   "（例如带「推测」「大概」字样、或你并未真正读到的行号）。"
                                   "请在脚本里删除无法复现的引用、只保留你真正读到的文件与行号，"
