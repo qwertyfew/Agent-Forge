@@ -91,15 +91,47 @@ def _looks_like_code(line: str) -> bool:
     return False
 
 
-def sanitize_script(script: str) -> tuple[str, str]:
-    """剥掉混进脚本里的控制标记/思考文本，返回 (可用脚本, 处理说明)。
+def _has_code(inner: str) -> bool:
+    """文本里是否含真正的代码结构（import / 函数调用）。"""
+    return bool(re.search(r"^\s*(?:import|from)\s+\w", inner, re.M)
+                or re.search(r"^\s*[A-Za-z_][\w.]*\s*\(", inner, re.M))
 
-    只在「原样编译不过」时才动手——能跑的脚本一个字都不改，绝不把好脚本改坏。
-    rerun56 实况：`<|channel>thought` + 整段推理散文 + `<channel|>call(...)` 混在
-    script 里，编译直接 SyntaxError，第一次 ops_batch 因此 0 次调用。
+
+_TRIPLE_WRAP_RX = re.compile(r'^\s*("""|\'\'\')(.*)\1\s*$', re.S)
+
+
+def _unwrap_triple_quoted(raw: str) -> str | None:
+    """整段脚本被包成三引号字符串时，剥出内部代码。
+
+    rerun57 实证：模型把脚本写成 `\"\"\"\\nfrom tools import ...\\n\"\"\"`——这在语法上
+    完全合法（一个字符串字面量），编译通过、执行 **0 次工具调用**，于是它以为成功、
+    连续重试 19 次都没察觉。这类「静默空转」编译检查抓不到，必须专门识别。
+    """
+    m = _TRIPLE_WRAP_RX.match(raw or "")
+    if not m:
+        return None
+    inner = m.group(2)
+    if not _has_code(inner):
+        return None
+    return inner
+
+
+def sanitize_script(script: str) -> tuple[str, str]:
+    """剥掉混进脚本里的控制标记/思考文本/外层字符串，返回 (可用脚本, 处理说明)。
+
+    只在「原样不能正常执行」时才动手——能正常跑的脚本一个字都不改。
+      - rerun56：`<|channel>thought` + 推理散文 + `<channel|>call(...)` 混进来 →
+        编译 SyntaxError，第一次 ops_batch 因此 0 次调用。
+      - rerun57：整段代码被包在 `\"\"\"...\"\"\"` 里 → 编译通过但零执行（静默空转）。
     """
     raw = script or ""
-    if not raw.strip() or _compiles(raw):
+    if not raw.strip():
+        return raw, ""
+    unwrapped = _unwrap_triple_quoted(raw)
+    if unwrapped is not None and _compiles(unwrapped):
+        return unwrapped, ("已剥掉包在脚本外层的三引号字符串"
+                           "（原写法整段是一个字符串字面量，什么都不会执行）")
+    if _compiles(raw):
         return raw, ""
     cleaned = _CTRL_TOKEN_RX.sub("", raw)
     if cleaned != raw and _compiles(cleaned):
@@ -339,9 +371,22 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                         "已回传的部分输出如下，请缩小脚本范围重试：\n"
                         + _budget_cut(out.getvalue(), budget))
 
-            summary = f"[ops_batch] {len(stats)} 次工具调用（" \
-                      + "、".join(f"{n}×{stats.count(n)}" for n in dict.fromkeys(stats)) \
-                      + "）\n" if stats else "[ops_batch] 0 次工具调用\n"
+            if stats:
+                summary = f"[ops_batch] {len(stats)} 次工具调用（" \
+                          + "、".join(f"{n}×{stats.count(n)}" for n in dict.fromkeys(stats)) \
+                          + "）\n"
+            else:
+                # rerun57 实证：脚本被包成三引号字符串 → 编译通过、零执行，模型以为
+                # 成功，连续重试 19 次。这里必须明确说「本轮没拿到任何数据 + 常见原因」，
+                # 否则它会把这句「0 次」当成正常返回继续往下编。
+                summary = (
+                    "[ops_batch] 0 次工具调用 —— 脚本执行了，但里面没有任何一次 "
+                    "tools.call(...) / web_search(...) / fetch_url(...) 真正被调用，"
+                    "**本轮没有拿到任何数据**。\n"
+                    "常见原因：① 整段脚本被包在 `\"\"\" ... \"\"\"` 或代码围栏里，"
+                    "成了一个字符串（语法合法但什么都不执行）；② 通篇只有注释/说明文字；"
+                    "③ 调用写在了未被执行的函数或 if 分支里；④ 工具名写错导致没有生效。\n"
+                    "请把脚本改成可直接执行的语句后重试。\n")
             # 把脚本内写类工具调用结果挂到 agent，供 loop 在 ops_batch 执行后做
             # 契约对账（PTC 路径下的收尾诚信核查，对应 T4 契约闸门下沉）。
             try:

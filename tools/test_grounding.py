@@ -333,6 +333,17 @@ def test_render_says_why_without_answer() -> None:
            "候选里这几个像" not in txt, txt[:300])
 
 
+def test_yaml_frontmatter_not_command() -> None:
+    # rerun57：```markdown 里的 `marp: true` 是 YAML front matter，不是命令
+    reply = ("配置示例：\n```markdown\n---\nmarp: true\ntheme: default\n---\n```\n"
+             "然后运行 `marp deck.md --pptx`。")
+    claims = G.extract_ops_claims(reply)
+    joined = " / ".join(claims)
+    _check("YAML 键值行不被当命令", "marp: true" not in joined, joined)
+    _check("markdown 围栏整体跳过", "theme: default" not in joined, joined)
+    _check("真正的命令仍被抽出", any("marp deck.md" in c for c in claims), joined)
+
+
 def main() -> None:
     test_intent()
     test_bad_reply_flagged()
@@ -349,6 +360,7 @@ def main() -> None:
     test_fenced_commands_extracted()
     test_fenced_fabricated_flagged()
     test_no_pure_flag_or_package_name()
+    test_yaml_frontmatter_not_command()
     test_citations_extracted()
     test_url_trailing_backtick_stripped()
     test_admission_flags_self_constructed()

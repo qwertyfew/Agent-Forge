@@ -322,6 +322,38 @@ def main() -> None:
     check("污染脚本不是 0 次工具调用", "0 次工具调用" not in out_pol, out_pol[:200])
     check("告知模型已做脚本预处理", "[脚本预处理]" in out_pol, out_pol[:200])
 
+    # ---------- 三引号包裹：整段脚本成了字符串（rerun57 实况） ----------
+    # 现场：script 是 `"""\nfrom tools import ...\nresults = web_search(...)\n"""`。
+    # 语法完全合法（一个字符串字面量）→ 编译通过、执行 0 次调用，模型以为成功，
+    # 连续重试 19 次都没察觉，最终一个源都没抓到、全靠记忆作答。
+    tmp_wrap = Path(tempfile.mkdtemp(prefix="af_ops_wrap_"))
+    (tmp_wrap / "note.txt").write_text("WRAPPED-OK", encoding="utf-8")
+    wrapped = ('"""\n'
+               "from tools import call\n"
+               "print(call('read_file', path='note.txt'))\n"
+               '"""\n')
+    ag_wrap = _mk_agent(tmp_wrap, [
+        _Res(tool_calls=[_TC("ops_batch", {"script": wrapped})]),
+        _Res(content="已读取。"),
+    ])
+    evs_wrap = _run(ag_wrap, "读取 note.txt")
+    out_wrap = (next((e for e in evs_wrap if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("三引号包裹的脚本被剥开并真的执行",
+          "WRAPPED-OK" in out_wrap, out_wrap[:300])
+    check("三引号包裹不再静默 0 次调用", "0 次工具调用" not in out_wrap, out_wrap[:200])
+
+    # ---------- 真·0 次调用时必须明确说明（不许静默） ----------
+    ag_zero = _mk_agent(tmp_wrap, [
+        _Res(tool_calls=[_TC("ops_batch", {"script": "x = 1 + 1\nprint(x)\n"})]),
+        _Res(content="好的。"),
+    ])
+    evs_zero = _run(ag_zero, "随便做点")
+    out_zero = (next((e for e in evs_zero if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("0 次调用时说明「本轮没有拿到任何数据」",
+          "没有拿到任何数据" in out_zero, out_zero[:300])
+    check("0 次调用时给出常见原因（三引号/只有注释）",
+          "三引号" in out_zero or "字符串" in out_zero, out_zero[:300])
+
     print("\n结果：全部通过")
     sys.exit(0)
 

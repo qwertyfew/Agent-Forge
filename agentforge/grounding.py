@@ -53,8 +53,13 @@ _UNIVERSAL_RX = re.compile(
     re.I,
 )
 
-# 围栏代码块（```bash ... ```），里面常写真正的运行命令
-_FENCE_RX = re.compile(r"```[^\n]*\n(.*?)```", re.S)
+# 围栏代码块（```bash ... ```）：group(1)=语言标记，group(2)=内容
+_FENCE_RX = re.compile(r"```([^\n]*)\n(.*?)```", re.S)
+# 这些语言的围栏块里是配置/标记，不是可执行命令（rerun57：```markdown 里的 `marp: true`）
+_NONCMD_FENCE_LANGS = {
+    "markdown", "md", "yaml", "yml", "json", "jsonc", "html", "xml", "css", "scss",
+    "less", "text", "txt", "csv", "toml", "ini", "diff", "mermaid", "sql",
+}
 # 命令/路径里的高频泛词：不作为「项目专属 token」来判定有据（避免 main/dev/components
 # 这类通用词在源里随便出现就误判为 grounded）。只有项目专属词（react/storybook/figma/
 # 项目名等）出现才放行。
@@ -112,6 +117,9 @@ def _is_cli_shape(s: str) -> bool:
         return False
     if re.fullmatch(r"-{1,2}[A-Za-z0-9][\w-]*", s):  # 纯标志，无命令词
         return False
+    # YAML/JSON 键值行（rerun57：```markdown 里的 `marp: true` 被当成命令 `marp`）
+    if re.match(r"^[\w.-]+\s*:\s*\S", s):
+        return False
     return bool(_CMD_TAIL_RX.search(s) or _KNOWN_BIN_RX.match(s)
                 or re.search(r"(?<![\w-])--?[A-Za-z]", s))
 
@@ -122,10 +130,14 @@ def _fence_command_lines(reply: str) -> list[str]:
     只收「命令行形态」的行，跳过 JSON/HTML/中文说明等非命令内容，避免把样本配置或
     说明文字当成操作指令。rerun55 实证：模型把 `marp deck.md --pptx` 写在围栏块里，
     原抽取器只认行内反引号会漏掉，导致闸门对「正确格式化」的注水回复也放行。
+    rerun57 补充：```markdown 围栏里是 YAML front matter（`marp: true`），不是命令。
     """
     out: list[str] = []
     for m in _FENCE_RX.finditer(reply or ""):
-        for line in m.group(1).splitlines():
+        lang = (m.group(1) or "").strip().lower()
+        if lang in _NONCMD_FENCE_LANGS:             # 配置/标记语言块，不抽命令
+            continue
+        for line in m.group(2).splitlines():
             s = line.strip()
             s = re.sub(r"^[`$>%]+\s*", "", s).strip()  # 去 shell 提示符 $ > %
             if not s or s[0] in "<{([":                # JSON / HTML / 配置
