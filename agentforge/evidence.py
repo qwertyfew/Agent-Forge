@@ -107,6 +107,13 @@ class EvidenceLedger:
     def line_count(self, p: Path) -> int | None:
         return self._files.get(self._key(p), {}).get("lines")
 
+    def read_count(self) -> int:
+        """本任务真正 read_file 过的文件数（写前证据门槛用）。"""
+        return sum(1 for r in self._files.values() if r.get("read") and not r.get("is_dir"))
+
+    def read_paths(self) -> list[str]:
+        return [k for k, r in self._files.items() if r.get("read") and not r.get("is_dir")]
+
     def has_web(self) -> bool:
         return bool(self._web)
 
@@ -145,6 +152,11 @@ def _extract_citations(text: str) -> list[str]:
         if _paren_like(m):
             _add(m)
     return out
+
+
+def citations_in(text: str) -> list[str]:
+    """公开的引用提取入口（写前策略要先用它算「这份文档引用有多密」）。"""
+    return _extract_citations(text)
 
 
 # 报告里出现的具体数字（疑似指标类断言）：用来配合「只抓过网页」做二手来源警示

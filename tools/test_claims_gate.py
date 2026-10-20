@@ -170,13 +170,19 @@ def main() -> None:
     check("样本确实不含反引号", "`" not in paren_doc)
     script3 = ("print(call('write_file', path='evals/paren.md', "
                "content=" + repr(paren_doc) + "))")
+    # 写前证据门槛（writepolicy）会在「零读 + 引用密集」时先拦，那属于另一层。
+    # 这里要让引用核查本身受检：同一次 run 里先真读一个文件，把证据门槛放行。
+    (tmp / "agentforge").mkdir(parents=True, exist_ok=True)
+    (tmp / "agentforge" / "loop.py").write_text("class Agent:\n    pass\n", encoding="utf-8")
+    script0 = "print(call('read_file', path='agentforge/loop.py'))"
     ag.hub = _StubHub([
+        _Res(tool_calls=[_TC("ops_batch", {"script": script0})]),
         _Res(tool_calls=[_TC("ops_batch", {"script": script3})]),
         _Res(content="已写出。"),
     ])
     evs3 = list(ag.run([], "写一份差距清单", auto_approve=True))
-    out3 = next((e.get("output") or "" for e in evs3
-                 if e.get("type") == "tool_result" and "ops_batch" in str(e.get("output"))), "")
+    out3 = "\n".join(e.get("output") or "" for e in evs3
+                     if e.get("type") == "tool_result")
     check("圆括号虚构引用也被拦下", "引用核查未通过" in out3, out3[:200])
     check("圆括号形态未落盘", not (tmp / "evals" / "paren.md").exists())
 

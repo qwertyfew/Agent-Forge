@@ -14,6 +14,7 @@ from . import verify as verify_gate
 from .artifact import FILE_TOOLS, classify_tool_write
 from .context import Compressor, measure
 from .evidence import EvidenceLedger
+from .journal import Journal, new_sid
 from .llm import OllamaClient, parse_text_tool_calls
 from .toolselect import PTC_SURFACE
 from .memory import MemoryStore
@@ -35,6 +36,21 @@ from .runcontrol import current_task
 from .skills import SkillRegistry
 from .tools import ToolRegistry
 from .tools.base import SAFE
+
+# 内部回灌消息的前缀：闸门拦截、预算提醒、空轮次催促、中途补充——它们都以
+# user 角色进上下文，但不是用户本人说的话。会话日志靠这个把「用户要的」与
+# 「系统要求的」分开记，重放时才能分清是谁在推着模型走。
+_INTERNAL_PREFIX = (
+    "（用户中途补充", "【停止拦截", "【系统", "你上一轮没有输出",
+    "已达到轮次上限", "任务预算提醒",
+)
+
+
+def _msg_source(msg: dict) -> str:
+    if not isinstance(msg, dict) or msg.get("role") != "user":
+        return ""
+    return "system" if str(msg.get("content") or "").startswith(_INTERNAL_PREFIX) else "user"
+
 
 SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。你的职责是**真正动手完成任务**，而不是描述该怎么做。
 
@@ -130,6 +146,13 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
 - 当前权限模式：{permission}。默认权限下写文件与执行命令需要用户确认；完全访问权限下直接执行。
 - 被拒绝时不要反复重试同一操作，换一种方式或向用户说明。
 - 禁止删除工作区之外的任何东西。
+
+## 写文件的两条硬规则（架构层真的会拦，不是建议）
+- 写需要引用代码事实的文档（分析 / 差距清单 / 逆向报告）之前，先用 read_file 真读过要引用的文件。
+  本任务一次都没读过就提交引用密集型内容，程序会直接拒收并列出必读清单——引用只能来自读过的代码，
+  凭印象写出来的路径即使存在，结论也多半是错的。
+- 被核查拒绝时**不要整篇重写**：被拒内容会自动存成 .drafts/ 下的草稿，用 edit_file 只改点到的几行，
+  改完复制到目标路径。整篇重写会把已经写对的部分也改坏，还多烧一轮生成。
 """
 
 # 产出目录规则：任务发起时由编排层按发起时间算好一个文件夹名填进 outdir，
@@ -379,6 +402,11 @@ class Agent:
         self.model_pinned = bool(model_key)
         self.system_prompt = ""
         self.last_compact: str = ""
+        # 会话事件日志（journal.py）：当前 run 的记账句柄与两个游标。
+        # 关闭（cfg.journal=False 或开不出文件）时为 None，所有记账调用都退化。
+        self.journal = None
+        self._journal_system = ""
+        self._journal_step = 0
         self._skill_hint: str = ""
         # 本轮实际下发的工具名集合：系统提示里的「工具索引」要把它们排除掉
         self._active_tool_names: set[str] = set()
@@ -483,22 +511,72 @@ class Agent:
             return ""
 
     # ---------- 上下文压缩 ----------
-    def _compact(self, messages: list[dict]) -> list[dict]:
-        """每轮调用前的自动瘦身，只处理历史部分，系统提示不参与。"""
-        if not self.cfg.compact_auto:
-            return messages
+    def _note_system(self, system) -> None:
+        """系统提示变化时记一条（warmup / skill 注入 / 权限模式都会让它变）。
+
+        入参是本轮 messages 的第 0 条（system 消息字典），也接受纯文本。
+        """
+        text = str((system or {}).get("content") or "") if isinstance(system, dict) else str(system or "")
+        if self.journal is None or text == self._journal_system:
+            return
+        self._journal_system = text
+        self.journal.append("system", content=text, chars=len(text))
+
+    def _journal_compact(self, res, before: list[dict], after: list[dict]) -> dict:
+        """把一次压缩记进会话日志，返回可下发的事件。
+
+        快照单独落 JSON（before / after 两份），事件里只放路径与统计——
+        这样日志体积与上下文长度解耦，而「模型当时看到什么」仍然逐字可查。
+        """
+        ev = {"type": "compact", "strategy": res.strategy,
+              "before": res.before, "after": res.after, "note": res.note}
+        if self.journal is None:
+            return ev
+
+        def _hist(ms: list[dict]) -> list[dict]:
+            # 系统提示由 system 事件单独表达，快照只存历史——否则重放时
+            # system 会被当成普通消息混进对话（dsh 里 system 是 Surface 的节点，
+            # 不是 transcript 的一条 message）。
+            return ms[1:] if ms and ms[0].get("role") == "system" else ms
+
+        tag = f"step-{self._journal_step:03d}"
+        before_path = self.journal.snapshot(f"{tag}-before", {"messages": _hist(before)})
+        after_path = self.journal.snapshot(f"{tag}-after", {"messages": _hist(after)})
+        self.journal.append(
+            "compact", strategy=res.strategy, before=res.before, after=res.after,
+            note=res.note, step=self._journal_step,
+            before_snapshot=before_path, after_snapshot=after_path,
+            before_messages=len(_hist(before)), after_messages=len(_hist(after)),
+        )
+        ev["journal"] = self.journal.dir.as_posix()
+        return ev
+
+    def _compact(self, messages: list[dict]) -> tuple[list[dict], dict | None]:
+        """每轮调用前的自动瘦身，只处理历史部分，系统提示不参与。
+
+        返回 (新消息列表, 压缩事件或 None)。压缩不再只改内存：前后快照落盘、
+        事件写进会话日志，`journal.replay()` 能还原模型当轮看到的完整上下文。
+        """
         system, *rest = messages
+        self._note_system(system)
+        if not self.cfg.compact_auto:
+            return messages, None
         res = self.compressor.compact(rest, self.model_key, force=False)
-        if res.changed:
-            self.last_compact = res.note
-        return [system, *res.messages]
+        if not res.changed:
+            return [system, *res.messages], None
+        self.last_compact = res.note
+        after = [system, *res.messages]
+        return after, self._journal_compact(res, messages, after)
 
     def compress_now(self, history: list[dict]) -> tuple[list[dict], str]:
         """手动压缩入口（CLI 的 /compact 与 Web 界面按钮都走这里）。"""
+        before = list(history)
         res = self.compressor.compact(
             history, self.model_key, force=True, allow_summarize=True
         )
         self.last_compact = res.note
+        if res.changed:
+            self._journal_compact(res, before, res.messages)
         return res.messages, res.note or "上下文仍很紧凑，无需压缩。"
 
     def context_size(self, history: list[dict]) -> int:
@@ -547,6 +625,7 @@ class Agent:
         read_cache=None,
         steer_check=None,
         contract: list[str] | None = None,
+        session_id: str = "",
     ) -> Iterator[dict[str, Any]]:
         """跑一轮完整任务。
 
@@ -641,10 +720,26 @@ class Agent:
         # （同一个对象，后续 append 两边都生效）；给了 relay 就分道走。
         ctx = history if relay is None else [*relay, this_turn]
 
+        # 会话事件日志（dsh「模型可见即已记录」）：本次 run 的每一条模型可见消息、
+        # 每次系统提示变化、每次压缩前后的完整快照都落盘。此前压缩只改内存
+        # messages，日志里没有痕迹，触发压缩后无法回答「模型看到的是原文还是摘要」。
+        # 记账是旁路：开不出文件就退化成 None，绝不影响任务本身。
+        self.journal = Journal.open(self.cfg, session_id or new_sid())
+        self._journal_system = ""
+        self._journal_step = 0
+        if self.journal is not None:
+            self.journal.append(
+                "run_start", model=self.model_key, model_name=self.model_name,
+                user_text=user_text, history_len=len(history),
+                relay=bool(relay), contract=list(contract or ()),
+            )
+
         def _push(msg: dict) -> None:
             history.append(msg)
             if ctx is not history:
                 ctx.append(msg)
+            if self.journal is not None:
+                self.journal.message(msg, source=_msg_source(msg))
 
         def _pop() -> None:
             if history:
@@ -718,9 +813,12 @@ class Agent:
                            "content": f"（用户中途补充，立即采纳并调整方向）{st_text}"})
                     yield {"type": "steered", "text": st_text}
             yield {"type": "step", "step": step, "model_key": self.model_key, "model": spec.display}
+            self._journal_step = step
             # 每轮重算：这轮刚用过的工具、刚 find_tools 取过的工具，下一轮要常驻下发
             tools = self._active_tools(ctx)
-            messages = self._compact(self.messages_with_system(ctx))
+            messages, _compact_ev = self._compact(self.messages_with_system(ctx))
+            if _compact_ev:
+                yield _compact_ev
             # 语言提醒以 system 贴在最后（本地保留注意力优势；在线由
             # providers._convert_messages 上提合并，不会触发「system 必须在开头」的 400）
             messages.append(dict(LANG_REMINDER))

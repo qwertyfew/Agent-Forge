@@ -6,6 +6,7 @@ import json
 
 from .base import SAFE, WRITE, make_tool
 from ..evidence import audit_claims, audit_citations
+from .. import writepolicy
 def _syntax_check(p: Path) -> str | None:
     try:
         if p.suffix.lower() == ".py":
@@ -97,6 +98,14 @@ def build_fs_tools(guard, cfg):
         # 「路径看似合理但读者复现不到」这类 bug，不靠提示词自觉。
         ledger = getattr(guard, "ledger", None)
         cit_audit = None
+        # 写前策略（writepolicy.py）：先看证据，再谈内容。
+        # 引用密集型文档在一次 read_file 都没有时直接拒收——引用只能来自真读过的
+        # 代码。rerun22 那份差距清单「路径全对、结论全错」，根因就是凭印象写。
+        if content and getattr(cfg, "prewrite_gate", True):
+            dec = writepolicy.intent_gate(path, content, cfg=cfg, guard=guard,
+                                          ledger=ledger, root=cfg.workspace_root)
+            if not dec.allow:
+                return dec.message
         # 不再用「含反引号」当门槛：rerun25 把引用改写成圆括号 (lc_loop/code.py:7-13)，
         # 整份文件一个反引号都没有，核查直接被跳过，9 条虚构路径全部落盘。
         # 审计内部按 _extract_citations 提取（反引号 + 中英文圆括号），且自身
@@ -109,8 +118,7 @@ def build_fs_tools(guard, cfg):
             if cit_audit is not None:
                 errors = [i for i in cit_audit.issues if i.level == "error"]
                 if errors and cit_audit.checked >= 2:
-                    detail = "\n".join(f"  - {i.token}: {i.detail}" for i in errors)
-                    return ("[错误] 引用核查未通过，文件未写入。请修正下列引用后重试：\n" + detail)
+                    return writepolicy.reject_message(path, content, errors, "citation", cfg)
 
         # 语义层核查：路径对、结论错也要拦。rerun22 的差距清单写「AgentForge 缺乏
         # 上下文压缩 / 权限审批 / 任务清单」，路径全是真的，结论却与代码相反——
@@ -122,9 +130,7 @@ def build_fs_tools(guard, cfg):
             except Exception:
                 claim_issues = []
             if claim_issues:
-                detail = "\n".join(f"  - {i.token}: {i.detail}" for i in claim_issues)
-                return ("[错误] 语义核查未通过，文件未写入。下列结论与代码事实矛盾，"
-                        "请按给出的真实位置改写（不要保留「缺乏」的表述）：\n" + detail)
+                return writepolicy.reject_message(path, content, claim_issues, "claims", cfg)
 
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8", newline="")
@@ -133,7 +139,10 @@ def build_fs_tools(guard, cfg):
             check_result = _syntax_check(p)
             if check_result:
                 p.write_text(old, encoding="utf-8", newline="")
-                return f"[错误] 修改已回滚（语法检查失败）: {check_result}\n你的 content 引入了语法错误，请修正后重试。"
+                return writepolicy.reject_message(
+                    path, content,
+                    [("", f"语法错误：{check_result}（文件已回滚到原内容）")],
+                    "syntax", cfg)
         
         action = "覆盖" if existed else "新建"
         diff = "" if not existed else f"（原 {len(old)} 字符 → 现 {len(content)} 字符）"

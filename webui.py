@@ -1910,6 +1910,15 @@ class _Handler(BaseHTTPRequestHandler):
                 elif kind == "verify":
                     # 收尾验证闸门：系统亲自运行验证命令的真实结果（模型只有解读权）
                     emit("verify", {k: v for k, v in ev.items() if k != "type"})
+                elif kind == "compact":
+                    # 上下文压缩：以前只发生在内存里，事件流里没有痕迹——用户
+                    # 看不到「模型从这一轮起看的是摘要」，评测复盘也查不到。
+                    # 这里播报一条，同时把 journal 目录带给前端做溯源。
+                    emit("notify", {
+                        "text": (f"上下文压缩（{ev.get('strategy')}）："
+                                 f"{ev.get('before')} → {ev.get('after')} 字符"),
+                    })
+                    emit("compact", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "contract_gate":
                     # 契约闸门（当前轮次拦截交付物未落盘）。此前这里没有分支，
                     # 事件被整条丢弃：前端看不到「已拦回」，评测的事件流里也查不到
