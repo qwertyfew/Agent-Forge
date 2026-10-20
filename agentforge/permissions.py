@@ -83,7 +83,11 @@ class Guard:
         norm = str(raw).strip().replace("\\", "/").lstrip("./")
         if norm in allow or norm == outdir or norm.startswith(outdir.rstrip("/") + "/"):
             return self.resolve(raw)
-        return self.resolve(Path(outdir) / str(raw))
+        # 中间/过渡文件统一进「过程记录」目录的 work/ 下，按模型给的相对路径
+        # 保留子目录（草稿、提取片段、临时脚本各归各位）。以前直接摊在
+        # history/<任务>/ 根上，和证据记录、版本快照混在一起，复盘时分不清
+        # 哪个是模型写的、哪个是 harness 写的。
+        return self.resolve(Path(outdir) / "record" / "work" / str(raw))
 
     # ---------- 命令 ----------
     def check_command(self, command: str) -> None:

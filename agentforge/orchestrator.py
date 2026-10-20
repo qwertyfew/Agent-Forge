@@ -1448,7 +1448,10 @@ def run_task(
 
         from .record import Recorder
 
-        agent.recorder = Recorder(_P(agent.cfg.workspace_root) / outdir / "_records",
+        # 过程记录放在 history/<任务>/record/（evidence / versions / citations），
+        # 与最终产物 output/ 分开：复盘时「文件对不对」看 output，「过程有没有
+        # 问题」看 record，不用在一个平铺目录里猜。
+        agent.recorder = Recorder(_P(agent.cfg.workspace_root) / outdir / "record",
                                   rel_root=agent.cfg.workspace_root)
     except Exception:  # noqa: BLE001 —— 记录不可用不该阻断任务
         agent.recorder = None

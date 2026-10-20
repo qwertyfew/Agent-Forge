@@ -1,0 +1,52 @@
+{
+  "agent_loop_structure": {
+    "path": "external/mini-swe-agent/src/minisweagent/agents/default.py",
+    "line_range": "88-124",
+    "details": "标准的 while True 循环。内部包含 step() 调用，处理 FormatError（格式错误）、InterruptAgentFlow（中断流）和通用异常。每一步完成后都会执行 save() 持久化当前状态，且当最后一条消息角色为 'exit' 时跳出循环。"
+  },
+  "tool_calling_mechanism": {
+    "path": "external/mini-swe-agent/src/minisweagent/agents/default.py",
+    "line_range": "154-157",
+    "details": "通过 `execute_actions` 函数实现。它解析消息中 'extra' 字段下的 'actions' 列表，调用环境对象 `self.env.execute(action)` 执行指令，并将结果映射回模型生成的观察消息。"
+  },
+  "context_compression_strategy": {
+    "path": "external/mini-swe-agent/src/minisweagent/models/litellm_model.py",
+    "line_range": "未核实（需进一步深度读取模型文件）",
+    "details": "在 `default.py` 中主要依赖于消息列表的维护。具体压缩逻辑可能在 `models/` 下的不同模型类中实现，目前初步观察为基础的消息序列拼接。"
+  },
+  "todo_task_list_mechanism": {
+    "path": "external/mini-swe-agent/src/minisweagent/agents/default.py",
+    "line_range": "90, 93-94",
+    "details": "任务通过 `AgentConfig` 中的 `instance_template` 注入。AgentForge 的任务清单机制更复杂，mini-swe-agent 似乎更倾向于单次任务流的线性推进。"
+  },
+  "sub_agents_and_context_isolation": {
+    "path": "external/mini-swe-agent/src/minisweagent/agents/default.py",
+    "line_range": "38-190",
+    "details": "目前主要是一个单 Agent 类 `DefaultAgent`。虽然有不同的 Agent 子类（如 `InteractiveAgent`），但并不存在明显的并行子代理架构或严格的上下文隔离机制。"
+  },
+  "permissions_and_sandbox": {
+    "path": "external/mini-swe-agent/src/minisweagent/environments/目录",
+    "line_range": "未核实",
+    "details": "环境相关的权限逻辑位于 `environments/` 目录，但当前仅在 `default.py` 中看到了对 `self.env.execute` 的调用。"
+  },
+  "evaluation_system": {
+    "path": "external/mini-swe-agent/docs/README.md",
+    "line_range": "未核实",
+    "details": "通过文档说明其评估逻辑，在代码层面主要体现为 `exit_status` 和 `submission` 字段的输出。"
+  },
+  "session_recovery": {
+    "path": "external/mini-swe-agent/src/minisweagent/agents/default.py",
+    "line_range": "159-182",
+    "details": "通过 `serialize` 和 `save` 方法实现。将模型状态、消息历史、配置信息和成本消耗序列化为 JSON 文件，支持在中断后恢复。"
+  },
+  "memory_system": {
+    "path": "external/mini-swe-agent/src/minisweagent/agents/default.py",
+    "line_range": "42, 177",
+    "details": "基础记忆由 `self.messages` 列表维护，包含了所有历史对话和观察结果。AgentForge 拥有更复杂的长期记忆与技能系统。"
+  },
+  "skill_system": {
+    "path": "external/mini-swe-agent/src/minisweagent/agents/default.py",
+    "line_range": "未核实",
+    "details": "mini-swe-agent 似乎没有 AgentForge 那样的独立 Skill 系统。它的功能主要由模型自身的推理能力和 `env` 的工具集提供。"
+  }
+}

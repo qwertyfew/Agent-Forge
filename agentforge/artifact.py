@@ -32,6 +32,9 @@ SKIP_DIRS = {
     # 任务记录目录（history/<任务>/_records）：evidence.jsonl、版本快照、引用结论。
     # 它是 harness 的运行痕迹，不是任务产出——不进产出清点，也不算交付物。
     "_records",
+    # 任务目录的过程记录（history/<任务>/record）：evidence/versions/citations
+    # 是 harness 写的运行痕迹；work/ 是模型写的中间文件。都不进产出清点。
+    "record",
 }
 
 MAX_DEPTH = 8

@@ -17,7 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from agentforge import artifact, autonote, autoskill, gaps, interact, ollamaguard, reveal, runcontrol, steering
+from agentforge import artifact
+from agentforge import layout, autonote, autoskill, gaps, interact, ollamaguard, reveal, runcontrol, steering
 from agentforge.cli import CLI
 from agentforge.config import Config
 from agentforge.evalsdesk import EvalsDesk
@@ -2018,6 +2019,14 @@ class _Handler(BaseHTTPRequestHandler):
                 merged = artifact.merge([*file_log, *scanned, *rec_rows])
             except Exception:  # noqa: BLE001
                 merged = file_log
+            # 案卷副本：按声明路径把本任务的产出镜像到 history/<任务>/output/。
+            # 交付物留在任务书写的位置（代码类任务改的就是仓库文件，搬走会把
+            # 工程改坏），output/ 是给复盘用的那一份——「产物对不对」只看它。
+            try:
+                layout.mirror_outputs(merged, self.cfg.workspace_root,
+                                      getattr(self.cli.agent, "outdir", "") or "")
+            except Exception:  # noqa: BLE001
+                pass
             self.tasks.finish(
                 task_id,
                 "stopped" if was_stopped else ("error" if err_msg else "done"),
