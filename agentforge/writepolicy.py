@@ -202,6 +202,12 @@ def reject_message(path: str, content: str, issues, kind: str, cfg) -> str:
             f"这是同一路径第 {n} 次被拒：禁止重写全文，只允许基于草稿做局部替换——"
             "整篇重写只会把已经对的部分也改坏。"
         )
+    if kind == "citation" and len(issues or []) >= 3:
+        # rerun43 实录：模型一条一条试，每轮烧一整篇生成。批量指引把 N 轮压成 1 轮。
+        lines.append(
+            "这是同一类问题：先把上面点到的**每个文件**都 read_file 一遍（一次脚本里"
+            "连读即可），确认真实行号后一次性改草稿再提交——不要一条一条试探。"
+        )
     return "\n".join(lines)
 
 

@@ -137,7 +137,7 @@ def check(path_arg: str, verbose: bool = False) -> int:
         verdict.append(f"缺 {len(miss)} 项要求维度")
     if not has_list:
         verdict.append("缺借鉴清单")
-    if not uniq and data_rows >= 3:
+    if not uniq and len(data_rows) >= 3:
         # rerun42 实证：模型换掉骨架格式后引用提取抓到 0 条，曾被误判「通过」。
         # 表格型差距清单 0 处可回源引用 = 证据任务零证据，直接不合格。
         verdict.append("表格交付 0 处可回源引用（证据任务零证据即不合格）")
