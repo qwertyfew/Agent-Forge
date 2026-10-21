@@ -403,7 +403,8 @@ scripts/               运维脚本：start.sh 启停、dispatch_task.py 派发�
                        check_deliverable.py 交付物核查、migrate_task_layout.py 任务目录迁移、
                        migrate_run_logs.py 运行日志归档
 docs/                  人写的文档：evolution.md 架构演进、eval-findings.md 评测总账（每跑错在哪层、
-                       怎么修的）、pitfalls.md 踩过的坑、contracts.md 契约清单、deploy.md 部署、
+                       怎么修的）、pitfalls.md 踩过的坑、handoff-*.md 换人接手交接（含粘贴即用的
+                       提示词）、contracts.md 契约清单、deploy.md 部署、
                        internals/ 实现细节、ref/ 外部仓库快照；changes/ 放带日期的设计记录
                        （如 layout-20261020.md 目录布局与「闸门读哪份文件」对照表）
 examples/              示例工作区（demo-excel、novel-sample）
@@ -618,6 +619,8 @@ mini-swe-agent 用约 100 行、唯一工具 bash 在 SWE-bench Verified 拿到 
 评测的跑法与判读见 [`docs/benchmark.md`](docs/benchmark.md)；
 **每一跑暴露了什么、修在哪、哪条测试钉住它**见 [`docs/eval-findings.md`](docs/eval-findings.md)，
 反复踩的坑（含「评测脚本自己也会制造幻觉」）见 [`docs/pitfalls.md`](docs/pitfalls.md)。
+换人/换会话接手时先读 [`docs/handoff-20261021.md`](docs/handoff-20261021.md)（到哪了、修完什么、
+下一步做什么、工作纪律），可直接粘贴的交接提示词在 [`docs/handoff-prompt.md`](docs/handoff-prompt.md)。
 
 ## 修复清单与能力的契约
 
