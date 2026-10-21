@@ -206,9 +206,10 @@ def test_search_orchestration() -> None:
 
     check("泛查询会自动补一枪精确的", "系统侧自动收紧" in out, out[:300])
     check("补的那一枪带站点限定与精确词", 'site:github.com "REA"' in out, out[:300])
-    check("收紧后的结果排在前面（先看到有用的）",
-          out.index("系统侧自动收紧") < out.index("原始查询"), out[:300])
-    check("原始结果也没有被吞掉", "GitHub" in out)
+    # rerun59 改口径：门户首页与查询词零交集，不再当「原始结果」摆出来充数，
+    # 而是丢弃并明确说明——静默吞掉和摆出来当证据都不行。
+    check("无关的原始结果不被当成证据摆出来", "原始查询" not in out, out[:300])
+    check("丢弃这件事有明确交代（不是静默吞掉）", "已丢弃" in out, out[:400])
     check("两次请求都真的发出去了", len(calls) >= 2, repr(calls))
     check("注明「以后这么写能省一轮」（教一次，不是每次兜）", "省一轮" in out, out[:400])
     check("仍然提醒必须抓一手来源核实", "fetch_json" in out and "不可直接写进回复" in out)
@@ -275,6 +276,60 @@ def with_router(router):
     orig = W.requests.get
     W.requests.get = fake_get
     return calls, (lambda: setattr(W.requests, "get", orig))
+
+
+def test_fetch_github_prefers_api() -> None:
+    """GitHub 仓库首页 → 直接走 API 取 README（网页版只有导航壳，正文在预算外）。
+
+    rerun60 实测：HTML 抓成功了，但 6000 字预算全花在 GitHub 的导航栏上，
+    源里一条命令都没有，模型只能如实说「抓不到 README」。
+    """
+    tools = make_tools()
+    fetch = tools["fetch_url"]
+    readme = "# @marp-team/marp-cli\n\n## Installation\nnpm install -g @marp-team/marp-cli\n"
+
+    def router(url, params):
+        if url.endswith("/readme"):
+            return FakeResp(readme, ctype="text/plain")
+        return FakeResp("<html><body>Navigation Menu / Sign in ...</body></html>")
+
+    calls, restore = with_router(router)
+    try:
+        out = fetch.run(url="https://github.com/marp-team/marp-cli")
+    finally:
+        restore()
+    check("优先打 readme 接口", any(u.endswith("/readme") for u, _ in calls), repr(calls))
+    check("拿到的是 README 正文", "npm install -g @marp-team/marp-cli" in out, out[:200])
+    check("标明来源是官方 API", "[实测 · API]" in out, out[:120])
+
+    # 子页面（/blob/…）不抢 API：模型明确要看那个文件
+    calls2, restore2 = with_router(router)
+    try:
+        fetch.run(url="https://github.com/marp-team/marp-cli/blob/main/docs/x.md")
+    finally:
+        restore2()
+    check("仓库子页面不走 readme 兜底",
+          not any(u.endswith("/readme") for u, _ in calls2), repr(calls2))
+
+
+def test_github_readme_via_api() -> None:
+    """github.com 抓不动时，fetch_url 自动改走 API，而不是让模型自己想到 fetch_json。"""
+    tools = make_tools()
+    fetch = tools["fetch_url"]
+
+    def router(url, params):
+        if url.endswith("/readme"):
+            return FakeResp("# README\n\n## Usage\n\nmarp --pptx slide-deck.md\n",
+                            ctype="text/plain")
+        raise R.ConnectionError("connect timeout")
+
+    calls, restore = with_router(router)
+    try:
+        out = fetch.run(url="https://github.com/marp-team/marp-cli")
+    finally:
+        restore()
+    check("页面失败时兜到 API", any(u.endswith("/readme") for u, _ in calls), repr(calls))
+    check("不会只回一句错误", "[错误]" not in out and "marp --pptx" in out, out[:200])
 
 
 def test_github_search_api() -> None:
@@ -383,8 +438,13 @@ def test_repo_keyword() -> None:
           W.repo_keyword("slidev markdown slides github") == "slidev")
     check("领域泛词不与普通词争（vue components github → vue）",
           W.repo_keyword("vue components github") == "vue")
-    check("功能词不当关键词（to 不抢）",
-          "to" != W.tighten_query("markdown to pptx cli open source")[0].split('"')[-2])
+    # rerun59：这条查询里全是领域泛词（markdown/pptx/cli/open/source），
+    # 原实现会挑中 command 去收紧——`site:github.com "command"` 搜回一堆
+    # 「Command Code」和剑桥词典。现在直接承认「没有可定向的项目名」，
+    # 让调用方改走 github_search / 换具体名称。
+    tq, why = W.tighten_query("markdown to pptx cli open source")
+    check("全是领域泛词时不假装收紧", tq == "", repr(tq))
+    check("说清为什么收不紧", "项目名" in why, why)
 
 
 def test_github_search_tool() -> None:
@@ -483,7 +543,10 @@ def test_repo_backstop() -> None:
     def broken(url, params):
         if "api.github.com" in url or "registry.npmjs.org" in url:
             raise R.ConnectionError("down")
-        return FakeResp(bing_html([("https://example.com/a", "结果", "摘要")]))
+        # 用一条与查询相关的假结果：零交集的会被相关性闸门丢弃（rerun59），
+        # 这里是测「兜底接口挂了不影响主流程」，不能顺手测到闸门。
+        return FakeResp(bing_html([("https://example.com/rea", "REA project",
+                                   "REA 的用法说明")]))
 
     _, restore3 = with_router(broken)
     try:
@@ -602,6 +665,8 @@ def main() -> None:
     test_fetch_url_wires_hint()
     test_query_judgement()
     test_tighten_query()
+    test_fetch_github_prefers_api()
+    test_github_readme_via_api()
     test_search_orchestration()
     test_github_search_api()
     test_github_render()

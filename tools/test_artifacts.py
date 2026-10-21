@@ -162,11 +162,36 @@ def test_pure_chat_gets_no_credit() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_intermediate_classification() -> None:
+    """清空弹窗的分类口径：依赖缓存/编译产物归「中间」，真实交付物归「最终」。
+
+    这一条是把「整理文件夹时必删」与「任务成果必须留」两套直觉对齐：
+    __pycache__、node_modules、.pyc 这类东西名字里没有 tmp，却是最该清的；
+    而克隆下来的仓库源码（README.md / tests/）绝不能因为「扫描到的」就被清掉。
+    """
+    junk = [
+        "p/__pycache__/m.cpython-313.pyc", "p/node_modules/react/index.js",
+        "p/.venv/Lib/site-packages/x.py", "p/pkg/x.class", "p/obj/main.obj",
+        "p/.pytest_cache/v/cache/lastfailed", "p/.DS_Store", "p/Thumbs.db",
+        "p/build/out.o", "p/tmp/a.txt", "p/草稿_v2.md", "p/run.log",
+    ]
+    keep = [
+        "p/report.md", "p/src/main.py", "p/output/deck.pptx",
+        "p/learn-claude-code/README.md", "p/learn-claude-code/tests/test_x.py",
+        "p/.git/config",
+    ]
+    for rel in junk:
+        check(f"中间文件：{rel}", artifact.is_intermediate({"path": rel}))
+    for rel in keep:
+        check(f"最终产出：{rel}", not artifact.is_intermediate({"path": rel}))
+
+
 def main() -> None:
     test_may_have_written()
     test_certain_flag()
     test_describe_passes_certain()
     test_pure_chat_gets_no_credit()
+    test_intermediate_classification()
     print("\n全部通过。")
 
 

@@ -216,6 +216,70 @@ def test_admission_passes_retrieved() -> None:
     _check("检索候选里的源不误伤", not bad, str(bad))
 
 
+def test_citation_ignores_cli_arguments() -> None:
+    # rerun58 误伤：docker 镜像名 marpteam/marp-cli 被当成「自构的仓库地址」，
+    # 闸门反过来说正确答案「地址是自己拼的」。命令行里的 token 是参数，不是引用。
+    reply = ('可以直接用镜像：\n```bash\ndocker run --rm -v "$(pwd)":/data '
+             'marpteam/marp-cli deck.md -o deck.pptx\n```')
+    cites = G.extract_citations(reply)
+    _check("命令行里的镜像名不当引用", not any("marpteam" in c for c in cites), str(cites))
+
+
+def test_citation_ignores_acronym_pairs() -> None:
+    # CI/CD、TCP/IP 这类缩写并列不是 owner/repo（rerun58 把它报成未准入引用）
+    reply = "可以在项目构建流程（如 Webpack、Vite 或 CI/CD 流程）里加一步预处理。"
+    cites = G.extract_citations(reply)
+    _check("CI/CD 不当引用", not any(c.lower() == "ci/cd" for c in cites), str(cites))
+
+
+def test_false_provenance_detected() -> None:
+    # rerun58 实况：只有 4 次 web_search（摘要），却称「从 npm registry 提取/已核实」
+    history = [{"role": "tool", "content":
+                "[实测 · API] GitHub 官方搜索接口 · 查询「marp-team/marp-cli」\n"
+                "  1. marp-team/marp-cli  https://github.com/marp-team/marp-cli"}]
+    reply = ("2. 从 npm 官方 registry 和 GitHub 源码仓库中提取了准确的安装命令。\n"
+             "验证状态：已通过官方仓库数据核实。")
+    bad = G.false_provenance_issues(reply, history)
+    _check("未抓正文却称已核实 → 判谎称", len(bad) >= 2, str(bad))
+    _check("搜索接口不算抓过正文", G.fetched_pages(history) == [], str(G.fetched_pages(history)))
+
+
+def test_false_provenance_passes_with_fetch() -> None:
+    # 真抓过 README 再说「据 README 提取」是诚实的，不能误伤
+    history = [{"role": "tool", "content":
+                "[实测 · 网页] https://github.com/marp-team/marp-cli\n"
+                "[标题] marp-cli\n## Install\nnpm install -g @marp-team/marp-cli"}]
+    reply = "从官方仓库的 README 中提取了安装命令：npm install -g @marp-team/marp-cli"
+    _check("真抓过正文时不判谎称", not G.false_provenance_issues(reply, history))
+    _check("抓过的正文页被记账",
+           G.fetched_pages(history) == ["https://github.com/marp-team/marp-cli"],
+           str(G.fetched_pages(history)))
+
+
+def test_diagnose_reports_false_provenance() -> None:
+    history = [{"role": "tool", "content":
+                "[实测 · API] npm 官方 registry · 查询「marp」\n"
+                "  1. @marp-team/marp-cli  4.5.1"}]
+    reply = ("安装：npm install -g @marp-team/marp-cli\n"
+             "从 npm 官方 registry 中提取了准确的安装命令。")
+    diag = G.diagnose(reply, G.sources_from_history(history),
+                      G.retrieval_candidates(history), task="怎么安装", history=history)
+    kinds = [f["kind"] for f in diag["findings"]]
+    _check("诊断里出现「谎称已核实」根因", "false_provenance" in kinds, str(kinds))
+    text = G.render_diagnosis(diag)
+    _check("诊断说清错在「摘要当原文」", "摘要" in text and "原文" in text, text[:200])
+
+
+def test_unverified_note_is_deterministic() -> None:
+    diag = {"ok": False,
+            "issues": ["npm install -g @x/y"],
+            "refs": ["someone/repo"],
+            "findings": [{"kind": "false_provenance", "items": []}]}
+    note = G.render_unverified_note(diag)
+    _check("拦满放行时有程序侧未核实声明", "未经核实" in note and "打回 2 轮" in note, note)
+    _check("通过时不给声明", G.render_unverified_note({"ok": True}) == "")
+
+
 def test_admission_no_substring_cross() -> None:
     # 关键边界：池里只有 marp-cli，答复引用 marp（入口仓库）——不能靠子串蒙过
     pool = ("[实测 · API] GitHub 官方搜索接口 · 查询「Marp」\n"
@@ -365,6 +429,12 @@ def main() -> None:
     test_url_trailing_backtick_stripped()
     test_admission_flags_self_constructed()
     test_admission_passes_retrieved()
+    test_citation_ignores_cli_arguments()
+    test_citation_ignores_acronym_pairs()
+    test_false_provenance_detected()
+    test_false_provenance_passes_with_fetch()
+    test_diagnose_reports_false_provenance()
+    test_unverified_note_is_deterministic()
     test_admission_no_substring_cross()
     test_admission_empty_pool_skips()
     test_admission_ignores_non_retrieval_tools()

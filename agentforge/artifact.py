@@ -217,6 +217,20 @@ _INTERMEDIATE_NAME = re.compile(
     re.I,
 )
 
+# 「整理文件夹时一定会删」的那一类：依赖目录、解释器缓存、编译中间产物、系统垃圾。
+# 为什么单独一条：`_INTERMEDIATE_NAME` 是按「临时语义」命名的，而 __pycache__、
+# node_modules、.pyc 这些名字里没有 tmp/draft，语义上却是最该清的——不并进来，
+# 它们会掉进「最终产出」一栏（默认保留），清空弹窗里就出现一屏
+# `site-packages/xxx.py` 这种噪音，用户还得逐个取消勾选。
+_JUNK_NAME = re.compile(
+    r"(^|[/\\])(__pycache__|node_modules|site-packages|\.venv|venv|\.tox|\.eggs"
+    r"|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.pytest|\.next|\.turbo|\.parcel-cache"
+    r"|\.cache|eggs)([/\\]|$)"
+    r"|\.(pyc|pyo|class|o|obj|pdb|ilk|exp|swp|swo)([/\\\-_.\d ]|$)"
+    r"|(^|[/\\])(Thumbs\.db|desktop\.ini|\.DS_Store)$",
+    re.I,
+)
+
 
 def from_records(rows: list[dict] | None) -> list[dict]:
     """把记录层的写盘行（record.Recorder.writes）翻成产出记录。
@@ -250,9 +264,15 @@ def is_intermediate(rec: dict) -> bool:
     改成按名字判定后：真正的 tmp/draft/cache/日志/备份仍被识别为中间文件；
     克隆来的源码（README.md、code.py、tests/、web/…）归不到中间文件，落到
     「最终产出」一类，默认保留，用户手动勾才删。
+
+    两类判据：
+      · `_INTERMEDIATE_NAME` —— 临时语义（tmp/草稿/.log/.bak…）
+      · `_JUNK_NAME` —— 依赖目录与解释器缓存（__pycache__/node_modules/.pyc…），
+        名字里没有临时词，但同样是「整理文件夹必删」的东西
     """
     name = str(rec.get("rel") or rec.get("path") or "").replace("\\", "/")
-    return bool(_INTERMEDIATE_NAME.search("/" + name))
+    probe = "/" + name
+    return bool(_INTERMEDIATE_NAME.search(probe) or _JUNK_NAME.search(probe))
 
 
 def describe(records: list[dict], root: str | Path) -> list[dict]:

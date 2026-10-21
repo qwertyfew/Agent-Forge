@@ -78,12 +78,15 @@ def main() -> int:
 
         before = big_history()
         ag._journal_step = 3
-        after, ev = ag._compact(before)
+        # 新签名：system 与历史分开传（system 每轮重贴，压缩只压历史），
+        # 返回的也只是压缩后的历史——这样压缩结果才能累积，不必每轮重摘。
+        system_msgs, history = before[:1], before[1:]
+        after, ev = ag._compact(system_msgs, history)
 
         check("超预算触发压缩", ev is not None and ev["type"] == "compact", str(ev))
         check("压缩确实变小", ev["after"] < ev["before"], f'{ev["before"]}→{ev["after"]}')
         check("返回的上下文确实比原文短",
-              measure(after) < measure(before), f"{measure(before)}→{measure(after)} 字符")
+              measure(after) < measure(history), f"{measure(history)}→{measure(after)} 字符")
 
         events = [json.loads(x) for x in ag.journal.path.read_text(encoding="utf-8").splitlines() if x.strip()]
         kinds = [e["type"] for e in events]
@@ -99,12 +102,12 @@ def main() -> int:
         check("压缩前快照是完整原文",
               len(before_snap["messages"]) == len(before) - 1, str(len(before_snap["messages"])) + "/系统提示单独记")
         check("压缩后快照等于模型实际收到的历史",
-              after_snap["messages"] == after[1:], "快照与返回值的非 system 部分不一致")
+              after_snap["messages"] == after, "快照与返回的历史不一致")
 
         rp = replay(ag.journal.path)
         check("重放取到最后生效的系统提示", rp["system"] == "SYS-提示", rp["system"][:40])
         check("重放包含压缩后的上下文（而非原文）",
-              rp["messages"] == after[1:], f'replay={len(rp["messages"])} 实际={len(after) - 1}')
+              rp["messages"] == after, f'replay={len(rp["messages"])} 实际={len(after)}')
         check("重放记录了压缩次数", rp["compacts"] == 1, str(rp["compacts"]))
 
         # 压缩之后新增的消息，重放里必须接在快照后面
@@ -112,7 +115,7 @@ def main() -> int:
         rp2 = replay(ag.journal.path)
         check("压缩后的新消息接在快照之后",
               rp2["messages"][-1]["content"] == "写完了"
-              and len(rp2["messages"]) == len(after) - 1 + 1,
+              and len(rp2["messages"]) == len(after) + 1,
               str(len(rp2["messages"])))
 
         # ---------- 内部回灌的归属 ----------

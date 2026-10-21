@@ -13,6 +13,7 @@ tool 消息，否则 Ollama 会报协议错误。所以分割点一律选在"轮
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 SUMMARY_PROMPT = """请把下面这段较早的对话压缩成一段要点，供后续继续工作使用。
@@ -113,29 +114,187 @@ def _safe_cut(messages: list[dict], keep_chars: int) -> int:
     return cut
 
 
+# ---------------------------------------------------------------------------
+# 一手来源必须熬过压缩
+# ---------------------------------------------------------------------------
+# rerun61 实证：模型抓到了 marp-cli 的 README（含 `npm install -g @marp-team/marp-cli`、
+# `marp --pptx slide-deck.md`），下一轮压缩把 6 万字符摘成 6 千，命令全被摘要吃掉。
+# 之后模型诚实地答「没拿到 README」，闸门也只能判「命令无据」——**它抓到了，
+# 是 harness 把它扔了**。所以压缩对「实抓正文」这类消息网开一面：留抬头 + 前段 +
+# 全部命令行，摘要块后面也补一份命令行清单。
+
+_EVIDENCE_PREFIX = ("[实测 · 网页]", "[实测 · API]")
+# 压缩后自己盖的两个前缀。它们必须被后续压缩认出来，否则会二次加工：
+#   · 证据消息压一次 → 抬头变成 [已压缩·保留源] → 下一轮不认它是证据 →
+#     按普通消息压成 280 字，命令行第二刀就没了（rerun61 的修法只活过一轮）；
+#   · 普通消息每轮都被重新加一次前缀 → 「[已压缩] [已压缩] …」越压越长
+#     （实测一轮 +6 字，正是 `[已压缩] ` 的长度；30 轮压缩一条都没白压）。
+_PINNED_PREFIX = "[已压缩·保留源]"
+_PLAIN_PREFIX = "[已压缩]"
+_CMD_LINE_RX = re.compile(
+    r"^(?:\$|>|sudo\s+)?(?:npm|npx|pnpm|yarn|bun|brew|scoop|choco|apt|apt-get|docker|"
+    r"podman|pip3?|uv|cargo|go|marp|slidev|pandoc|git|make|node|python3?|curl|wget)\b",
+    re.I)
+
+
+def _is_evidence(text: str) -> bool:
+    """这条工具结果是不是「实抓的一手来源」。
+
+    认两种抬头：原始的 `[实测 · …]`，以及 L1 老化后盖上的 `[已压缩·保留源]`。
+    后者必须认——否则「先老化、后摘要」的顺序里，摘要那一步看到的已经不是
+    证据消息，命令行照样会被摘要吃掉（rerun62 实测：老化在前，命令全丢）。
+    """
+    body = str(text or "").lstrip()
+    if body.startswith(_PINNED_PREFIX):
+        body = body[len(_PINNED_PREFIX):].lstrip()
+    return body.startswith(_EVIDENCE_PREFIX)
+
+
+def evidence_commands(body: str, limit: int = 14) -> list[str]:
+    """从一段抓取正文里挑出命令行（含 `--flag` 的参数行也算）。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in str(body or "").splitlines():
+        s = line.strip().strip("`")
+        s = re.sub(r"^[-*+]\s+", "", s)
+        if not s or len(s) > 160:
+            continue
+        if not (_CMD_LINE_RX.match(s) or re.search(r"(?<![\w-])--[a-z][\w-]{1,}", s)):
+            continue
+        if s.startswith(("<", "{", "[")):
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if len(out) >= limit:
+            break
+    return out
+
+
+_BRIEF_MARK = "[任务原文（压缩时保留，验收以此为准）]"
+_CMD_MARK = "[已抓源里的命令行（原样保留，引用时以此为准）]"
+
+
+def _carry_commands(chunk: list[dict], tail: list[dict]) -> list[str]:
+    """把上一代摘要里已经钉住的命令行原样捡回来。
+
+    摘要块本身也是 user 消息，下一轮压缩会把它再概括一遍——不显式继承的话，
+    「钉住命令」只活过一次压缩（和 rerun61 的修法一样，只活一轮）。
+    """
+    out: list[str] = []
+    for m in [*chunk, *tail]:
+        body = str(m.get("content") or "")
+        i = body.find(_CMD_MARK)
+        if i < 0:
+            continue
+        started = False
+        for line in body[i + len(_CMD_MARK):].splitlines():
+            s = line.strip()
+            if not s:                     # 标题后面紧跟的换行；段尾空行表示清单结束
+                if started:
+                    break
+                continue
+            if s.startswith("["):
+                break
+            out.append(s)
+            started = True
+    return out
+
+
+def _task_brief(chunk: list[dict], tail: list[dict], limit: int = 1200) -> str:
+    """把「任务原文」从被摘要掉的那一段里捞出来，原样贴在摘要前面。
+
+    为什么必须有：摘要模型只会留下「双方在讨论什么」，而**验收条件**（要交付什么、
+    不许做什么、按什么格式）恰恰在任务原文里。压缩把它摘丢之后，模型后面几轮
+    只能凭印象干活——这是比丢命令更贵的一类损失。原文在 tail 里就不再重复贴。
+
+    压缩链要认「上一代摘要里已经钉住的原文」：否则每摘一次，钉住的那段就被
+    摘要模型再概括一次，几轮之后只剩「用户要求做一个转换工具」这种废话。
+    """
+    def _block_of(body: str) -> str:
+        i = body.find(_BRIEF_MARK)
+        if i < 0:
+            return ""
+        rest = body[i + len(_BRIEF_MARK):].strip()
+        # 钉住段到下一个 [小节标题] 为止（后面跟着的是命令行清单）
+        return rest.split("\n[")[0].strip()
+
+    for m in [*chunk, *tail]:                 # 已经钉住的，先原样继承
+        got = _block_of(str(m.get("content") or ""))
+        if got:
+            return f"\n{_BRIEF_MARK}\n{got}"
+    first = next((m for m in chunk if m.get("role") == "user"
+                  and "[早期对话摘要]" not in str(m.get("content") or "")), None)
+    if first is None:
+        return ""
+    text = str(first.get("content") or "").strip()
+    if not text or any(str(m.get("content") or "").strip() == text for m in tail):
+        return ""
+    if len(text) > limit:
+        text = text[:limit] + " …（原文过长，已截断）"
+    return f"\n{_BRIEF_MARK}\n" + text
+
+
+def pin_evidence(body: str, budget: int = 1400) -> str:
+    """压缩证据消息：留抬头与前段，再补上散落在后文的命令行。"""
+    body = str(body or "")
+    head = body[:budget]
+    cmds = evidence_commands(body[budget:])
+    if cmds:
+        head += "\n[源内命令行（压缩时保留）]\n" + "\n".join(cmds)
+    return head
+
+
+def _is_pinned(text: str) -> bool:
+    """已经压缩过的消息（两个前缀之一）。再压一遍只会掉信息或越压越长。"""
+    body = str(text or "").lstrip()
+    return body.startswith(_PINNED_PREFIX) or body.startswith(_PLAIN_PREFIX)
+
+
 def truncate_tool_results(messages: list[dict], keep_recent: int) -> list[dict]:
     """L1：把较早的工具返回压成一行，保留最近 keep_recent 条完整结果。
 
     **只改 content，其余字段一律原样保留**：role=tool 的消息必须带着
     tool_call_id 指回前面 assistant 的 tool_calls，OpenAI 兼容接口对这个配对
     是硬要求——重建时把它丢了（旧实现的 bug），下一轮请求直接 400。
+
+    三条铁律（都是实测踩出来的，见 tools/test_token_economy.py）：
+      1. 已压缩的消息不再动（否则前缀叠加，一轮 +6 字，越压越长）；
+      2. 证据消息只在**真的变短**时才替换（正文本来就短于 1400 字时，
+         加抬头反而更长）；
+      3. 一条都没动就返回**原列表**（`is` 判别）——否则每轮都报一次
+         「工具结果老化」，日志与快照被无意义的压缩刷满。
     """
     idx = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
     if len(idx) <= keep_recent:
         return messages
     stale = set(idx[: len(idx) - keep_recent])
     out = []
+    changed = False
     for i, m in enumerate(messages):
         if i in stale:
-            body = str(m.get("content") or "").replace("\n", " ")
-            trimmed = dict(m)                       # 保留 tool_call_id / name 等字段
-            trimmed["content"] = (
-                f"[已压缩] {body[:280]}{' ...' if len(body) > 280 else ''}"
-            )
+            raw = str(m.get("content") or "")
+            if _is_pinned(raw):
+                out.append(m)              # 铁律 1：压过的不再压
+                continue
+            trimmed = dict(m)              # 保留 tool_call_id / name 等字段
+            if _is_evidence(raw):
+                # 一手来源不能压成 280 字：命令与参数往往在正文后段
+                new = _PINNED_PREFIX + " " + pin_evidence(raw)
+            else:
+                body = raw.replace("\n", " ")
+                new = f"{_PLAIN_PREFIX} {body[:280]}{' ...' if len(body) > 280 else ''}"
+            if len(new) >= len(raw):
+                out.append(m)              # 铁律 2：没变短就别替换
+                continue
+            trimmed["content"] = new
+            changed = True
             out.append(trimmed)
         else:
             out.append(m)
-    return out
+    return out if changed else messages
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +485,12 @@ class Compressor:
                                        f"上下文 {before} → {after1} 字（内容太新，无法再摘要）"))
 
         chunk, tail = step1[:cut], step1[cut:]
+        if len(chunk) <= 1 and "[早期对话摘要]" in str(chunk[0].get("content") or ""):
+            # 上一代摘要已经是唯一可切的东西：再摘只会把摘要本身概括成废话，
+            # 而且每轮多花一次摘要调用（rerun62：一轮一次，正文一个字没少）。
+            return _done(CompactResult(
+                step1, "truncate", before, after1,
+                f"上下文 {before} → {after1} 字（已是最简摘要，不再重复概括）"))
         # 摘要用通用模型，快且省显存；当前是代码模型时尤其划算
         skey = "general" if "general" in self.cfg.models else model_key
         summary = self._summarize(chunk, skey)
@@ -335,11 +500,26 @@ class Compressor:
                 step1, "truncate", before, after1,
                 f"上下文 {before} → {after1} 字（摘要未生成，仅截断较早工具返回）",
             ))
+        # 摘要之前先把 chunk 里的命令行捞出来，原样附在摘要后面：摘要模型
+        # 一定会把「npm install -g xxx」「marp --pptx deck.md」这类细节丢掉，
+        # 而那正是最终答复唯一能站得住的依据（rerun61）。
+        kept: list[str] = []
+        for m in chunk:
+            if m.get("role") == "tool" and _is_evidence(m.get("content")):
+                kept.extend(evidence_commands(m.get("content")))
+        kept += _carry_commands(chunk, tail)      # 上一代钉住的，继续往下传
+        kept = list(dict.fromkeys(kept))[:20]
+        evidence = (f"\n{_CMD_MARK}\n" + "\n".join(kept) if kept else "")
+        brief = _task_brief(chunk, tail)
         merged = [
-            {"role": "user", "content": f"[早期对话摘要]\n{summary}"},
+            {"role": "user", "content": f"[早期对话摘要]\n{summary}{brief}{evidence}"},
             *tail,
         ]
         after = measure(merged)
+        if after >= before:
+            # 摘完没变短（内容本来就只剩摘要 + 任务原文 + 命令）——别替换，
+            # 也别让调用方以为压过一轮：替换只会让日志多一条假事件。
+            return _done(CompactResult(messages, "none", before, before))
         return _done(CompactResult(
             merged, "summarize", before, after,
             f"上下文 {before} → {after} 字（已把前 {len(chunk)} 条消息重写为摘要）",

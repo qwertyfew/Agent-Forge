@@ -182,6 +182,24 @@ def main() -> None:
     gates_ref_ok = [e for e in evs_ref_ok if e.get("type") == "grounding_gate"]
     check("引用检索候选里的源不拦", not gates_ref_ok, str(len(gates_ref_ok)))
 
+    # ---------- 重复 ops_batch：同脚本重发不再执行 ----------
+    # rerun59：同一句 `tools.call("web_search", query=...)` 被原样重发 28 次。
+    # ops_batch 不能按只读缓存拦截（脚本可能写文件），于是成了逃逸口。
+    same = {"script": 'tools.call("list_dir", path=".")'}
+    script_rep = [_Res(tool_calls=[_TC("ops_batch", dict(same))]) for _ in range(6)]
+    script_rep.append(_Res(content="算了，基于已有结果回答。"))
+    ag_rep = _mk_agent(tmp, script_rep)
+    evs_rep = _run(ag_rep, "帮我看看目录", contract=[])
+    outs_rep = [str(e.get("output") or "") for e in evs_rep
+                if e.get("type") == "tool_result" and e.get("name") == "ops_batch"]
+    check("同脚本第 3 次起挂重复提示",
+          len(outs_rep) >= 3 and "[重复调用]" in outs_rep[2], (outs_rep[:3] or [""])[2][:200])
+    check("第 5 次起不再执行（拦住同一段脚本）",
+          len(outs_rep) >= 5 and "重复调用拦截" in outs_rep[4], (outs_rep[4:5] or [""])[0][:200])
+    check("拦截话术要求换策略，而不是只说「已拦截」",
+          "换查询词" in (outs_rep[4] if len(outs_rep) > 4 else ""),
+          (outs_rep[4] if len(outs_rep) > 4 else "")[:200])
+
     print("\n结果：全部通过")
     sys.exit(0)
 

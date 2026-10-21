@@ -827,6 +827,11 @@ class _Handler(BaseHTTPRequestHandler):
             if resolved.is_dir():
                 skipped.append({"path": str(raw), "why": "是目录，不删"})
                 continue
+            # 版本库内部文件永远不从这里删：删掉 .git 里的东西不是「清理产出」，
+            # 是把用户的仓库历史弄坏（哪怕台账里混进了 .git/config 这种行）。
+            if any(part.lower() in (".git", ".hg", ".svn") for part in resolved.parts):
+                skipped.append({"path": str(raw), "why": "属于版本库目录，不删"})
+                continue
             # 第二道防线：技能目录里的文件永远不从这里删（哪怕台账里混进来了）。
             # 技能的删除入口是技能管理面板，那里删除前有整目录备份。
             skill_roots = [self._skills_root(), *(Path(x) for x in (self.cfg.skill_dirs or []))]
@@ -1600,6 +1605,14 @@ class _Handler(BaseHTTPRequestHandler):
         # 模型实际收到的是 message——两者在恢复场景下刻意不同。
         started_at = time.time()
         task_id = self.tasks.begin(display_prompt or message, permission=permission)
+        # 评测编号（rerunNN）：评测任务要和 .run/rerunNN.* 的日志、文档里的复盘对得上号。
+        # 前端/脚本传 label 时把编号顶在标题上，侧栏与案卷里都看得见「这是第几跑」。
+        label = str(req.get("label") or "").strip()[:24]
+        if label:
+            _t = self.tasks.get(task_id) or {}
+            _title = str(_t.get("title") or "")
+            if _title and not _title.startswith(f"[{label}]"):
+                self.tasks.rename(task_id, f"[{label}] {_title}"[:120])
         # 任务事件广播：发起连接直写自己，同时所有事件进总线——网页接管
         # （/api/tasks/<id>/stream）靠它重放+续播，不再只有干巴巴的进度条
         bus = TaskBus()
@@ -1799,6 +1812,29 @@ class _Handler(BaseHTTPRequestHandler):
                         "text": "程序拦截 · 交付物未落盘（"
                                 + "、".join(str(m) for m in missing[:4])
                                 + "），已要求当场补写",
+                    })
+                elif kind == "grounding_gate":
+                    # 溯源/证据准入闸门：程序判定「这条答复不能交付」并已打回。
+                    # rerun16 的老教训重演——闸门在跑、事件却落不到分支里被静默
+                    # 丢掉（rerun58：闸门连开两枪，事件流里 0 条，评测时误判成
+                    # 「闸门没生效」）。所以既发专用事件给遥测，也播一行给人看。
+                    n_cmd = len(ev.get("issues") or [])
+                    n_ref = len(ev.get("refs") or [])
+                    exhausted = bool(ev.get("exhausted"))
+                    emit("grounding_gate", {
+                        "issues": n_cmd, "refs": n_ref,
+                        "round": ev.get("round"),
+                        "exhausted": exhausted,
+                        "no_source": bool(ev.get("no_source")),
+                        "kinds": [f.get("kind") for f in
+                                  ((ev.get("diagnosis") or {}).get("findings") or [])],
+                    })
+                    head = ("程序拦截 · 答复核查两轮未通过，已加「未经核实」声明"
+                            if exhausted else
+                            f"程序拦截 · 答复核查未通过（第 {ev.get('round')}/2 轮）")
+                    emit("thinking", {
+                        "text": (f"{head}：{n_cmd} 条命令/目录在源里无据、"
+                                 f"{n_ref} 处引用不在检索候选内，已要求回源改正"),
                     })
                 elif kind == "skeleton":
                     # 任务书骨架：任务书里点名的必填项已铺成待填位。播成思考行——

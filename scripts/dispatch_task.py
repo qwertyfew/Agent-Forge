@@ -27,6 +27,8 @@ payload = json.dumps({
     "model_key": "auto",
     "permission": "full",
     "no_user": True,   # 无人值守派发：ask_user 不弹窗不阻塞，直接降级
+    # 评测编号：任务标题会变成「[rerun63] …」，侧栏/案卷里直接看得出这是第几跑
+    "label": tag,
 }).encode("utf-8")
 
 req = urllib.request.Request(
@@ -108,6 +110,11 @@ with opener.open(req, timeout=5400) as resp:
             eval_ms_total += float(ev.get("eval_ms") or 0)
         elif ev_type == "delta":
             deltas.append(ev.get("text") or "")
+        elif ev_type == "step":
+            # 每一轮是一段完整正文：**打回重写轮会把整段答案重发一遍**，如果
+            # 全轮次累加，评测看到的就成了「同一份答复连刷三遍」（rerun58/59
+            # 都被这么误诊成生成退化）。留最后一轮，才是真正交付给用户的话。
+            deltas.clear()
         elif ev_type == "assistant":
             # 收尾闸门会把系统侧核查声明（未交付 / 未经核实）拼在 summary 末尾，
             # 再作为 assistant 事件回吐。SSE 只发 delta，这条不采集就等于声明
@@ -115,6 +122,17 @@ with opener.open(req, timeout=5400) as resp:
             final_assistant = (ev.get("content") or "").strip()
         elif ev_type == "history":
             history_msgs = ev.get("messages") or []
+        elif ev_type == "grounding_gate":
+            # 溯源闸门：打回也要在时间线上留痕——rerun58 之前这一枪是「哑枪」，
+            # 事件被前端分支吞掉，评测只能靠 history 里有没有诊断文本来反推。
+            kinds = ",".join(ev.get("kinds") or []) or "-"
+            timeline.append((ts, f"gate        grounding 第 {ev.get('round')} 轮 · "
+                                 f"命令无据 {ev.get('issues')} · 引用未准入 "
+                                 f"{ev.get('refs')}"
+                                 + ("（拦满放行）" if ev.get("exhausted") else "")
+                                 + f" · {kinds}"))
+        elif ev_type == "notify":
+            timeline.append((ts, f"notify      {ev.get('text')}"))
         elif ev_type == "error":
             timeline.append((ts, f"ERROR       {ev.get('message')}"))
 
@@ -143,6 +161,7 @@ first_party = [t for t in seq if t in ("fetch_url", "fetch_json", "browser_snaps
 declared = ("未经核实" in reply) or ("系统侧核查" in reply)
 
 print("=" * 74)
+print(f"评测编号：{tag}")
 print(f"提示词：{MESSAGE}")
 print(f"耗时：{elapsed:.0f}s   工具调用：{len(tools)} 次")
 # ---- 模块耗时拆解：回答「慢在流程/工具，还是慢在 LLM 生成」----
@@ -175,6 +194,20 @@ print(reply)
 
 (ROOT / ".run" / f"{tag}.reply.txt").write_text(reply, encoding="utf-8")
 (ROOT / ".run" / f"{tag}.tools.txt").write_text("\n".join(tool_rows), encoding="utf-8")
+# 每一跑留一张身份卡：编号、任务书、耗时、工具序列、判定结论。
+# 复盘时先看它就知道「这一跑是什么、结论是什么」，不用翻两万行事件流。
+(ROOT / ".run" / f"{tag}.meta.json").write_text(json.dumps({
+    "label": tag,
+    "prompt": MESSAGE,
+    "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t0)),
+    "elapsed_s": round(elapsed, 1),
+    "tool_calls": len(tools),
+    "tool_seq": seq,
+    "first_party": first_party,
+    "declared_unverified": declared,
+    "reply_chars": len(reply),
+    "reply_head": reply[:200],
+}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _relocate(tag: str) -> None:
@@ -194,7 +227,7 @@ def _relocate(tag: str) -> None:
         return
     pairs = [(".events.jsonl", "events.jsonl"), (".raw.log", "raw.log"),
              (".reply.txt", "reply.txt"), (".tools.txt", "tools.txt"),
-             (".prompt.txt", "prompt.txt")]
+             (".meta.json", "meta.json"), (".prompt.txt", "prompt.txt")]
     moved = []
     for suf, name in pairs:
         src = ROOT / ".run" / f"{tag}{suf}"

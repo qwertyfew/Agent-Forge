@@ -463,6 +463,24 @@ def _token_in_pool(ref: str, pool: str) -> bool:
     return re.search(pat, pool, re.I) is not None
 
 
+def _cli_line_spans(text: str) -> list[tuple[int, int]]:
+    """答复里「命令行形态」的行所占的字符区间。
+
+    命令行里的 token 是命令**参数**（`docker run … marpteam/marp-cli` 里的镜像名、
+    `npm i github:owner/repo` 里的仓库参数），不是「引用来源」。rerun58 实证：
+    镜像名 `marpteam/marp-cli` 被抽成 owner/repo，闸门反过来说模型「地址是自己
+    拼的」——冤枉了一次正确答案。命令归命令核查，引用归引用核查，不能混。
+    """
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    for line in (text or "").splitlines(True):
+        s = re.sub(r"^[`$>%#*\-\s]+", "", line.strip())
+        if _is_cli_shape(s):
+            spans.append((pos, pos + len(line)))
+        pos += len(line)
+    return spans
+
+
 def extract_citations(reply: str) -> list[str]:
     """答复里引用的「源标识」：URL 与 owner/repo（去重、保序）。"""
     out: list[str] = []
@@ -479,15 +497,22 @@ def extract_citations(reply: str) -> list[str]:
     # URL 内部不再单独抽 owner/repo 片段——否则
     # `.../marp-team/marp-cli/blob/main/README.md` 会多出一条 `marp-cli/blob`。
     url_spans = [(m.start(), m.end()) for m in _URL_RX.finditer(reply or "")]
+    cmd_spans = _cli_line_spans(reply or "")
     for m in _REPO_SLUG_RX.finditer(reply or ""):
         if any(s <= m.start() < e for s, e in url_spans):
             continue
+        if any(s <= m.start() < e for s, e in cmd_spans):
+            continue                           # 命令行参数，不是引用的源
         raw = m.group(1)
         owner, _, name = raw.partition("/")
         if "." in owner:                       # github.com/marp-team（URL 残片）
             continue
         if owner.lower() in _PATHY_SEGMENTS or name.lower() in _PATHY_SEGMENTS:
             continue
+        if (owner.isalpha() and name.isalpha()
+                and owner.isupper() and name.isupper()
+                and len(owner) <= 4 and len(name) <= 4):
+            continue                           # CI/CD、TCP/IP、A/B：缩写并列，不是仓库
         if owner.lower() in _TECHY_TOKENS or name.lower() in _TECHY_TOKENS:
             continue                           # HTML/JS、React/Vue 这种并列，不是仓库
         if "." in name:                        # 像文件名：main.py / deck.md
@@ -548,6 +573,71 @@ def evidence_admission_issues(reply: str, candidates: str) -> list[str]:
             continue
         bad.append(ref)
     return bad
+
+
+# ============ 溯源谎称（rerun58） ============
+# 问题现场：全程只有 4 次 web_search（返回的是「搜索摘要」），模型却在答复里写
+# 「从 npm 官方 registry 和 GitHub 源码仓库中提取了准确的安装命令」、
+# 「验证状态：已通过官方仓库数据核实」。检索摘要 ≠ 抓过正文，这句话是假的。
+# 文本溯源闸门看不出来：它比的是「命令字符串在不在源里」，而这里造假的是
+# 「我读过原文」这个**元陈述**。
+#
+# 判据是确定性的：声称「从 X 提取/核实」+ 本次 history 里一次正文抓取都没有。
+
+# 检索类工具输出里「不是正文」的接口（搜索接口的 JSON 只算候选，不算读过原文）
+_SEARCH_ENDPOINT_RX = re.compile(
+    r"api\.github\.com/search|registry\.npmjs\.org/-/v1/search|[?&]q=", re.I)
+
+# 「声称已从官方源提取 / 已核实」的措辞
+_PROVENANCE_RX = re.compile(
+    r"(?:从|根据|依据|基于)[^\n。；！？]{0,40}?"
+    r"(?:registry|npm|pypi|官方\s*(?:文档|仓库|源码|站点|网站)|GitHub|README|源码仓库)"
+    r"[^\n。；！？]{0,40}?(?:提取|抓取|摘录|取回|核对|核实|校验)"
+    r"|(?:已|均|都)?(?:经|通过)[^\n。；！？]{0,24}?(?:官方|源|文档|仓库)"
+    r"[^\n。；！？]{0,12}?核实"
+    r"|(?:核实|核对|校验)了?[^\n。；！？]{0,24}?(?:参数|命令|指令|用法|写法|格式|flag)"
+    r"|(?:核实|校验|验证)(?:状态)?[：:]?[^\n。；！？]{0,8}?(?:通过|无误|准确)",
+    re.I)
+
+
+def fetched_pages(history: list[dict]) -> list[str]:
+    """本次真正抓到的正文页 URL（fetch_url / fetch_json 的实抓结果）。
+
+    只认 `[实测 · 网页]` / `[实测 · API]` 这两种「实抓」抬头，且排除搜索接口——
+    搜索接口返回的是候选列表，不是读过的原文。
+    """
+    out: list[str] = []
+    for msg in history or []:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        c = msg.get("content")
+        if not isinstance(c, str) or not c.strip():
+            continue
+        # 抬头后必须紧跟 http(s) 地址才算「实抓」——检索摘要的抬头是
+        # `[实测 · API] GitHub 官方搜索接口`，紧跟的是「GitHub」不是网址，
+        # 不卡这一条会把检索接口当成「抓到过正文」（rerun58 实测踩中）。
+        for m in re.finditer(r"\[实测 · (?:网页|API)\]\s*(https?://\S+)", c):
+            url = m.group(1).strip("，。、）)")
+            if _SEARCH_ENDPOINT_RX.search(url):
+                continue
+            if url not in out:
+                out.append(url)
+    return out
+
+
+def provenance_claims(reply: str) -> list[str]:
+    """答复里「我已从官方源提取 / 已核实」这类元陈述（原文片段）。"""
+    return [m.group(0).strip() for m in _PROVENANCE_RX.finditer(reply or "")]
+
+
+def false_provenance_issues(reply: str, history: list[dict]) -> list[str]:
+    """声称已核实、但本次没抓过任何正文页 → 返回这些谎称句（空=没问题）。"""
+    claims = provenance_claims(reply)
+    if not claims:
+        return []
+    if fetched_pages(history):
+        return []
+    return claims[:4]
 
 
 # ============ 诊断层：打回时说清「错在哪、源里对的什么样、下一步往哪走」 ============
@@ -736,6 +826,7 @@ _KIND_TITLE = {
     "retrieval_generic": "检索词落到了通用词上",
     "retrieval_miss": "检索没命中项目名",
     "zero_retrieval": "零检索：没抓取就作答",
+    "false_provenance": "谎称已核实：只看了摘要就说读过原文",
     "meta_source": "抓的是入口/总览仓库",
     "unadmitted_citation": "引用未准入：地址是自己拼的",
     "ungrounded_command": "命令/目录无据：源里没有",
@@ -743,7 +834,8 @@ _KIND_TITLE = {
 
 
 def diagnose(reply: str, sources: str, candidates: str, *,
-             task: str = "", intent: bool = True) -> dict:
+             task: str = "", intent: bool = True,
+             history: list[dict] | None = None) -> dict:
     """答复诊断报告。ok=True 表示无需打回（此时 findings 为空）。
 
     注意：**是否打回的判定与旧逻辑完全一致**（reply_grounding_issues +
@@ -766,9 +858,10 @@ def diagnose(reply: str, sources: str, candidates: str, *,
 
     issues = reply_grounding_issues(reply, src, intent=intent)
     refs = evidence_admission_issues(reply, pool) if pool else []
-    if not issues and not refs:
+    prov = false_provenance_issues(reply, history or [])
+    if not issues and not refs and not prov:
         return {"ok": True, "findings": [], "retrieval": retrieval,
-                "issues": [], "refs": []}
+                "issues": [], "refs": [], "provenance": []}
 
     findings: list[dict] = []
     real_issues = [c for c in issues if c != _ZERO_SRC_MSG]
@@ -827,6 +920,30 @@ def diagnose(reply: str, sources: str, candidates: str, *,
             "next": (
                 "先经 ops_batch 发起检索并抓源（tools.call('web_search', ...)），"
                 "拿到候选再写；确实抓不到就如实说明「未检索到、无法确认」。"),
+        })
+
+    # ---- 根因 D：声称已核实，但一次正文抓取都没有（rerun58）----
+    if prov:
+        n_ret = sum(1 for m in (history or [])
+                    if isinstance(m, dict) and m.get("role") == "tool"
+                    and any(mk in str(m.get("content") or "")
+                            for mk in _RETRIEVAL_MARKERS))
+        findings.append({
+            "kind": "false_provenance",
+            "severity": "root",
+            "mistake": (
+                "把「检索摘要」当成了「读过的原文」——摘要只告诉你有个什么东西、"
+                "标题是什么，不含正文里的写法。基于摘要说「已提取/已核实」，"
+                "等于给没读过的文档盖了核对章，后面的命令自然是凭记忆补的。"),
+            "items": [{
+                "value": c,
+                "why": (f"本次 history 里实抓正文 0 篇（fetch_url / fetch_json 未调用），"
+                        f"只有 {n_ret} 份检索摘要"),
+            } for c in prov[:4]],
+            "next": (
+                "先去抓那一手正文（实现仓库的 README / 官方文档页，用 fetch_url 或 "
+                "fetch_json），抓到了再写「据 X 提取」；抓不到就把这类话删掉，"
+                "如实说「只看到检索摘要，未核对原文」。"),
         })
 
     # ---- 根因 C：抓的是「入口/总览仓库」，本来就没有安装说明 ----
@@ -906,7 +1023,7 @@ def diagnose(reply: str, sources: str, candidates: str, *,
         })
 
     return {"ok": False, "findings": findings, "retrieval": retrieval,
-            "issues": issues, "refs": refs}
+            "issues": issues, "refs": refs, "provenance": prov}
 
 
 def render_diagnosis(diag: dict, *, round_no: int = 1, max_rounds: int = 2) -> str:
@@ -945,3 +1062,39 @@ def render_diagnosis(diag: dict, *, round_no: int = 1, max_rounds: int = 2) -> s
     lines.append("改完再交。若确实拿不到可靠材料，就如实说明「没检索到 / 源里没提」——"
                  "这比编一个像样的答案要好。")
     return "\n".join(lines)
+
+
+def render_unverified_note(diag: dict) -> str:
+    """打回次数用尽仍未通过时，程序侧追加的「未经核实」声明。
+
+    为什么由程序写、不让模型自己写：模型两次都没改对，第三次的自我声明同样
+    不可信；用户看到的交付物上必须有一个不依赖模型的印记。措辞只陈述**机器
+    能复核的事实**（打回几轮、几条没依据），不评判对错。
+    """
+    if not diag or diag.get("ok"):
+        return ""
+    n_cmd = len([c for c in (diag.get("issues") or []) if c != _ZERO_SRC_MSG])
+    n_ref = len(diag.get("refs") or [])
+    kinds = [f.get("kind") for f in (diag.get("findings") or [])]
+    bits: list[str] = []
+    if n_cmd:
+        bits.append(f"{n_cmd} 条命令/目录在本次抓到的源里找不到")
+    if n_ref:
+        bits.append(f"{n_ref} 处引用的地址不在本次检索候选里")
+    if "false_provenance" in kinds:
+        bits.append("存在「未抓正文却称已核实」的表述")
+    if not bits:
+        bits.append("答复的关键内容未通过程序核查")
+    return ("\n\n---\n"
+            "⚠ **程序核查未通过（已打回 2 轮仍不合格）**：" + "；".join(bits) + "。\n"
+            "上面这些内容请按「未经核实」对待——落地前请以官方文档为准。")
+
+
+__all__ = [
+    "diagnose", "render_diagnosis", "render_unverified_note",
+    "reply_grounding_issues", "sources_from_history", "retrieval_candidates",
+    "evidence_admission_issues", "extract_citations", "extract_ops_claims",
+    "is_howto_intent", "fetched_pages", "provenance_claims",
+    "false_provenance_issues", "source_is_meta", "source_command_lines",
+    "pool_repos", "near_miss",
+]

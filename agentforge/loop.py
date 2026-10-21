@@ -20,10 +20,11 @@ from .journal import Journal, new_sid
 from .llm import OllamaClient, parse_text_tool_calls
 from .toolselect import PTC_SURFACE
 from . import grounding
+from . import dedupe
 from .memory import MemoryStore
 from .llm import GenerationStopped
 from .tasksession import contract_paths
-from .tools.ops import OPS_AGENT_CTX
+from .tools.ops import OPS_AGENT_CTX, sanitize_script, _CTRL_TOKEN_RX
 from .permissions import (
     OUTSIDE_OK,
     OUTDIR_CTX,
@@ -53,6 +54,50 @@ def _msg_source(msg: dict) -> str:
     if not isinstance(msg, dict) or msg.get("role") != "user":
         return ""
     return "system" if str(msg.get("content") or "").startswith(_INTERNAL_PREFIX) else "user"
+
+
+def _collapse_dup_lines(text: str, keep: int = 2) -> str:
+    """折叠连续重复行（保留前 keep 条）。
+
+    针对生成退化：模型偶尔把同一行连吐几千遍。这一步与语义无关，
+    只按「逐字相同且相邻」判断，正常脚本/HTML 不会被误改。
+    """
+    out: list[str] = []
+    prev = None
+    run = 0
+    for line in text.splitlines():
+        if line == prev:
+            run += 1
+            if run > keep:
+                continue
+        else:
+            prev, run = line, 1
+        out.append(line)
+    return "\n".join(out)
+
+
+def tidy_tool_args(args: dict) -> dict:
+    """把「要进历史的那份工具参数」洗干净。
+
+    rerun62 实证：一次 ops_batch 的参数有 **50228 字**，里面有 50k 是
+    `<|channel>thought` 的重复——一条退化调用从此每轮重发，直接把上下文撑爆
+    （紧接着就是 6 次摘要压缩）。执行侧本来就会剥控制标记，历史里没理由留着
+    原文：历史记「实际执行的那份」，才不会自己给自己制造上下文。
+    """
+    if not isinstance(args, dict) or not args:
+        return args
+    out = dict(args)
+    for k, v in list(out.items()):
+        if not isinstance(v, str) or len(v) < 400:
+            continue
+        s = _CTRL_TOKEN_RX.sub("", v) if _CTRL_TOKEN_RX.search(v) else v
+        s = _collapse_dup_lines(s)
+        if k == "script":
+            s, _note = sanitize_script(s)      # 与执行侧同一套净化
+        if len(s) > 12000:                     # 再兜一层：掐中段留头尾
+            s = s[:9000] + "\n…（参数过长，中段省略）…\n" + s[-2500:]
+        out[k] = s
+    return out
 
 
 SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。你的职责是**真正动手完成任务**，而不是描述该怎么做。
@@ -508,7 +553,13 @@ class Agent:
             base += "\n" + MEMORY_HEADER + block + "\n"
         return base
 
-    def messages_with_system(self, history: list[dict]) -> list[dict]:
+    def system_messages(self) -> list[dict]:
+        """本轮要贴在最前面的 system 消息（基础提示 + 技能摘要 + 任务笔记）。
+
+        单独拆出来，是因为压缩必须**只压历史、每轮重贴 system**：把 system 一起
+        交给压缩器，摘要就会把「技能摘要 / 任务笔记」也当历史吃掉一次，
+        下一轮再贴一遍时两边对不上。
+        """
         msgs = [{"role": "system", "content": self._system()}]
         if self._skill_hint:
             msgs.append({"role": "system", "content": self._skill_hint})
@@ -517,7 +568,10 @@ class Agent:
         notes = self._task_notes_block()
         if notes:
             msgs.append({"role": "system", "content": TASK_NOTES_HEADER + notes})
-        return [*msgs, *history]
+        return msgs
+
+    def messages_with_system(self, history: list[dict]) -> list[dict]:
+        return [*self.system_messages(), *history]
 
     # ---------- 任务笔记 ----------
     def _task_notes_path(self) -> Path:
@@ -580,22 +634,28 @@ class Agent:
         ev["journal"] = self.journal.dir.as_posix()
         return ev
 
-    def _compact(self, messages: list[dict]) -> tuple[list[dict], dict | None]:
-        """每轮调用前的自动瘦身，只处理历史部分，系统提示不参与。
+    def _compact(self, system_msgs: list[dict], history: list[dict]
+                 ) -> tuple[list[dict], dict | None]:
+        """每轮调用前的自动瘦身：只动历史，system 每轮由调用方重贴。
 
-        返回 (新消息列表, 压缩事件或 None)。压缩不再只改内存：前后快照落盘、
-        事件写进会话日志，`journal.replay()` 能还原模型当轮看到的完整上下文。
+        返回 (压缩后的历史, 压缩事件或 None)。**压缩结果必须由调用方留下来**
+        （rerun62 的教训）：早期实现返回的是「本轮请求用的副本」，而 `ctx` 一直
+        是原始历史——于是每轮都从 6 万字重新摘一遍，摘要白做、快照翻倍、
+        `60640 → 6087` 之后下一轮又是 `63703`。压缩必须是累积的，不是每轮重算的。
+
+        压缩不再只改内存：前后快照落盘、事件写进会话日志，`journal.replay()`
+        能还原模型当轮看到的完整上下文。
         """
-        system, *rest = messages
-        self._note_system(system)
+        self._note_system(system_msgs[0] if system_msgs else "")
         if not self.cfg.compact_auto:
-            return messages, None
-        res = self.compressor.compact(rest, self.model_key, force=False)
+            return history, None
+        res = self.compressor.compact(history, self.model_key, force=False)
         if not res.changed:
-            return [system, *res.messages], None
+            return history, None
         self.last_compact = res.note
-        after = [system, *res.messages]
-        return after, self._journal_compact(res, messages, after)
+        before = [*system_msgs, *history]
+        after = [*system_msgs, *res.messages]
+        return res.messages, self._journal_compact(res, before, after)
 
     def compress_now(self, history: list[dict]) -> tuple[list[dict], str]:
         """手动压缩入口（CLI 的 /compact 与 Web 界面按钮都走这里）。"""
@@ -785,10 +845,16 @@ class Agent:
                 relay=bool(relay), contract=list(contract or ()),
             )
 
+        # 模型侧上下文：压缩是**累积**的，压完就替换这一份，别每轮从原始 ctx 重算
+        # （rerun62：`60640→6087` 之后下一轮又 `63703`，摘要在白做）。
+        # 展示用 history 保持原样——用户在侧栏回看到的仍是完整对话。
+        model_ctx: list[dict] = list(ctx)
+
         def _push(msg: dict) -> None:
             history.append(msg)
             if ctx is not history:
                 ctx.append(msg)
+            model_ctx.append(msg)
             if self.journal is not None:
                 self.journal.message(msg, source=_msg_source(msg))
 
@@ -797,6 +863,8 @@ class Agent:
                 history.pop()
             if ctx is not history and ctx:
                 ctx.pop()
+            if model_ctx:
+                model_ctx.pop()
 
         yield {"type": "user", "content": user_text}
 
@@ -866,6 +934,12 @@ class Agent:
         # 同一个 search_code pattern 出现 3 次），重新执行毫无新信息，纯烧 GPU。
         # 编排层传进 read_cache 时用共享版（跨泳道/子任务），否则用这份私有的。
         call_cache: dict[str, str] = {}
+        # ops_batch 的「同脚本重复次数」。ops_batch 不能按只读缓存拦截（脚本可能
+        # 写文件、首次失败要允许重来），于是它成了重复调用的逃逸口：rerun59 里
+        # 同一句 `tools.call("web_search", query="...")` 被原样重发了 28 次，
+        # 每次都返回同一批无关结果，模型就这么原地打转到把 token 烧完。
+        # 这里只计数不拦截：第 3 次起在结果后挂硬提示，第 5 次起不再执行。
+        ops_repeat: dict[str, int] = {}
         # 确定性澄清触发：本场 run 收集到的检索信号（未命中/多候选），
         # 每场至多发起一次弹窗（见模块头「确定性澄清触发」）
         amb_signals: list[dict] = []
@@ -893,8 +967,11 @@ class Agent:
             yield {"type": "step", "step": step, "model_key": self.model_key, "model": spec.display}
             self._journal_step = step
             # 每轮重算：这轮刚用过的工具、刚 find_tools 取过的工具，下一轮要常驻下发
-            tools = self._active_tools(ctx)
-            messages, _compact_ev = self._compact(self.messages_with_system(ctx))
+            tools = self._active_tools(model_ctx)
+            # 压缩只压历史；system（基础提示/技能摘要/任务笔记）每轮重贴。
+            # 压缩结果写回 model_ctx：它是累积的，不会每轮重摘一遍。
+            model_ctx, _compact_ev = self._compact(self.system_messages(), model_ctx)
+            messages = self.messages_with_system(model_ctx)
             if _compact_ev:
                 yield _compact_ev
             # 语言提醒以 system 贴在最后（本地保留注意力优势；在线由
@@ -1004,6 +1081,14 @@ class Agent:
             )
 
             if not result.tool_calls:
+                # 成块重复兜底：单条答复里把同一段话隔几段原样再说一遍，无论
+                # 怎么解释都是缺陷（判据见 dedupe 模块头；rerun58 那次「三连刷」
+                # 实为评测脚本跨轮累加，已另修，这里是防御性的单消息去重）。
+                _deduped, _dup_removed = dedupe.dedupe_repeated(result.content or "")
+                if _dup_removed:
+                    result.content = _deduped
+                    yield {"type": "notify", "kind": "ok",
+                           "text": f"答复出现成块重复（{_dup_removed} 字），已由程序去重"}
                 # 停止拦截：模型宣布收工，程序先对交付物契约。缺了就不放行——
                 # 不 yield assistant（那张「已完成」的嘴替用户看不到），把缺口
                 # 写回上下文让它继续。分析内容此刻都在上下文里，补写文件只是
@@ -1048,14 +1133,15 @@ class Agent:
                 # 拦满放行交给收尾闸门兜底。
                 _g_src = grounding.sources_from_history(history)
                 _g_cands = grounding.retrieval_candidates(history)
-                if (ground_blocks < 2 and not stopped()
-                        and (grounding.is_howto_intent(user_text) or _g_cands.strip())):
+                _g_on = bool(grounding.is_howto_intent(user_text) or _g_cands.strip())
+                if _g_on and ground_blocks < 2 and not stopped():
                     # 诊断层（rerun57 后）：闸门不只判定「不合格」，还要说清
                     # 「犯了什么错 + 确定性依据」，让下一轮有方向；但不给正确答案
                     # （答案要模型自己回源求），避免它照抄闸门的提示蒙过去。
                     _g_diag = grounding.diagnose(
                         result.content or "", _g_src, _g_cands,
-                        task=user_text, intent=grounding.is_howto_intent(user_text))
+                        task=user_text, intent=grounding.is_howto_intent(user_text),
+                        history=history)
                     if not _g_diag.get("ok"):
                         ground_blocks += 1
                         _push({"role": "assistant",
@@ -1069,6 +1155,27 @@ class Agent:
                                "no_source": not bool(_g_src.strip()),
                                "diagnosis": _g_diag}
                         continue
+                # 拦满放行（rerun58 新增）：打回 2 次仍未通过时不再无限循环，但
+                # **不能静默交付**——模型两次没改对，第三次的自我声明同样不可信。
+                # 由程序在交付物尾部盖一个可复核的印记（打回几轮、几条没依据），
+                # 用户至少知道哪些内容要按「未经核实」对待。
+                elif _g_on and ground_blocks >= 2:
+                    _g_diag = grounding.diagnose(
+                        result.content or "", _g_src, _g_cands,
+                        task=user_text, intent=grounding.is_howto_intent(user_text),
+                        history=history)
+                    if not _g_diag.get("ok"):
+                        _note = grounding.render_unverified_note(_g_diag)
+                        if _note and _note not in (result.content or ""):
+                            result.content = (result.content or "").rstrip() + _note
+                            yield {"type": "notify", "kind": "bad",
+                                   "text": "答复核查两轮未通过，已在结尾附加「未经核实」声明"}
+                        yield {"type": "grounding_gate",
+                               "issues": _g_diag.get("issues") or [],
+                               "refs": _g_diag.get("refs") or [],
+                               "round": ground_blocks, "exhausted": True,
+                               "no_source": not bool(_g_src.strip()),
+                               "diagnosis": _g_diag}
                 assistant_msg = {"role": "assistant", "content": result.content, **replay_think}
                 _push(assistant_msg)
                 yield {"type": "assistant", "content": result.content, "history": history}
@@ -1152,6 +1259,10 @@ class Agent:
                 return
 
             # 带工具调用的 assistant 消息
+            # 参数先洗一遍再入历史：退化调用（控制标记连吐几千行）会以原文
+            # 每轮重发，一条就能把上下文撑到 5 万字（rerun62）。
+            for _tc in result.tool_calls:
+                _tc.arguments = tidy_tool_args(_tc.arguments)
             tc_payload = [
                 {"function": {"name": tc.name, "arguments": tc.arguments}}
                 for tc in result.tool_calls
@@ -1207,6 +1318,15 @@ class Agent:
                     out = (f"[重复调用]{times} 这个只读调用本任务里已经执行过，"
                            "下面是上次的结果，请直接利用；确实需要新信息就换参数，"
                            "或把关键发现记进 task_notes：\n" + hit[0])
+                elif tc.name == "ops_batch" and ops_repeat.get(sig, 0) >= 4:
+                    # 同一段脚本第 5 次：结果必然一样，不再执行——省下的不是算力
+                    # 而是「模型误以为再试一次会不同」的那几轮。
+                    ops_repeat[sig] = ops_repeat.get(sig, 0) + 1
+                    out = ("[重复调用拦截] 这段脚本一字不差地发过 "
+                           f"{ops_repeat[sig] - 1} 次，结果不会变，本次不再执行。\n"
+                           "必须换策略：① 换查询词（带上具体项目名，或加 site:github.com）；"
+                           "② 换工具（github_search / exact_repo_lookup / npm / fetch_url）；"
+                           "③ 或者停止检索，基于已有结果作答并说明还缺什么。")
                 else:
                     # ops_batch（PTC）在本工具 run() 里需要找到当前 agent——
                     # 只在工具执行这一小段挂上下文，执行完立刻摘除
@@ -1217,6 +1337,18 @@ class Agent:
                     finally:
                         OPS_AGENT_CTX.reset(_ops_t)
                     _tool_ms = (time.monotonic() - _t_tool0) * 1000.0
+                    if tc.name == "ops_batch":
+                        # 同脚本重复计数：第 3 次起在结果后挂硬提示（不拦截，
+                        # 因为脚本可能确实要重跑），第 5 次起上面那个分支直接不执行。
+                        n_rep = ops_repeat.get(sig, 0) + 1
+                        ops_repeat[sig] = n_rep
+                        if n_rep >= 3:
+                            out += (f"\n\n[重复调用] 这段脚本与你此前发出的完全一样，"
+                                    f"这是第 {n_rep} 次，结果不会变。"
+                                    "不要再发同一段脚本——换查询词（带上具体项目名 / "
+                                    "site:github.com）、换工具（github_search / "
+                                    "exact_repo_lookup / npm / fetch_url），"
+                                    "或者停止检索并基于已有结果作答，同时说明还缺什么。")
                     if safe:
                         if read_cache is not None:
                             read_cache.put(sig, out)

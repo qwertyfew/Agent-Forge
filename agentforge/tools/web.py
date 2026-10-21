@@ -459,6 +459,28 @@ def results_look_generic(rows) -> bool:
     return n >= 2
 
 
+def query_tokens(query: str) -> tuple[list[str], list[str]]:
+    """查询里的实词：ASCII 词（≥3 字符、非停用词）与中文词组（≥2 字）。"""
+    words = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9+.#_-]{2,}", query or "")]
+    words = [w for w in words if w not in _QUERY_STOP]
+    cjk = re.findall(r"[\u4e00-\u9fff]{2,}", query or "")
+    return words, cjk
+
+
+def rows_relevant_count(query: str, rows) -> int:
+    """结果里有几条与查询**词面相交**（用来识别「搜回来的根本不是这个词」）。"""
+    words, cjk = query_tokens(query)
+    if not words and not cjk:
+        return len(list(rows or []))
+    n = 0
+    for r in rows or []:
+        url, title, snip = (list(r) + ["", "", ""])[:3]
+        blob = f"{url} {title} {snip}".lower()
+        if any(w in blob for w in words) or any(c in blob for c in cjk):
+            n += 1
+    return n
+
+
 # 领域泛词：在这类任务里几乎必然出现，但从来不指向具体项目。
 # rerun56 实证：查询「Marp markdown presentation tool github repository」按「最长词」
 # 挑词，选出了 presentation（12 字符）而把真正的项目名 Marp（4 字符）丢掉——于是
@@ -469,6 +491,11 @@ _DOMAIN_GENERIC = {
     "markdown", "pptx", "ppt", "pdf", "docx", "converter", "convert", "conversion",
     "cli", "api", "sdk", "plugin", "theme", "template", "generator", "components",
     "component", "library", "framework", "example", "demo", "tutorial",
+    # rerun59 实证：查询「markdown to pptx command line tool open source」里
+    # 前三个实词都是领域泛词，`_key_word` 于是挑中了 command——收紧成
+    # `site:github.com "command"`，搜回一堆「Command Code」AI 工具与剑桥词典。
+    # 这些词同样不指向任何具体项目，挑中它们等于没收紧。
+    "command", "line", "terminal", "shell", "script", "open", "source",
 }
 
 
@@ -504,6 +531,12 @@ def tighten_query(query: str) -> tuple[str, str]:
           and w.lower() not in _QUERY_STOP]
     if en:
         key = max(en, key=_key_word)
+        # 挑中的只是领域泛词 → 这次「收紧」根本收不紧（拿它去 site: 搜只会
+        # 拉回同名泛内容）。与其假装补搜过，不如让调用方如实报「没有可定向
+        # 的项目名」，并提示改用 github_search / 具体名称。
+        if key.lower() in _DOMAIN_GENERIC or key.lower() in _GENERIC_PROJECT_WORDS:
+            return "", (f"查询里只有「{key}」这类领域词，没有可定向的项目名，"
+                        "收紧也定位不到具体仓库")
         return f'site:github.com "{key}"', f"以「{key}」为精确词限定在 GitHub"
     zh = [w for w in picks if w[:1] and not w[:1].isascii()]
     if zh:
@@ -559,13 +592,61 @@ def build_web_tools(guard, cfg):
     browser_dir = Path(cfg.workspace_root) / ".browser"
 
     # ---------- fetch_url ----------
+    # github.com 的 HTML 页面在本机网络上常年超时（rerun60 实测：两次
+    # ConnectTimeout），而 api.github.com 通——同一份 README 换个口子就能拿到。
+    # 让模型「自己想到用 fetch_json」靠不住（失败提示里写了它也没照做），
+    # 程序直接在 fetch_url 内部兜底。
+    _GH_PAGE_RX = re.compile(r"^https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)",
+                             re.I)
+
+    def _gh_repo_root(url: str) -> bool:
+        """是不是 GitHub 仓库首页（owner/repo 两段，不是 /blob /tree /issues 子页）。"""
+        m = _GH_PAGE_RX.match(url or "")
+        if not m:
+            return False
+        rest = (url or "").split("github.com/", 1)[-1].strip("/").split("/")
+        return 2 <= len(rest) <= 2 or (len(rest) == 3 and not rest[2])
+
+    def _github_readme_fallback(url: str, max_chars: int) -> str:
+        m = _GH_PAGE_RX.match(url or "")
+        if not m:
+            return ""
+        owner, repo = m.group(1), m.group(2)
+        if repo.endswith(".git"):
+            repo = repo[:-4]
+        api = f"https://api.github.com/repos/{owner}/{repo}/readme"
+        try:
+            r = requests.get(api, timeout=25, headers={
+                "User-Agent": "AgentForge/0.1 (local agent)",
+                "Accept": "application/vnd.github.raw",
+            })
+            r.raise_for_status()
+        except requests.RequestException:
+            return ""
+        body = (r.text or "").strip()
+        if len(body) < 40:
+            return ""
+        return (f"[实测 · API] {api}\n"
+                f"[来源] 经 GitHub 官方 API 取到的 README 原文（网页版只有导航壳，"
+                f"正文与命令在这里）：{owner}/{repo}\n" + body[: int(max_chars)])
+
     def fetch_url(url: str, max_chars: int = 6000) -> str:
         if not url.lower().startswith(("http://", "https://")):
             return "[错误] 只支持 http/https 链接"
+        # GitHub 仓库首页优先走 API：HTML 版抓回来的是导航壳（Skip to content /
+        # Navigation Menu / Sign in …），README 正文在 6000 字预算之外——等于白抓
+        # （rerun60 实测：抓成功了却「没有一条命令」，模型只能如实说读不到）。
+        if _gh_repo_root(url):
+            fb = _github_readme_fallback(url, max_chars)
+            if fb:
+                return fb
         try:
             r = _get(url)
             r.raise_for_status()
         except requests.RequestException as e:
+            fb = _github_readme_fallback(url, max_chars)
+            if fb:
+                return fb
             return f"[错误] 请求失败: {e}\n{fetch_failure_hint(url, e)}"
         ctype = r.headers.get("content-type", "")
         raw = r.text
@@ -764,6 +845,17 @@ def build_web_tools(guard, cfg):
            （`site:` + 精确词）。
         """
         rows, errors = _search_once(query, max_results)
+        # 相关性闸门（rerun59 实证）：Bing 的 HTML 端点在部分查询上会返回**完全
+        # 无关**的内容——查询「markdown to pptx command line tool」搜回「盐城师范
+        # 学院」，查询「…open source」搜回「韩剧《身价》」。这不是「结果质量差」，
+        # 是「根本不是这个词的结果」。原样喂给模型，它会以为检索到了东西，然后
+        # 换着说法重试同一句查询（rerun59：同一句重发 28 次）。
+        # 判据是词面交集，命中不了就宣布「无有效结果」，把下一步写清楚。
+        dropped_n = 0
+        if rows and rows_relevant_count(query, rows) == 0:
+            dropped_n = len(rows)
+            errors.append(f"返回的 {dropped_n} 条结果与查询词无交集（疑似接口被劫持/无结果）")
+            rows = []
         sections: list[str] = []
         tighter = ""
         gh_key = ""
@@ -799,6 +891,10 @@ def build_web_tools(guard, cfg):
             tq, why = tighten_query(query)
             if tq and tq.strip().lower() != str(query).strip().lower():
                 trows, _ = _search_once(tq, max(3, int(max_results) // 2))
+                # 收紧后的结果同样要过相关性闸门：`site:github.com "UI-Critic"`
+                # 也可能被无视站点限定、返回一堆「UI 设计」页面（rerun59 实测）。
+                if trows and rows_relevant_count(tq, trows) == 0:
+                    trows = []
                 if trows:
                     tighter = tq
                     cause = ("查询过泛" if is_generic_query(query)
@@ -807,11 +903,20 @@ def build_web_tools(guard, cfg):
         if rows:
             ref = "（供参考）" if (tighter or gh_key) else ""
             sections.append(_render_rows(query, rows, "原始查询" + ref))
+        if dropped_n:
+            # 不能静默丢：要让模型知道「不是没搜到，是搜回来的不是这个词」，
+            # 否则它会以为是查询太窄，把同一句换个标点再发一遍。
+            sections.append(
+                f"[已丢弃] 原查询返回的 {dropped_n} 条结果与查询词没有任何词面交集"
+                "（搜回来的不是这个词的东西），已全部丢弃，不作为证据使用。")
         if not sections:
             msg = (f"[错误] 搜索失败。{'；'.join(errors)}" if errors
                    else f"[搜索] “{query}” 没有返回结果。")
-            return (msg + "\n[下一步] 换更具体的词再搜一次：带上站点限定与精确词，"
-                           "如 `site:github.com \"owner/repo\"`；或直接 fetch_url 你猜测的官网地址。")
+            return (msg + "\n[下一步] 不要用同一句话重试——结果不会变。改法："
+                           "① 换成具体项目名（如已知的项目名/包名），"
+                           "写法如 `site:github.com \"owner/repo\"`；"
+                           "② 用 github_search / exact_repo_lookup / npm_package_search "
+                           "直接查官方接口；③ 或者如实说明「没搜到」，不要凭记忆补。")
         tail = ("下一步：挑 ≥1 条最可能是官方的结果，用 fetch_url / fetch_json 抓原文核实后再下结论。"
                 "这里的数字、版本、日期都不可直接写进回复。")
         if gh_key:
