@@ -174,12 +174,16 @@ def judge(case: EvalCase, output: str, sandbox: str | Path,
         judge_norm = out_norm
         file_rel = exp.get("file")
         if file_rel:
-            try:
-                ftext = (Path(sandbox) / str(file_rel)).read_text(
-                    encoding="utf-8", errors="replace")
-                judge_norm = judge_norm + "\n" + _norm(ftext)
-            except OSError:
-                pass
+            # P28：产物在交付区 output/（check_root），根上没有就读不到——
+            # 两个位置都试，读不到才只剩答复（口径不放松）。
+            for base in filter(None, (check_root, sandbox)):
+                try:
+                    ftext = (Path(base) / str(file_rel)).read_text(
+                        encoding="utf-8", errors="replace")
+                    judge_norm = judge_norm + "\n" + _norm(ftext)
+                    break
+                except OSError:
+                    continue
         hit, total, miss_idx = _group_hit(groups, judge_norm)
         ratio = (hit / total) if total else 1.0
         data["fuzzy"] = {"hit": hit, "total": total, "ratio": round(ratio, 2)}
