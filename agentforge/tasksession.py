@@ -49,6 +49,10 @@ def extract_paths(text: str) -> list[str]:
 _WRITE_V_RX = re.compile(r"写入|写出|写成|写到|更新|改写|重写|保存到|保存至|存为|落盘|输出到|交付到|写(?![在进])")
 _HEDGE_RX = re.compile(r"上一步|上游|前面步骤|之前步骤|已有实现|如果|若|已存在|存在则|跳过|可选")
 
+# P26：裸文件名（无目录前缀但带扩展名）。前后向断言防止把「api.github.com」
+# 「3.5」这类 token 拆着命中——与 loop.py 写入放行名单的第二条正则同款。
+_BARE_NAME_RX = re.compile(r"(?<![\w.\-/])[\w\-]+\.[A-Za-z0-9]{1,8}(?![\w.\-/])")
+
 
 def contract_paths(goal: str, root: str | Path) -> list[str]:
     """任务书点名要求**写出**的交付文件（写入动词判定）。
@@ -58,6 +62,13 @@ def contract_paths(goal: str, root: str | Path) -> list[str]:
     「存在即完成」，收尾闸门的 stale 核查只能事后抓。已存在的路径若出现在
     读取语境（参考/读取/基于）不会进契约——写入动词判定已排除。只认工作区
     内的相对路径，逃出工作区 / 解析失败的一律跳过（不猜、不误报）。
+
+    P26（2026-10-22）：裸文件名（fizzbuzz.py、count.txt）也认——但只收
+    「点名且开工时**不存在**」的：裸名有歧义，已存在的多半是种子/材料
+    （「写一个 x.py，读取 y.json」里的 y.json 不该被要求改写）。这是 P4
+    「契约刻意不认裸文件名」的正式重审：整夜全池数据（c3 7/7 全挂——模型
+    读完数据把代码贴在答复里收工，没有任何闸门拦）证明该边界在实质受伤。
+    带目录层的路径行为不变（已存在 = 要求本轮更新）。
     """
     rootp = Path(root)
     req: list[str] = []
@@ -78,6 +89,17 @@ def contract_paths(goal: str, root: str | Path) -> list[str]:
                 target = (rootp / p).resolve()
                 target.relative_to(rootp.resolve())
             except (OSError, ValueError):
+                continue
+            req.append(p)
+        # 裸文件名通道（P26）：写入动词在前 + 开工时不存在才进契约。
+        for m in _BARE_NAME_RX.finditer(sent):
+            p = m.group(0)
+            if p in req:
+                continue
+            head = sent[:m.start()]
+            if not _WRITE_V_RX.search(head):
+                continue
+            if (rootp / p).exists():
                 continue
             req.append(p)
     return req

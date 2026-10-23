@@ -684,6 +684,26 @@
   .ask-card.answered .ask-opt,.ask-card.answered .ask-other{display:none}
   .ask-ans{font-size:12px;color:var(--ink3)}
 
+  /* 程序侧核查卡：闸门结论原本拼在正文末尾（`---` + 【系统侧核查】…），
+     读起来就是「先给答案、再收回答案」。剥出来单独成块：正文是模型说的，
+     核查是程序说的，两块分开且都在。 */
+  .check-card{margin:10px 0 2px;padding:10px 12px;border:1px solid var(--line2);
+    border-left:3px solid #c08000;border-radius:10px;background:var(--panel);
+    white-space:normal;max-width:660px}
+  .theme-dark .check-card{border-left-color:#ffce85}
+  .check-hd{font-size:12px;font-weight:650;color:#9a5b00;margin-bottom:6px}
+  .theme-dark .check-hd{color:#ffce85}
+  .check-item{font-size:12.5px;line-height:1.65;color:var(--ink2)}
+  .check-item + .check-item{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)}
+  .check-item ul,.check-item ol{margin:4px 0;padding-left:20px}
+  .check-item li{margin:2px 0}
+  .check-item p{margin:0 0 6px}
+  .check-item p:last-child{margin-bottom:0}
+  .check-flag{margin:0 0 9px;padding:6px 10px;border-radius:8px;font-size:12.5px;
+    line-height:1.55;color:#9a5b00;
+    background:color-mix(in srgb,#c08000 13%,transparent)}
+  .theme-dark .check-flag{color:#ffce85;background:color-mix(in srgb,#ffce85 14%,transparent)}
+
   /* 产出文件卡片：每张卡片可点击展开内联预览（方案 B：汇总 ↔ 文件对得上） */
   .file-item{display:flex;flex-direction:column;gap:0;max-width:440px}
   .file-card{position:relative}
@@ -4079,7 +4099,7 @@ let liveTask = null;
    先重放缓冲、再续播实时事件，接管者和发起者看到一样的东西。 */
 let taskStream = null, taskStreamId = '';
 const STREAM_EVENTS = ['task','combo','plan','assign','subtask','dispatch','task_done','bridge','conflict','verify','step','skill','route','stats','usage',
-  'thinking','delta','tool_start','tool_result','history','error','subtask_error','stopped','complete','memory','done','steered'];
+  'thinking','delta','tool_start','tool_result','history','error','subtask_error','stopped','complete','memory','done','steered','gate_discard'];
 function followTaskStream(id){
   if(busy || (taskStream && taskStreamId === id)) return;   // 自己发起的流已在手上
   closeTaskStream();
@@ -4217,15 +4237,106 @@ function prependNote(html){
   log.insertBefore(n, log.firstChild);
 }
 
+/* 台账 history → 可展示的对话流（确定性规则，不猜语义）。
+   两条过滤都必须做，否则「切走再切回」看到的和刚才不一样：
+
+   ① 系统注入的 user 消息不是「用户说的话」：核查诊断、记忆回灌、澄清答复、
+      中途 steering 都是以 role=user 塞进上下文的内部指令。实时视图里它们本来就
+      不渲染，回看却会把每一条都画成一个提问气泡——一屏多出三四个「我问过的话」。
+   ② 紧跟在「打回诊断」后面的 assistant 是被废弃的草稿（模型重写前的版本）。
+      回看只该显示最后一版；实时视图里这些草稿已被 gate_discard 当场清掉。
+      不按这个规则过滤，就会出现 3–5 段内容近似甚至互相矛盾的答复并排。 */
+const INTERNAL_USER_RX = /^(【答复核查未通过|【系统侧核查|【系统侧验证结果|【停止拦截·|你上一轮没有输出任何内容|你刚才的回复没有真正完成|（系统侧自动检索记忆）|（澄清弹窗答复）|（用户中途补充)/;
+const RETRY_USER_RX = /^(【答复核查未通过|【系统侧核查|【系统侧验证结果|【停止拦截·|你上一轮没有输出任何内容|你刚才的回复没有真正完成)/;
+
+function normalizeHistory(msgs){
+  const out = (Array.isArray(msgs) ? msgs : []).map(m => Object.assign({}, m));
+  for(const m of out){
+    if(m && m.role === 'user'){
+      const c = String(m.content || '').trim();
+      if(INTERNAL_USER_RX.test(c)){
+        m._internal = true;                 // 不渲染成提问气泡
+        m._retry = RETRY_USER_RX.test(c);   // 这一类会作废它前面那版答复
+      }
+    }
+  }
+  for(let i = 0; i < out.length; i++){
+    const m = out[i];
+    if(!m || m.role !== 'assistant') continue;
+    let j = i + 1;
+    while(j < out.length && out[j] && out[j].role === 'tool') j++;
+    const nxt = out[j];
+    if(nxt && nxt.role === 'user' && nxt._retry){
+      // 只标记正文作废；tool_calls 不能清——那些工具是真跑过的，
+      // 实时视图里也留着，清了反而让回看少几张工具卡。
+      m._superseded = true;
+    }
+  }
+  return out;
+}
+
+/* ============ 程序侧核查声明：从正文尾注里剥出来，单独成卡 ============
+
+   核查闸门的结论（【系统侧核查】/【程序核查未通过】/【系统侧验证结果】…）由程序
+   拼在正文末尾，分隔线是 `\n\n---\n`。它讲的是「上面这些内容未经核实」——
+   夹在正文里有两个毛病：
+     ① 顺序反了：读者先把结论读完，才被告知「别信」，等于先信后推翻；
+     ② 形态错了：和正文在同一段里，看起来像「答案之后又冒出第二段答案」。
+   这里把它从**句尾**剥出来（只剥尾部连续的声明段，正文中间的正常分隔线不动），
+   渲染成独立卡片。实时收尾与回看重绘都走这一个函数，两边长得一模一样。 */
+const CHECK_HEAD_RX = /^(【系统侧核查|【系统侧验证|⚠\s*\*\*程序核查未通过|（系统侧诚实核查)/;
+
+function splitCheckTrailer(text){
+  const segs = String(text || '').split(/\n\s*---\s*\n/);
+  const checks = [];
+  while(segs.length > 1 && CHECK_HEAD_RX.test(String(segs[segs.length - 1]).trim())){
+    checks.unshift(String(segs.pop()).trim());
+  }
+  return { body: segs.join('\n\n---\n').trim(), checks };
+}
+
+function mountCheckCard(seg){
+  if(!seg || !seg.body || !seg.m || seg.m.dataset.chk) return;
+  const sp = splitCheckTrailer(seg.text);
+  if(!sp.checks.length) return;
+  seg.m.dataset.chk = '1';
+  // 正文只留模型说的话：复制/朗读不该把程序的核查声明一起带走
+  seg.text = sp.body;
+  seg.body.innerHTML = md(sp.body);
+  // 卡片自己就有「系统核查」标题，条目里再带一次【系统侧核查】是重复。
+  // 标题刻意不写「未通过」：验证通过的收尾报告也走这条路径（结论在条目里）。
+  const items = sp.checks.map(c => String(c).replace(/^【系统侧核查[^】]*】\s*/, '').trim());
+  const bad = checkFails(items);
+  // 没通过的那一类，正文最前面先给一句状态：读者不必先把结论读完、再被
+  // 文末的声明推翻（「先信后推翻」正是这段声明最刺眼的地方）。
+  if(bad){
+    const flag = el('div','check-flag');
+    flag.textContent = '本答复未通过程序核查：下面的正文不作为事实依据，详见文末核查卡。';
+    seg.body.insertBefore(flag, seg.body.firstChild);
+  }
+  const card = el('div','check-card');
+  card.innerHTML = `<div class="check-hd">系统核查${bad ? ' · 未通过' : ''}</div>`
+    + items.map(c => `<div class="check-item">${md(c)}</div>`).join('');
+  seg.body.appendChild(card);
+}
+
+/* 声明里有没有「否定结论」的措辞。刻意用词表而不是结构化字段：声明是六道闸门
+   各自写的散文，措辞表是唯一能覆盖全部来源的判据；漏判的代价只是少一条顶部提示
+   （卡片还在），误判的代价是多一行提示——两边都可接受。 */
+function checkFails(items){
+  return (items || []).some(c => /未通过|未经核实|未核实|未交付|不是本轮产出|未完成|失败/.test(String(c)));
+}
+
 function renderHistory(hist, task){
   log.innerHTML = '';
   history = hist || [];
   let pending = [];
   let lastA = null;   // 最后一条有正文的回复：回看时也要有 复制/重新回答 工具条
-  for(const m of history){
+  for(const m of normalizeHistory(history)){
+    if(m._internal) continue;                 // 内部指令：不是用户说的话
     if(m.role === 'user'){ addUser(m.content || ''); pending = []; lastA = null; }
     else if(m.role === 'assistant'){
-      if(m.content && m.content.trim()) curToolGroup = null;   // 有正文 = 一段输出结束，封组
+      // 工具卡先处理：作废版只丢正文，它跑过的工具是真的，实时视图也没删。
       if(m.tool_calls && m.tool_calls.length){
         pending = m.tool_calls.map(tc=>{
           const fn = tc.function || {};
@@ -4234,10 +4345,13 @@ function renderHistory(hist, task){
           return addTool(fn.name || 'tool', args || {});
         });
       }
+      if(m._superseded) continue;             // 被打回的草稿正文：不展示
+      if(m.content && m.content.trim()) curToolGroup = null;   // 有正文 = 一段输出结束，封组
       if(m.content && m.content.trim()){
         const a = addAssistant();
         a.text = m.content;
         a.body.innerHTML = md(m.content);
+        mountCheckCard(a);      // 尾注里的核查声明单独成卡（与实时收尾同一函数）
         lastA = a;
       }
     }else if(m.role === 'tool'){
@@ -6496,7 +6610,7 @@ function handleTaskEvent(ev, data){
         addPillNote('系统侧核查：本回复描述了工作区里的文件 / 目录，但整个任务'
           + '<b>没有读取过工作区</b>——'
           + data.unverified_local.map(t => `<b>${esc(t)}</b>`).join('、')
-          + ' 未经核实，详见最终答复附带的核查声明', true);
+          + ' 未经核实，结论见下方核查卡', true);
       }
       else if(Array.isArray(data.artifacts) && data.artifacts.length){
         // 产物核查：系统发现交付文件缺失/本轮未更新/非本轮写出（不是模型自报的结论）
@@ -6505,7 +6619,7 @@ function handleTaskEvent(ev, data){
           `<b>${esc(a.path||'')}</b>（${esc(ST[a.status] || '异常')}）`).join('、');
         const tag = data.artifacts.some(a => a.declared) ? '任务书要求的交付物' : '总结声称已写入';
         addPillNote(`系统侧产物核查：${tag} ${paths}`
-          + '，详见最终答复附带的核查声明', true);
+          + '，结论见下方核查卡', true);
       } else {
         // 收尾验证闸门：系统在任务收尾时亲自运行验证命令的真实结果，
         // 不是模型自报的结论；失败时最终答复末尾会附上系统侧报告
@@ -6568,16 +6682,35 @@ function handleTaskEvent(ev, data){
       }
       scrollBottom();
     }
+    else if(ev === 'gate_discard'){
+      // 上一版答复被系统打回（核查未通过 / 交付物未落盘 / 修正轮）——它不会交付。
+      // 必须当场从画面清掉：不清理的话实时视图是「打回版 + 重写版」的拼接文本，
+      // 而回看读的是台账里只剩最终版的 history，切走再回来内容就「变了」。
+      // 只清「正在流的这一段」。cur 为空说明正文已收口、或当前在工具调用之后
+      // ——那时无法确定哪一段是打回稿，宁可在屏上多留一段（并给出提示），
+      // 也不能拿 lastSeg 兜底误删掉上一段已经有效的内容。
+      if(cur && cur.text){
+        cur.m.remove();
+        if(lastSeg === cur) lastSeg = null;
+        cur = null;
+      }
+      addPillNote(data.reason === 'contract'
+        ? '程序拦截 · 交付物未落盘，上一版答复作废，正在重写'
+        : '程序拦截 · 答复未通过系统核查，上一版作废，正在重写', true);
+    }
     else if(ev === 'delta'){
       hideShimmer();
       unsettleReply();                          // 还在产出正文：这轮没结束
       const ln = laneOf(data.task_id);
       const wc = (!ln && data.task_id && planSteps.length) ? workerCard(data.task_id) : null;
+      // replace=true：整段重写（核查打回后的新版本）。后端只在「新版不是旧版的
+      // 追加尾段」时发它，语义是「丢弃这一段、用 text 重新开始」，不是追加。
+      const put = (seg)=>{ seg.text = data.replace ? String(data.text || '') : seg.text + data.text; };
       if(ln){
         // 并行分栏：这一路输出只进自己那一列，和另一路互不干扰
         closeLaneThinking(ln, '整理结论并作答');
         if(!ln.cur) ln.cur = addAssistant(ln.body);
-        ln.cur.text += data.text;
+        put(ln.cur);
         ln.cur.body.innerHTML = md(ln.cur.text);
         lastSeg = ln.cur;                        // 泳道内容也算本轮回复的正文段
         pinNearBottom(ln.body);
@@ -6586,7 +6719,7 @@ function handleTaskEvent(ev, data){
         // 「任务已完成。」这类员工收尾话术从此只在卡片里，不会冒充整任务终态
         closeLaneThinking(wc, '整理结论并作答');
         if(!wc.cur) wc.cur = addAssistant(wc.body);
-        wc.cur.text += data.text;
+        put(wc.cur);
         wc.cur.body.innerHTML = md(wc.cur.text);
         workerNote(data.task_id, '整理结论并作答…');
         pinNearBottom(wc.body);
@@ -6596,7 +6729,7 @@ function handleTaskEvent(ev, data){
         if(thinkBox || lastThinkLine()) noteAction('整理结论并作答');
         if(!cur) cur = addAssistant();
         curToolGroup = null;                    // 正式输出断开工具组：下一批工具另起一组
-        cur.text += data.text;
+        put(cur);
         cur.body.innerHTML = md(cur.text);
         lastSeg = cur;                           // 记住最后一段有正文的输出，done 时挂工具条
         // 按生成顺序展示：思考块本就在输出之前（thinking 先于 delta 渲染），不挪动。
@@ -6826,6 +6959,9 @@ function handleTaskEvent(ev, data){
     }
     else if(ev === 'done'){
       dropLanes();
+      // 收尾前把程序侧核查声明从正文尾注里剥出来单独成卡：先落这一刀再 settle，
+      // 工具条才会挂在「已经拆好的那一段」后面（同一函数见 renderHistory）。
+      mountCheckCard(lastReplySeg() || cur);
       // 整段回复收尾：落定工具、冻结头像行、挂「复制/重新回答/朗读」工具条，一次做完
       settleReply('done');
       // 收尾把本任务的产出文件做成卡片挂在回复末尾（有产出才挂）。

@@ -2,11 +2,12 @@
 
 运行：python tools/test_layout.py
 
-要证明的四件事：
+要证明的五件事：
 1. 一次任务的全部文件都在 history/<任务>/ 里：过程记录在 record/，最终产出在 output/；
 2. 中间/过渡文件按模型给的相对路径落进 record/work/（保留子目录），不摊在任务根上；
-3. 任务书点名的交付物仍写在声明路径（不搬动工程文件）；
-4. 收尾镜像把交付物复制进 output/，并跳过 history/ 自身（不自我嵌套）。
+3. 任务书点名的交付物（含 P23 裸文件名、P27 组合路径）进交付区 output/<声明路径>；
+4. 收尾镜像把根上的产出复制进 output/，并跳过 history/ 自身（不自我嵌套）；
+5. 读侧镜像（P28）：output/ → record/work/ → 根 的解析顺序，写进哪、从哪读。
 """
 from __future__ import annotations
 
@@ -54,14 +55,92 @@ def main() -> None:
     try:
         p_mid = guard.resolve_for_write("notes/step1.json")
         p_out = guard.resolve_for_write("evals/report.md")
+        # 裸文件名放行（P23 修复）：任务书点名的 fizzbuzz.py 必须落在 workspace
+        # 根——run_command/核验都在根上跑，落进 record/work/ 会让「写完就运行」
+        # 的编码主流程断掉。任务书没点名的裸文件名仍重定向（中间文件的保证不变）。
+        wt2 = WRITE_ALLOW.set(frozenset({"evals/report.md", "fizzbuzz.py"}))
+        try:
+            p_bare = guard.resolve_for_write("fizzbuzz.py")
+            p_bare2 = guard.resolve_for_write("draft.md")
+        finally:
+            WRITE_ALLOW.reset(wt2)
     finally:
         OUTDIR_CTX.reset(ot)
         WRITE_ALLOW.reset(wt)
     check("B 中间文件进 record/work 并保留子目录",
           p_mid == (tmp / outdir / "record" / "work" / "notes" / "step1.json").resolve(),
           str(p_mid))
-    check("B 任务书点名的交付物写声明路径（不搬动工程文件）",
-          p_out == (tmp / "evals" / "report.md").resolve(), str(p_out))
+    # P28：点名交付物进交付区 output/（按声明路径保留子目录）
+    check("B 任务书点名的交付物进交付区 output/（按声明路径）",
+          p_out == (tmp / outdir / "output" / "evals" / "report.md").resolve(), str(p_out))
+    check("B 任务书点名的裸文件名进交付区 output/（P23+P28）",
+          p_bare == (tmp / outdir / "output" / "fizzbuzz.py").resolve(), str(p_bare))
+    check("B 没点名的裸文件名仍进 record/work（中间文件保证不变）",
+          p_bare2 == (tmp / outdir / "record" / "work" / "draft.md").resolve(),
+          str(p_bare2))
+
+    # ---------- B2) P27 组合路径：目录零件 × 裸文件名 ----------
+    # （提取逻辑内联自 loop.py 的 _write_allow 构造；此处验证语义而非实现）
+    import re as _re
+    text = "创建 reports/2026 两级目录，并在 reports/2026 里新建一个空的 summary.md。"
+    allow: set[str] = set()
+    for m in _re.finditer(r"(?:\./|(?:[\w.\-]+/)+)[\w.\-]+\.[A-Za-z0-9]{1,8}", text):
+        allow.add(m.group(0).replace("\\", "/").lstrip("./"))
+    bare: set[str] = set()
+    for m in _re.finditer(r"(?<![\w.\-/])[\w\-]+\.[A-Za-z0-9]{1,8}(?![\w.\-/])", text):
+        bare.add(m.group(0))
+    allow |= bare
+    dirs: set[str] = set()
+    for m in _re.finditer(r"(?<![\w.\-/])(?:[\w\-]+/)+[\w\-]+(?![\w.\-/])", text):
+        d = m.group(0).strip("./")
+        if "/" in d and d not in allow:
+            dirs.add(d)
+    if dirs and bare and len(dirs) * len(bare) <= 400:
+        for d in dirs:
+            for b in bare:
+                allow.add(f"{d}/{b}")
+    check("B2 组合路径进放行名单（f1 的根因）",
+          "reports/2026/summary.md" in allow, str(sorted(allow)))
+    ot3 = OUTDIR_CTX.set(outdir)
+    wt3 = WRITE_ALLOW.set(frozenset(allow))
+    try:
+        p_comp = guard.resolve_for_write("reports/2026/summary.md")
+    finally:
+        WRITE_ALLOW.reset(wt3)
+        OUTDIR_CTX.reset(ot3)
+    check("B2 组合路径落交付区 output/",
+          p_comp == (tmp / outdir / "output" / "reports" / "2026" / "summary.md").resolve(),
+          str(p_comp))
+
+    # ---------- B3) 读侧镜像（P28）：写进哪、从哪读 ----------
+    (tmp / outdir / "record" / "work" / "notes").mkdir(parents=True, exist_ok=True)
+    (tmp / outdir / "record" / "work" / "notes" / "step1.json").write_text(
+        "{}", encoding="utf-8")
+    (tmp / outdir / "output" / "evals").mkdir(parents=True, exist_ok=True)
+    (tmp / outdir / "output" / "evals" / "report.md").write_text(
+        "# 报告\n", encoding="utf-8")
+    (tmp / "seed_root_only.txt").write_text("root", encoding="utf-8")
+    ot2 = OUTDIR_CTX.set(outdir)
+    try:
+        r_mid = guard.resolve_for_read("notes/step1.json")
+        r_out = guard.resolve_for_read("evals/report.md")
+        r_root = guard.resolve_for_read("seed_root_only.txt")
+        r_dot = guard.resolve_for_read(".")
+        r_miss = guard.resolve_for_read("不存在.md")
+    finally:
+        OUTDIR_CTX.reset(ot2)
+    check("B3 写进 work/ 的中间文件同路径可读",
+          r_mid == (tmp / outdir / "record" / "work" / "notes" / "step1.json").resolve(),
+          str(r_mid))
+    check("B3 交付物从 output/ 读回",
+          r_out == (tmp / outdir / "output" / "evals" / "report.md").resolve(),
+          str(r_out))
+    check("B3 只在根上的文件根回退可读",
+          r_root == (tmp / "seed_root_only.txt").resolve(), str(r_root))
+    check("B3 list_dir('.') 的家是交付区 output/",
+          r_dot == (tmp / outdir / "output").resolve(), str(r_dot))
+    check("B3 都不存在时返回第一候选（output/）且不越界",
+          r_miss == (tmp / outdir / "output" / "不存在.md").resolve(), str(r_miss))
 
     # ---------- C) 过程记录落在 record/ ----------
     rec = Recorder(tmp / outdir / "record", rel_root=tmp)

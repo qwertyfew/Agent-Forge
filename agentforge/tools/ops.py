@@ -24,14 +24,19 @@ from __future__ import annotations
 import builtins
 import contextvars
 import io
+import os
 import re
 import threading
 import time
 import traceback
 import types
 
+from pathlib import Path
+
 from typing import Any
 
+from ..tooltrace import names_from_script
+from ..permissions import OUTDIR_CTX
 from .base import Tool, SAFE
 
 # 当前运行的 agent 实例（loop.run 设置）。工具在 _execute 里同线程执行，
@@ -41,6 +46,30 @@ OPS_AGENT_CTX: contextvars.ContextVar[Any] = contextvars.ContextVar("ops_agent",
 # 脚本内禁止调用的工具：ops_batch 嵌套（上下文混乱）、ask_user（脚本线程里
 # 弹窗必死锁）。其余按上面的 SAFE/完全访问分级放行。
 _DENIED_IN_SCRIPT = {"ops_batch", "ask_user"}
+
+# 参数名别名表（只收**纯改名**，见 sdk_call 里的 _fix_kwargs）。
+# 这些写法在各种编辑/文件 API 里都出现过（str_replace、apply_patch、各家 SDK），
+# 模型照先验写出来是必然的；壳替它改一个名字，省一整轮。
+_KW_RENAMES = {
+    "old_string": "old_text", "new_string": "new_text",
+    "old_str": "old_text", "new_str": "new_text",
+    "old_content": "old_text", "new_content": "new_text",
+    "file_path": "path", "filepath": "path", "filename": "path",
+}
+
+# 脚本内禁止直连网络（P5：soak04 / soak08 的 h4）。工具层取数会带「[实测 · API]」
+# 来源标记，闸门的引用核对全靠它；脚本自己 requests 拿到的东西没有标记，
+# 证据链在这里**静默断开**（表面看一切正常）。禁 import 比事后检测彻底。
+_NET_MODULES = frozenset({
+    "socket", "ssl", "requests", "urllib", "urllib3", "http", "httpx",
+    "aiohttp", "ftplib", "telnetlib", "smtplib", "poplib", "imaplib",
+    "xmlrpc", "websocket", "websockets", "pycurl",
+})
+_NET_BLOCK_MSG = (
+    "[脚本拦截] 脚本内禁止直连网络（import {name}）。要取网络数据请用 "
+    "fetch_url / fetch_json / web_search / github_search：它们走工具层，"
+    "结果带「[实测]」来源标记；直连拿到的数据没有标记，等于没核实过。"
+)
 
 _DEFAULT_BUDGET = 2400
 _DEFAULT_TIMEOUT = 60.0
@@ -98,6 +127,9 @@ def _has_code(inner: str) -> bool:
 
 
 _TRIPLE_WRAP_RX = re.compile(r'^\s*("""|\'\'\')(.*)\1\s*$', re.S)
+
+# P24：脚本线程 chdir 到工作区根时的进程级互斥（cwd 是全局状态）。
+_CWD_LOCK = threading.Lock()
 
 
 def _unwrap_triple_quoted(raw: str) -> str | None:
@@ -200,6 +232,9 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                 return "[错误] ops_batch 只能在 agent 运行中使用（找不到执行上下文）"
             if not (script or "").strip():
                 return "[错误] ops_batch 需要 script 参数：一段调用 tools.call(...) 的 Python 代码"
+            # contextvars 不跨线程：脚本线程看不到 OUTDIR_CTX，这里先取快照
+            # （P28：脚本 cwd 要落交付区 output/，靠的就是这个值）
+            outdir_snap = OUTDIR_CTX.get()
 
             # 脚本预处理：把混进来的控制标记/思考文本剥掉（rerun56 首次调用因
             # `<|channel>thought` 混入脚本而 SyntaxError，白烧一整轮）。
@@ -225,6 +260,10 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                 out.write(f"[脚本预处理] {_fix_note}。请只提交纯 Python 代码，"
                           f"不要带思考文本或 <|channel|> 这类通道标记。\n")
             box: dict = {"done": False}
+            # 源码里写了哪些内层调用（只用于「零执行」时的归因，P11）：
+            # 写了却没执行到 ≠ 压根没写，两种错法要给的提示完全不同。
+            _planned_calls = [n for n in names_from_script(script)
+                              if n not in _DENIED_IN_SCRIPT]
 
             def _print(*a, **kw):
                 # 线程安全的输出捕获：不用 redirect_stdout——它是进程级全局，
@@ -271,10 +310,37 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                     out[key] = val
                 return out
 
+            def _fix_kwargs(name: str, kw: dict) -> dict:
+                """把**纯改名**的参数别名就地改成真名，并说明改了什么。
+
+                为什么只做改名：`old_string` / `old_content` / `file_path` 这些写法
+                和 `old_text` / `path` 表达的是同一件事，改过去行为不变——31 轮里
+                3 次 `old_content=` 就是这么白烧了一整轮。而 `edit_file(content=)`
+                明确**不映射**：`content` 是「整篇内容」的意思，硬塞给 `new_text`
+                会把整篇文档当成一处替换，语义完全不同，只能报错讲清楚。
+                """
+                spec = agent.registry.get(name)
+                props = set(((getattr(spec, "parameters", None) or {}).get("properties") or {}))
+                if not props:
+                    return kw
+                fixed: dict[str, str] = {}
+                for key in list(kw):
+                    if key in props:
+                        continue
+                    good = _KW_RENAMES.get(key)
+                    if good and good in props and good not in kw:
+                        kw[good] = kw.pop(key)
+                        fixed[key] = good
+                if fixed:
+                    _print("[参数] 已按同名参数处理："
+                           + "、".join(f"{a} → {b}" for a, b in fixed.items()))
+                return kw
+
             def sdk_call(name: str, *pos, **args) -> str:
                 if time.monotonic() > deadline:
                     raise TimeoutError(f"脚本超过 {timeout:.0f}s 预算，已中止")
                 args = _with_positional(name, pos, args)
+                args = _fix_kwargs(name, args)
                 if name in _DENIED_IN_SCRIPT:
                     r = f"[已拒绝] 脚本内不能调用 {name}"
                     _print(r)
@@ -296,14 +362,21 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                 # 只读工具不回显——它们通常内容很大，模型自己 print 即可，避免截断。
                 if spec.risk != SAFE:
                     _txt = str(r)
-                    _ok = not (_txt.lstrip().startswith("[错误]")
-                               or "未写入" in _txt or _txt.lstrip().startswith("[已拒绝]"))
+                    # 三态：落盘 / 跳过（内容与磁盘一致，幂等层没让它落盘）/ 失败。
+                    # 以前只有两态，跳过的写被算成「已写入磁盘」，于是权威块一边说
+                    # 写成功、一边在下一行说「未重复落盘」——自相矛盾，也让
+                    # event_audit 把一次没发生的写计成重复覆盖（fix01 的 w5 实测）。
+                    _skip = "已是最新内容" in _txt and "未重复落盘" in _txt
+                    _ok = (not _skip) and not (
+                        _txt.lstrip().startswith("[错误]")
+                        or "未写入" in _txt or _txt.lstrip().startswith("[已拒绝]"))
                     echo_lines.append(f"↳ {name}: {_txt[:800]}")
                     writes_reports.append({
                         "tool": name,
                         "path": str(args.get("path") or args.get("file_path") or ""),
                         "result": _txt[:300],
                         "ok": _ok,
+                        "skipped": _skip,
                     })
                 return r
 
@@ -349,24 +422,72 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                 def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
                     if level == 0 and (name == "tools" or name.startswith("tools.")):
                         return tools_mod
+                    head = str(name or "").split(".")[0]
+                    if level == 0 and head in _NET_MODULES:
+                        box.setdefault("blocked", []).append(str(name))
+                        raise ImportError(_NET_BLOCK_MSG.format(name=name))
                     return _orig_import(name, globals, locals, fromlist, level)
 
                 script_builtins["__import__"] = _guarded_import
+                # `__name__` 必须显式给成 "__main__"：exec 的环境里查不到这个名字时
+                # 会回落到 builtins 模块的字典（值是 "builtins"），于是模型写的
+                # `if __name__ == "__main__": main()` 恒为假——脚本"成功"、零调用、
+                # 零报错（P9，soak16 连丢两轮）。这是标准 Python 写法，不该被坑。
                 env = {"call": sdk_call, "tools": tools_mod, "print": _print,
+                       "__name__": "__main__",
                        "__builtins__": script_builtins}
+                # P24：脚本内的裸 IO（open/os.listdir）走进程 cwd，而工具走沙盒
+                # 边界——同一个脚本两套文件系统视角（p23a 的 f3：os.listdir()
+                # 列出的是项目根，模型在项目根找不到沙盒里的种子文件）。P28 起
+                # 脚本 cwd 落到交付区 output/（种子已拷入、交付物写在这），
+                # 没有产出目录时退回工作区根。cwd 是进程级全局状态，用锁串行化
+                # 并发脚本；锁获取带超时——死循环脚本线程永不结束也就永不还锁，
+                # 后续脚本降级为「不切换」而不是一起卡死。
+                ws_raw = getattr(cfg, "workspace_root", None)
+                ws = Path(str(ws_raw)).resolve() if ws_raw else None
+                # OUTDIR_CTX 不跨线程传播：在 run() 里（context 还活着时）先取好
+                _outdir = outdir_snap
+                if ws is not None and _outdir:
+                    _out = ws / _outdir / "output"
+                    if _out.is_dir():
+                        ws = _out
+                prev_cwd = os.getcwd()
+                locked = False
                 try:
+                    if ws is not None and ws.is_dir():
+                        locked = _CWD_LOCK.acquire(timeout=10)
+                        if locked:
+                            os.chdir(str(ws))
+                            box["cwd_from"] = prev_cwd
+                            out.write(f"[script cwd] {ws}\n")
+                        else:
+                            out.write("[script cwd] 未切换（另一脚本占用中），"
+                                      "裸 IO 沿用进程 cwd\n")
                     exec(compile(script, "<ops_batch>", "exec"), env)  # noqa: S102
                 except BaseException as e:  # noqa: BLE001 —— 脚本异常要回给模型，不是崩溃
+                    box["exc"] = f"{type(e).__name__}: {e}"
                     tb = traceback.format_exc().strip().splitlines()
                     out.write(f"\n[脚本异常] {type(e).__name__}: {e}\n"
                               + "\n".join(tb[-4:]))
                 finally:
+                    if locked:
+                        if os.getcwd() == str(ws):
+                            os.chdir(prev_cwd)
+                        _CWD_LOCK.release()
                     box["done"] = True
 
             t = threading.Thread(target=_work, daemon=True, name="ops-batch")
             t.start()
             t.join(timeout + 2)
             if not box["done"]:
+                # 死循环脚本线程还活着、可能还占着 cwd——主线程兜底恢复，
+                # 不让一个跑飞的脚本把整个进程的 cwd 拖走。
+                cf = box.get("cwd_from")
+                if cf:
+                    try:
+                        os.chdir(cf)
+                    except OSError:
+                        pass
                 return ("[错误] 脚本超时未结束（可能存在不含工具调用的死循环）。"
                         "已回传的部分输出如下，请缩小脚本范围重试：\n"
                         + _budget_cut(out.getvalue(), budget))
@@ -375,6 +496,22 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                 summary = f"[ops_batch] {len(stats)} 次工具调用（" \
                           + "、".join(f"{n}×{stats.count(n)}" for n in dict.fromkeys(stats)) \
                           + "）\n"
+            elif box.get("exc"):
+                # P11：三种「0 次工具调用」以前长一个样，处置完全不同。异常中断
+                # 是最常见的（名字没导入、变量没赋值、被禁的 import），单独标出来，
+                # 免得模型（和台账规则）把它跟「脚本被包成字符串」混为一谈。
+                summary = (f"[ops_batch] 0 次工具调用 · 脚本异常中断"
+                           f"（{str(box['exc'])[:160]}）—— 上面的 traceback 就是从你脚本里"
+                           f"抛出来的那一行，先改它再重试。本轮没有拿到任何数据。\n")
+            elif _planned_calls:
+                # 源码里明明写了 call(...)，却一次都没执行到：写在函数/if 分支里没人调，
+                # 或者被 `if __name__ == "__main__"` 这类守卫挡住（本环境已保证
+                # `__name__ == "__main__"`，但更稳的写法是摊平成顶层语句）。
+                summary = ("[ops_batch] 0 次工具调用 · 脚本里写了 "
+                           + "、".join(_planned_calls[:6])
+                           + "，但一次都没执行到。多半是写在函数或 if 分支里而没有被调用，"
+                             "或者整段被包成了字符串。请把调用写成**顶层、直接执行**的语句"
+                             "后重试。本轮没有拿到任何数据。\n")
             else:
                 # rerun57 实证：脚本被包成三引号字符串 → 编译通过、零执行，模型以为
                 # 成功，连续重试 19 次。这里必须明确说「本轮没拿到任何数据 + 常见原因」，
@@ -396,14 +533,24 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             # 权威块：永远排在脚本自身输出之后，且明说是系统核对而非脚本 print。
             tail = ""
             if writes_reports:
-                fails = [w for w in writes_reports if not w.get("ok")]
+                fails = [w for w in writes_reports
+                         if not w.get("ok") and not w.get("skipped")]
                 tail = "\n\n【系统核对·写盘结果】以下由 harness 实测得出，不是脚本里的 print：\n"
                 for w in writes_reports:
+                    if w.get("skipped"):
+                        state = "已存在未变（跳过，未重复落盘）"
+                    elif w.get("ok"):
+                        state = "已写入磁盘"
+                    else:
+                        state = "写入失败"
                     tail += (f"  - {w['tool']} → {w['path'] or '(未给 path)'}: "
-                             f"{'已写入磁盘' if w.get('ok') else '写入失败'}\n")
+                             f"{state}\n")
                 if fails:
                     tail += ("  ⚠ 存在写盘失败。脚本里任何「已写入 / 成功 / write successful」"
                              "都只是你自己的 print，不代表文件存在。请按上面的错误原因修正后重写。\n")
+                elif all(w.get("skipped") for w in writes_reports):
+                    tail += ("  ✓ 文件本来就是这个内容（跳过的是重复写，不是失败）。"
+                             "不要再写一遍，直接给结论。\n")
                 else:
                     tail += "  ✓ 以上文件已确认存在于磁盘。\n"
             if echo_lines:

@@ -50,7 +50,7 @@ def build_search_tools(guard, cfg):
         max_results: int = 60,
     ) -> str:
         """按正则在文件中搜索，输出 文件:行号:内容。"""
-        root = guard.resolve(path)
+        root = getattr(guard, "resolve_for_read", guard.resolve)(path)
         if not root.exists():
             return f"[错误] 路径不存在: {root}"
         try:
@@ -126,7 +126,7 @@ def build_search_tools(guard, cfg):
 
     def find_files(pattern: str, path: str = ".", max_results: int = 100) -> str:
         """按 glob 模式找文件，如 **/*.py。"""
-        root = guard.resolve(path)
+        root = getattr(guard, "resolve_for_read", guard.resolve)(path)
         if not root.exists():
             return f"[错误] 路径不存在: {root}"
         out: list[str] = []

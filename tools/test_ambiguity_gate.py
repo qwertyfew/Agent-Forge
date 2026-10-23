@@ -9,6 +9,11 @@ _has_clarify_intent + Agent.run 端到端的弹窗插桩。
 回复文本里而不是调 ask_user——意图对、通道错。本闸门把触发下沉到架构层：
 检索信号（未命中/多候选）由程序按工具层固定格式识别，模型收尾追问时由
 harness 亲自弹窗拿答复再继续，不再指望提示词管住小模型。
+
+**2026-10-21 起按 PTC 真实形态测**：`ptc_resident=True`（线上默认）时直连
+`list_dir` 会被硬闸拒掉，真实调用一律是「ops_batch + 脚本内 call(...)」。
+判定器（agentforge/clarify.py）喂的是 `_execute` 里的单次调用，所以脚本内层
+调用一样可见——这条测试同时钉住「PTC 常驻下澄清闸门仍然可达」。
 """
 from __future__ import annotations
 
@@ -108,6 +113,11 @@ class _Res:
         self.prompt_eval_count = 0
 
 
+def _ops(script: str) -> "_TC":
+    """PTC 真实形态：一次 ops_batch 调用，工具写在脚本里。"""
+    return _TC("ops_batch", {"script": script})
+
+
 class _StubHub:
     """按剧本回话：第 n 轮返回 script[n-1]。记录每轮收到的 messages 供断言。"""
 
@@ -139,7 +149,7 @@ def test_end_to_end_popup() -> None:
         tmp = Path(td)
         agent = _mk_agent(tmp)
         hub = _StubHub([
-            _Res(tool_calls=[_TC("list_dir", {})]),            # 轮1：列空目录 → 未命中信号
+            _Res(tool_calls=[_ops(f'print(call("list_dir", path={str(tmp)!r}))')]),
             _Res(content=("当前工作区是空的，无法确定您说的 REA 是指什么。\n"
                           "请问您说的 REA 是指什么？")),         # 轮2：文本追问 → 触发弹窗
             _Res(content=("明白了，已按「git 上的项目」处理：建议用 github_search "
@@ -194,7 +204,7 @@ def test_confirm_save_yes() -> None:
         tmp = Path(td)
         agent = _mk_agent(tmp)
         hub = _StubHub([
-            _Res(tool_calls=[_TC("list_dir", {})]),
+            _Res(tool_calls=[_ops(f'print(call("list_dir", path={str(tmp)!r}))')]),
             _Res(content="本地没有找到 REA，请问您说的 REA 是指什么？"),
             _Res(content="明白了，按 git 项目处理。"),
         ])
@@ -220,7 +230,7 @@ def test_memory_hit_no_popup() -> None:
         agent = _mk_agent(tmp)
         agent.memory.append("REA 是 git 上的一个项目（用户此前澄清）")
         hub = _StubHub([
-            _Res(tool_calls=[_TC("list_dir", {})]),            # 空目录 → 未命中信号
+            _Res(tool_calls=[_ops(f'print(call("list_dir", path={str(tmp)!r}))')]),
             _Res(content="本地找不到 REA，请问您说的 REA 是指什么？"),  # 追问
             _Res(content="根据记忆，REA 是 git 上的项目，建议用 github_search 检索。"),
         ])
@@ -247,7 +257,7 @@ def test_no_trigger_without_signal() -> None:
         (tmp / "a.txt").write_text("hello", encoding="utf-8")   # 工作区非空：list_dir 有命中
         agent = _mk_agent(tmp)
         hub = _StubHub([
-            _Res(tool_calls=[_TC("list_dir", {})]),            # 命中 → 无信号
+            _Res(tool_calls=[_ops(f'print(call("list_dir", path={str(tmp)!r}))')]),
             _Res(content="已完成列出。请问还需要做什么吗？"),   # 有追问但无信号 → 不弹
         ])
         agent.hub = hub

@@ -86,6 +86,36 @@ def test_selector_surface() -> None:
     check("索引仍列出可编入脚本的工具（如 read_file）", "read_file" in idx, idx[:120])
 
 
+def test_signature_block() -> None:
+    """P10：内层工具签名必须摊开给模型。
+
+    31 轮浸泡跑里 21 次参数名错（edit_file 传 content 12 次、old_content 3 次、
+    缺 new_text 2 次；github_search 传 type 4 次），落在 16/31 轮——每次白烧一跳。
+    报错里其实写了正确签名，模型下一轮就改对，说明"看不见"才是根因。
+    """
+    from agentforge.loop import ptc_signature_block
+    tmp = Path(tempfile.mkdtemp(prefix="af_ptc_sig_"))
+    ag = _mk_agent(tmp, [], ptc=True)
+    sig = ptc_signature_block(ag.registry)
+    check("签名块含 edit_file 的三个参数",
+          "edit_file(path, old_text, new_text)" in sig, sig[:400])
+    check("签名块含 write_file 的 content（与 edit_file 区分）",
+          "write_file(path, content" in sig, sig[:400])
+    check("签名块含 github_search 的 sort（不是 type）",
+          "github_search(" in sig and "sort" in sig and "type" not in sig.split("github_search(")[1][:80],
+          sig[:600])
+    # 返回值类型：h4 的 6 次 `AttributeError: 'str' object has no attribute 'get'`
+    # 全是「以为 fetch_json 返回 dict」。签名只写参数、不写返回，等于没说完。
+    check("签名块声明返回值是字符串", "返回值**一律是字符串**" in sig, sig[:600])
+    check("fetch_json 标明 404 也返回字符串、不抛异常",
+          "fetch_json(" in sig and "不抛异常" in sig, sig[:800])
+    sysmsg = ag._system()
+    check("系统提示里真的带上了签名块", "脚本内工具签名" in sysmsg, sysmsg[-400:])
+    # 非 PTC 模式不加：那时 schema 是全量下发的，再加就是重复占 token
+    ag2 = _mk_agent(tmp, [], ptc=False)
+    check("非 PTC 模式不重复下发签名块", "脚本内工具签名" not in ag2._system())
+
+
 def test_name_normalization() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="af_ptc_"))
     ag = _mk_agent(tmp, [], ptc=True)
@@ -213,6 +243,7 @@ def test_ops_batch_contract_gate() -> None:
 
 def main() -> None:
     test_selector_surface()
+    test_signature_block()
     test_name_normalization()
     test_malformed_helper()
     test_top_level_guard()

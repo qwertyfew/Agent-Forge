@@ -138,6 +138,35 @@ def _safe_resolve(p: Path) -> bool:
         return False
 
 
+def _align_stream(streamed: str, summary: str) -> tuple[str, bool]:
+    """把「已流出的正文」与「本轮最终正文」对齐 → (要下发的文本, 是否整段替换)。
+
+    三态，别用「长度变大」这一个条件判断（那正是旧实现的 bug）：
+
+    | 关系 | 返回 | 为什么 |
+    |---|---|---|
+    | summary 以 streamed 开头 | 差值文本, False | 正常路径：只是补发了尾部声明 |
+    | 完全相同 | "", False | delta 已经流完，不需要再发 |
+    | 既非追加也非相同 | summary, True | **整段重写**（核查打回后的新版本） |
+
+    第三态如果漏掉，重写版的正文永远到不了浏览器：界面停在打回版本的拼接
+    文本上，而回看拿到的是台账里的最终版——同一个任务两种内容。
+    """
+    base = (streamed or "").rstrip()
+    text = (summary or "").strip()
+    if not text:
+        return "", False
+    if base and text.startswith(base):
+        return (text[len(base):], False) if len(text) > len(base) else ("", False)
+    if text == base:
+        return "", False
+    if base.startswith(text):
+        # 反过来：新正文是已流出内容的前缀（收尾把正文截短，如去掉了尾注）。
+        # 这不是重写，不该清屏重来——交给下一次 delta 自然覆盖即可。
+        return "", False
+    return text, True
+
+
 class TaskBus:
     """任务事件广播器：让多个 SSE 订阅者看到同一条任务流。
 
@@ -230,6 +259,19 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload.encode("utf-8"))
         self.wfile.flush()
 
+    def _emit_gate_discard(self, emit, reason: str, **extra):
+        """告诉前端「上一版答复作废，已打回重写」。
+
+        为什么必须是一条独立事件：被核查/契约闸门打回的正文**已经流到了浏览器**
+        （delta 是逐字发的），但那一版永远不会交付。不通知前端清掉，界面就会
+        把「打回版 + 重写版」拼成一段；而回看读的是台账里的最终 history（只有
+        最后一版），于是同一个任务在「实时」和「切回来」两种视图下内容不同。
+        这是纯展示层事件，不改变任务状态、不进 history。
+        """
+        payload = {"reason": reason}
+        payload.update({k: v for k, v in extra.items() if v is not None})
+        emit("gate_discard", payload)
+
     # ---------- GET ----------
     def do_GET(self):
         path = urlparse(self.path).path
@@ -241,6 +283,9 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            # index.html 是唯一的前端产物，每次改完都要靠刷新生效；不加这一行，
+            # 浏览器会拿缓存里的旧页面，看起来像「修了没效果」。
+            self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(body)
         elif path == "/api/state":
@@ -1813,6 +1858,12 @@ class _Handler(BaseHTTPRequestHandler):
                                 + "、".join(str(m) for m in missing[:4])
                                 + "），已要求当场补写",
                     })
+                    # 这一版被拦回了，不会被交付。必须让前端把它清掉，
+                    # 否则界面留下「被打回的版本 + 重写版」的拼接文本，而回看
+                    # 只显示最终版——两处对不上（见 _emit_gate_discard）。
+                    self._emit_gate_discard(emit, "contract", missing=missing,
+                                            round_no=ev.get("round"))
+                    streamed = ""
                 elif kind == "grounding_gate":
                     # 溯源/证据准入闸门：程序判定「这条答复不能交付」并已打回。
                     # rerun16 的老教训重演——闸门在跑、事件却落不到分支里被静默
@@ -1836,6 +1887,12 @@ class _Handler(BaseHTTPRequestHandler):
                         "text": (f"{head}：{n_cmd} 条命令/目录在源里无据、"
                                  f"{n_ref} 处引用不在检索候选内，已要求回源改正"),
                     })
+                    if not exhausted:
+                        # 打回重写：上一版不会交付。清掉已流出的正文，否则实时画面
+                        # 是「第一版+第二版+…」的拼接，回看却只有最后一版
+                        # ——用户切走再切回就会觉得「内容变了」。
+                        self._emit_gate_discard(emit, "grounding", round_no=ev.get("round"))
+                        streamed = ""
                 elif kind == "skeleton":
                     # 任务书骨架：任务书里点名的必填项已铺成待填位。播成思考行——
                     # 这是「程序替任务书建的清单」，不是模型的动作，必须可见。
@@ -1885,19 +1942,26 @@ class _Handler(BaseHTTPRequestHandler):
                         "round": round_now,
                         "progress": progress_text(),
                     })
+                elif kind == "gate_discard":
+                    # 编排层修正轮（验证/产物/诚实/来源/事实核查）会整段重写答复。
+                    # 上一版已流到浏览器但不会被交付，必须清掉；同时把 streamed
+                    # 归零，让新版本的正文按「整段写入」下发而不是当成追加。
+                    self._emit_gate_discard(emit, str(ev.get("reason") or "corrective"))
+                    streamed = ""
                 elif kind == "assistant":
                     summary = (ev["content"] or "").strip()
                     final_history = ev["history"]
-                    # 收尾闸门的系统侧声明（未交付 / 未经核实）只挂在这条 summary 上，
-                    # SSE 此前只发 delta，声明从未到达浏览器——「闸门判了，用户看不见」。
-                    # 只在 summary 是「已流式正文 + 追加声明」时补发尾段，避免重写轮
-                    # （修正轮把正文整段换掉）造成内容错乱。
-                    if (streamed and len(summary) > len(streamed.rstrip())
-                            and summary.startswith(streamed.rstrip())):
-                        base = streamed.rstrip()
-                        tail = summary[len(base):]
-                        streamed = summary
-                        emit("delta", {"text": tail})
+                    # 正文与已流出的内容对齐（三态，见 _align_stream）：
+                    # 只补尾段 / 什么都不发 / 整段替换。少了「整段替换」这一支，
+                    # 重写版的正文永远到不了浏览器：界面停在打回版本的拼接文本上，
+                    # 而回看拿到的是最终版，两处对不上。
+                    text, replace = _align_stream(streamed, summary)
+                    if text:
+                        payload = {"text": text}
+                        if replace:
+                            payload["replace"] = True
+                        emit("delta", payload)
+                    streamed = summary
                     emit("history", {"messages": ev["history"]})
                 elif kind == "history":
                     # 中途停止时编排器主动回吐已完成的部分，让界面/台账不丢上下文

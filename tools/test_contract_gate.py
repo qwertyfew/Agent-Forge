@@ -92,8 +92,14 @@ def main() -> None:
     check("点名且不存在 → 契约项", req == ["tmp/agentforge-todo-system.txt"], repr(req))
     check("已存在的路径是材料不是交付",
           contract_paths("参考 agentforge/loop.py 写总结", tmp) == [])
-    check("裸文件名不进契约（产出目录兜底）",
-          contract_paths("写 report.md 交差", tmp) == [])
+    check("裸文件名（点名且不存在）→ 契约项（P26）",
+          contract_paths("写 report.md 交差", tmp) == ["report.md"],
+          repr(contract_paths("写 report.md 交差", tmp)))
+    (tmp / "users.json").write_text("{}", encoding="utf-8")
+    check("裸文件名已存在 = 种子/材料，不进契约（P26 防误伤）",
+          contract_paths("写一个 count_users.py，读取 users.json 并打印总数", tmp)
+          == ["count_users.py"],
+          repr(contract_paths("写一个 count_users.py，读取 users.json 并打印总数", tmp)))
     blk = contract_block(goal, tmp)
     check("契约块亮出文件与拦截警告",
           "tmp/agentforge-todo-system.txt" in blk and "核对磁盘" in blk)

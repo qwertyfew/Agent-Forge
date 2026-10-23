@@ -70,7 +70,13 @@ def build_shell_tools(guard, cfg):
 
         # workspace_root 强转 Path：调用方（如 bench）若赋了 str，这里直接
         # AttributeError 会把整条 run_command 炸掉，宁在此处兜住。
-        work_dir = guard.resolve(cwd) if cwd else Path(guard.cfg.workspace_root).resolve()
+        # 默认 cwd 走读侧镜像（P28）：任务设有产出目录时落 `output/`——种子
+        # 在任务发起时已拷进去，「写完就运行」「跑测试」都在模型可见世界里。
+        _rd = getattr(guard, "resolve_for_read", None)
+        if _rd is not None:
+            work_dir = _rd(cwd or ".")
+        else:
+            work_dir = guard.resolve(cwd) if cwd else Path(guard.cfg.workspace_root).resolve()
         if not work_dir.is_dir():
             return f"[错误] 工作目录不存在: {work_dir}"
 

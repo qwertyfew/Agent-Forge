@@ -208,6 +208,55 @@ def _external_lines(root: Path, toks: set[str], *, max_repos: int = 6,
     return lines
 
 
+# 任务点名了具体文件（带扩展名，或含路径分隔符）：读/改这个文件的任务不需要
+# 整张地图——它已经知道要哪个文件，给目录树只是白占「免压缩区」。
+_NAMED_FILE_RX = re.compile(
+    r"[\w\-./\\]+\.(?:py|md|markdown|json|ya?ml|toml|ini|cfg|txt|js|mjs|ts|tsx|jsx"
+    r"|html?|css|scss|sh|bat|ps1|csv|log|xlsx?|docx?|pptx?)\b", re.I)
+# 「要动代码」的信号：改/修/实现/重构/测试/报错……
+_CODE_SIGNALS = ("改", "修", "实现", "重构", "新增", "添加", "删除", "优化", "替换",
+                 "函数", "模块", "接口", "报错", "测试", "跑一下", "refactor", "fix",
+                 "implement", "add ", "remove", "update", "bug", "test")
+# 「只是在问/在读」的信号
+_QA_SIGNALS = ("是什么", "为什么", "怎么", "解释", "总结", "说明", "介绍", "讲讲",
+               "告诉我", "几段话", "三句话", "一句话", "读一下", "看一下", "分析",
+               "what", "why", "how", "explain", "summar")
+
+
+def _profile(task_text: str) -> dict:
+    """按任务类型决定预热块给哪几段（纯关键词，确定性，可单测）。
+
+    动机（§6.4 上下文体检）：预热块占系统提示 47.8%，而其中绝大多数对
+    「读一个 README 并回答三句话」这类任务毫无用处——它却处在免压缩区，
+    每一轮都要重发。裁剪的判据只用任务原文里的词，不问模型。
+
+    三档：
+      read_named  点名了文件 → 不给地图（它知道要哪个），只给该文件的锚点
+      qa          纯问/纯读 → 给超短目录 + README，不给模块清单
+      code        要动代码/默认 → 保持原样（树 + 模块 + 外部仓库 + 锚点）
+    """
+    text = task_text or ""
+    low = text.lower()
+    named = bool(_NAMED_FILE_RX.search(text))
+    code = sum(1 for w in _CODE_SIGNALS if w in low)
+    qa = sum(1 for w in _QA_SIGNALS if w in low)
+
+    if named and code == 0:
+        # 点名文件 + 没有改造意图 = 读它/答关于它的问题。
+        # README 摘要也去掉：任务说读 README.md，再给一份 README 摘要纯属重复。
+        return {"intent": "read_named", "tree": 0, "modules": False,
+                "external": False, "readme": False, "files": 4}
+    if named and code:
+        # 要改这个文件：给少量地图（改完可能要连带改别的），但不必给全量
+        return {"intent": "edit_named", "tree": 20, "modules": True,
+                "external": False, "readme": False, "files": 8}
+    if qa and code == 0:
+        return {"intent": "qa", "tree": 12, "modules": False,
+                "external": False, "readme": True, "files": 4}
+    return {"intent": "code", "tree": 60, "modules": True,
+            "external": True, "readme": True, "files": None}
+
+
 def _readme_digest(root: Path, limit: int = 600) -> str:
     """README 开头若干字（按行边界截断），去掉图片与链接尾巴。"""
     for name in ("README.md", "README.rst", "README.txt", "README"):
@@ -238,36 +287,44 @@ def build_block(cfg, task_text: str) -> tuple[str, dict]:
 
     max_chars = max(500, int(getattr(cfg, "warmup_max_chars", 3500)))
     max_files = max(0, int(getattr(cfg, "warmup_max_files", 12)))
+    prof = _profile(task_text)
+    stats["intent"] = prof["intent"]
+    if prof.get("files") is not None:
+        max_files = min(max_files, int(prof["files"]))
 
     parts: list[str] = ["【项目速览 · 任务开局注入】"
                         "（路径均相对工作区根目录，需要细节直接 read_file / list_dir）"]
 
-    tree = _tree_lines(root)
+    tree = _tree_lines(root, max_lines=int(prof["tree"])) if prof["tree"] else []
     stats["tree_entries"] = len(tree)
     if tree:
         parts.append("【目录结构】\n" + "\n".join(tree))
 
     # 放在目录结构之后、README 之前：它比 README 摘要更能防「路径幻觉」。
-    mods = _module_lines(root, _task_tokens(task_text))
-    stats["modules"] = len(mods)
-    if mods:
-        parts.append("【源码模块清单】（判断「某能力在不在」前先看这里，别猜路径）\n"
-                     + "\n".join(mods))
+    # 但只发给「要动代码」的任务：纯阅读/纯问答给模块清单等于白占位置。
+    if prof["modules"]:
+        mods = _module_lines(root, _task_tokens(task_text))
+        stats["modules"] = len(mods)
+        if mods:
+            parts.append("【源码模块清单】（判断「某能力在不在」前先看这里，别猜路径）\n"
+                         + "\n".join(mods))
 
     # 被分析的外部仓库清单：只列仓库名 + 一级子目录。
     # 为什么必须显式给：external/learn-claude-code 的子目录是 s01_agent_loop、
     # s08_context_compact 这种下划线风格，模型会把仓库名也套成 learn_claude_code
     # （rerun23 被引用核查连拒 4 次都是这个错，每次都要重写整篇交付物）。
     # 目录结构块只写到 external/ 不展开，等于让模型凭印象拼仓库名。
-    exts = _external_lines(root, _task_tokens(task_text))
-    if exts:
-        stats["external"] = len(exts)
-        parts.append("【外部仓库清单】（这些是真实目录名，引用时必须原样照抄拼写）\n"
-                     + "\n".join(exts))
+    if prof["external"]:
+        exts = _external_lines(root, _task_tokens(task_text))
+        if exts:
+            stats["external"] = len(exts)
+            parts.append("【外部仓库清单】（这些是真实目录名，引用时必须原样照抄拼写）\n"
+                         + "\n".join(exts))
 
-    digest = _readme_digest(root)
-    if digest:
-        parts.append("【README 摘要】\n" + digest)
+    if prof["readme"]:
+        digest = _readme_digest(root)
+        if digest:
+            parts.append("【README 摘要】\n" + digest)
 
     if max_files:
         toks = _task_tokens(task_text)

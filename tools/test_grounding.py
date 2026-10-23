@@ -216,6 +216,44 @@ def test_admission_passes_retrieved() -> None:
     _check("检索候选里的源不误伤", not bad, str(bad))
 
 
+def test_admission_skips_task_given_ref() -> None:
+    """P6：任务书自己给出的仓库名，不该被当成"未准入的引用"。
+
+    现场（soak17 的 h4）：任务书点名去抓 agentforge-xyz/no-such-repo-…，
+    模型如实回「源里未提及该仓库，请核实名称」，答复里当然出现了那个名字。
+    旧口径把它判成未准入，还给一条**诚实**答复盖了「不要照着操作」。
+    """
+    task = "帮我找到 https://github.com/agentforge-xyz/no-such-repo-9f3a2b 这个仓库"
+    reply = ("源里未提及该仓库（agentforge-xyz/no-such-repo-9f3a2b）的任何信息，"
+             "请核实名称是否正确。")
+    pool = ("[实测 · API] GitHub 官方搜索接口 · 查询「no-such-repo」· 命中 0 个\n")
+    bad_old = G.evidence_admission_issues(reply, pool)
+    bad_new = G.evidence_admission_issues(reply, pool, task=task)
+    _check("任务书给的仓库名会被旧口径判未准入", bool(bad_old), str(bad_old))
+    _check("带上任务书后不再判未准入（P6）", not bad_new, str(bad_new))
+    # 反例：模型自己编的仓库仍然要拦，别把整个闸门关掉
+    reply2 = reply + " 你可能找的是 someone/invented-repo。"
+    bad2 = G.evidence_admission_issues(reply2, pool, task=task)
+    _check("非任务书给的名字仍被拦", any("invented-repo" in b for b in bad2), str(bad2))
+
+
+def test_repo_citation_traceability() -> None:
+    """P2：判据要能证伪——说出来的仓库名必须在本次工具输出里出现过。"""
+    evidence = ("[实测 · API] GitHub 官方搜索接口 · 查询「REA」\n"
+                "  1. morluto/rea  star=353614  https://github.com/morluto/rea\n"
+                "  2. im95able/Rea  star=175  https://github.com/im95able/Rea\n")
+    good, bad = G.repo_citation_split(
+        "推荐 morluto/rea，备选 https://github.com/im95able/Rea。", evidence)
+    _check("有据的仓库全部命中", len(good) == 2 and not bad, f"{good} / {bad}")
+    good2, bad2 = G.repo_citation_split("推荐 awesome/rea-cli。", evidence)
+    _check("凭空来的仓库被判无据", not good2 and bool(bad2), str(bad2))
+    # 占位写法（教用户怎么填）不算引用
+    _g3, b3 = G.repo_citation_split("把 owner/your-repo 换成你的仓库名即可。", evidence)
+    _check("占位写法不算编造", not b3, str(b3))
+    _check("证据里有仓库候选", G.evidence_has_repo(evidence))
+    _check("证据里没有仓库候选（诚实空结果）",
+          not G.evidence_has_repo("[ops_batch] 1 次工具调用（github_search×1）\n"))
+
 def test_citation_ignores_cli_arguments() -> None:
     # rerun58 误伤：docker 镜像名 marpteam/marp-cli 被当成「自构的仓库地址」，
     # 闸门反过来说正确答案「地址是自己拼的」。命令行里的 token 是参数，不是引用。
@@ -429,6 +467,8 @@ def main() -> None:
     test_url_trailing_backtick_stripped()
     test_admission_flags_self_constructed()
     test_admission_passes_retrieved()
+    test_admission_skips_task_given_ref()
+    test_repo_citation_traceability()
     test_citation_ignores_cli_arguments()
     test_citation_ignores_acronym_pairs()
     test_false_provenance_detected()

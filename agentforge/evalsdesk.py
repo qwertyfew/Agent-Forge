@@ -448,6 +448,10 @@ def _process_lines(r: dict) -> list[str]:
             args = p.get("args")
             args_s = json.dumps(args, ensure_ascii=False) if isinstance(args, (dict, list)) else str(args or "")
             L = f"  - 轮 {s} · {p.get('name', '?')} `{args_s}`"
+            inner = p.get("inner") or []
+            if inner:
+                # PTC：真正的工具名在脚本里，报告里要露出来，否则读起来像「只调了个 ops_batch」
+                L += "（脚本内：" + "、".join(dict.fromkeys(str(x) for x in inner)) + "）"
             out = str(p.get("out") or "").strip()
             if out:
                 L += "\n    → " + out.replace("\n", "\n      ")
@@ -456,6 +460,10 @@ def _process_lines(r: dict) -> list[str]:
             lines.append(f"  - 轮 {s} · skill 注入：{p.get('name', '')}（{p.get('detail', '')}）")
         elif k == "verify":
             lines.append(f"  - 轮 {s} · 系统核验")
+        elif k == "gate":
+            tag = "；打满放行" if p.get("exhausted") else ""
+            lines.append(f"  - 轮 {s} · 核查闸门（第 {p.get('round', '?')} 轮{tag}）："
+                         + "；".join(str(x) for x in (p.get("issues") or []))[:300])
         elif k == "error":
             lines.append(f"  - 轮 {s} · 事件流报错：{p.get('msg', '')}")
         elif k == "stopped":

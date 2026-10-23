@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .config import Config
+from .layout import output_dir, record_dir
 
 # 「当前这次工具调用是否放行工作区之外的路径」。完全访问权限的任务里为 True。
 # 用 ContextVar 而不是 Guard 的实例属性：Web 端是 ThreadingHTTPServer，多个任务
@@ -67,27 +68,72 @@ class Guard:
         return p
 
     def resolve_for_write(self, raw: str | Path) -> Path:
-        """写类工具的路径解析：产出目录的**架构级保证**。
+        """写类工具的路径解析：任务目录两级落点的**架构级保证**（P28）。
 
-        任务设有产出目录（OUTDIR_CTX）时，相对路径一律强制落进该目录——
-        「中间文件进产出目录」由代码保证，不再赌提示词。放行通道只有两个：
-        - 任务文本里点名的相对路径（WRITE_ALLOW，编排层从任务书提取）；
-        - 绝对路径（模型显式表达了意图，工作区边界规则照常生效）。
-        已经落在产出目录里面的路径（比如模型写了「out 目录/子路径」）不二次
-        嵌套，按原样解析。"""
+        任务设有产出目录（OUTDIR_CTX = history/<任务>）时：
+        - 任务书点名的相对路径（WRITE_ALLOW，编排层从任务书提取，含 P23 裸
+          文件名与 P27 组合路径）→ **交付区** `history/<任务>/output/<路径>`；
+        - 其余相对路径 → **中间/过渡文件区** `history/<任务>/record/work/<路径>`；
+        - 已经落在任务目录里的路径（模型写了 history/…、output/…、record/…）
+          按原样解析，不二次嵌套；
+        - 绝对路径不重定向（模型显式意图，工作区边界规则照常生效）。
+
+        「中间文件进 record/、交付物进 output/」由代码保证，不赌提示词。"""
         p = Path(str(raw))
         outdir = OUTDIR_CTX.get()
         if outdir is None or p.is_absolute():
             return self.resolve(raw)
-        allow = WRITE_ALLOW.get() or frozenset()
         norm = str(raw).strip().replace("\\", "/").lstrip("./")
-        if norm in allow or norm == outdir or norm.startswith(outdir.rstrip("/") + "/"):
+        if not norm or norm == ".":
             return self.resolve(raw)
-        # 中间/过渡文件统一进「过程记录」目录的 work/ 下，按模型给的相对路径
-        # 保留子目录（草稿、提取片段、临时脚本各归各位）。以前直接摊在
-        # history/<任务>/ 根上，和证据记录、版本快照混在一起，复盘时分不清
-        # 哪个是模型写的、哪个是 harness 写的。
-        return self.resolve(Path(outdir) / "record" / "work" / str(raw))
+        if norm == outdir or norm.startswith(outdir.rstrip("/") + "/"):
+            return self.resolve(raw)
+        if norm == "output" or norm.startswith("output/"):
+            # 模型视角的 output/… 就是交付区根下的同路径
+            return self.resolve(Path(output_dir(outdir)) / norm[len("output/"):].lstrip("/"))
+        if norm == "record" or norm.startswith("record/"):
+            return self.resolve(Path(record_dir(outdir)) / norm[len("record/"):].lstrip("/"))
+        allow = WRITE_ALLOW.get() or frozenset()
+        if norm in allow:
+            # 点名交付：进交付区，按声明路径保留子目录
+            return self.resolve(Path(output_dir(outdir)) / norm)
+        # 中间/过渡文件统一进「过程记录」的 work/ 下，按模型给的相对路径
+        # 保留子目录（草稿、提取片段、临时脚本各归各位）。
+        return self.resolve(Path(record_dir(outdir)) / "work" / norm)
+
+    def resolve_for_read(self, raw: str | Path) -> Path:
+        """读类工具的路径解析：与写侧镜像（P28 读侧对称）。
+
+        解析顺序：交付区 output/ → 中间文件区 record/work/ → 工作区根。
+        「写进哪、从哪读」自洽：模型写 notes/step1.json（进 work/）后用同一路径
+        read_file 必须能读回；任务书点名的交付物（进 output/）同理。都不存在时
+        返回第一候选（output/），报错信息由调用方给出。
+        """
+        p = Path(str(raw)).expanduser()
+        if p.is_absolute():
+            return self.resolve(p)
+        outdir = OUTDIR_CTX.get()
+        norm = str(raw).strip().replace("\\", "/").lstrip("./")
+        if not outdir:
+            return self.resolve(raw or ".")
+        if not norm:
+            # "." / "./" → 模型的家 = 交付区 output/（list_dir 的默认视角）
+            return self.resolve(Path(output_dir(outdir)))
+        # 模型显式写了 output/… / record/… 前缀：直接映射进任务目录
+        if norm == "output" or norm.startswith("output/"):
+            return self.resolve(Path(output_dir(outdir)) / norm[len("output/"):].lstrip("/"))
+        if norm == "record" or norm.startswith("record/"):
+            return self.resolve(Path(record_dir(outdir)) / norm[len("record/"):].lstrip("/"))
+        out_p = self.resolve(Path(output_dir(outdir)) / norm)
+        if out_p.exists():
+            return out_p
+        work_p = self.resolve(Path(record_dir(outdir)) / "work" / norm)
+        if work_p.exists():
+            return work_p
+        root_p = self.resolve(norm)
+        if root_p.exists():
+            return root_p
+        return out_p
 
     # ---------- 命令 ----------
     def check_command(self, command: str) -> None:

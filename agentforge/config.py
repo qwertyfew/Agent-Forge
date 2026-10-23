@@ -88,6 +88,10 @@ class Config:
     ollama_host: str = "http://localhost:11434"
     keep_alive: str = "15m"
     request_timeout: int = 900
+    # 流式读取的空闲上限（秒）：多久没有收到任何新字节就认定端侧卡住（P8）。
+    # 与 request_timeout 分工不同：后者是总上限/连接，前者治"不回包"。
+    # 180s 是给 12B 本地模型的长提示首字延迟留的余量；在线模型可调到 60。
+    stream_idle_timeout: int = 180
     # 本地模型串行执行：同一时刻只跑一个本地模型，避免两个并发任务同时压 Ollama
     # 抢 GPU/显存互相拖累。付费/在线模型不受此限制，可并行。
     local_serial: bool = True
@@ -236,6 +240,17 @@ class Config:
     tools_min_score: int = 2           # 关键词命中的最低分
     ptc_resident: bool = True           # True = 所有工具调用强制走 ops_batch 脚本（PTC 常驻）
 
+    # ---- 澄清弹窗判定（docs/clarify-policy.md §12，试行版 v0）----
+    # on = 判到就弹；shadow = 只记 clarify_decision 事件不弹（上线前影子期）；
+    # off = 全关（回到「什么都不问」）。阈值集中在 agentforge/clarify.py 的 PARAMS
+    # ——全部是占位值，待影子期实测后统一改。
+    clarify_mode: str = "on"
+
+    # ---- 核查打满后的「程序补查」（agentforge/autocheck.py）----
+    # 答复核查打回 2 轮仍不通过时，先由程序自己去抓一手源（能抓的自己抓），
+    # 抓不到才在交付物上标注「未经核实」。这是单场任务最多抓几个源（含 1 次检索）。
+    autocheck_max_fetch: int = 3
+
     # ---- 上下文压缩 ----
     compact_threshold: int = 60_000      # 超过这个字符数就触发压缩
     compact_keep_chars: int = 20_000     # 压缩后至少保留的近期内容
@@ -282,6 +297,8 @@ class Config:
         cfg.ollama_host = _expand(o.get("host", cfg.ollama_host)).rstrip("/")
         cfg.keep_alive = str(o.get("keep_alive", cfg.keep_alive))
         cfg.request_timeout = int(o.get("request_timeout", cfg.request_timeout))
+        cfg.stream_idle_timeout = max(10, int(o.get("stream_idle_timeout",
+                                                   cfg.stream_idle_timeout)))
         # 本地模型串行执行已升级为**硬规则**（第 42 步），local_serial 键被忽略。
         # 细粒度并发由 local_max_concurrent 接管（1 = 完全串行，等价旧硬规则；
         # >1 时 leader 同批员工步骤允许 N 路本地并发，显存自负）。
@@ -395,6 +412,9 @@ class Config:
         cfg.tools_limit = int(t.get("limit", cfg.tools_limit))
         cfg.tools_min_score = int(t.get("min_score", cfg.tools_min_score))
         cfg.ptc_resident = bool(t.get("ptc_resident", cfg.ptc_resident))
+        cfg.clarify_mode = str(t.get("clarify_mode", cfg.clarify_mode) or "on").lower()
+        cfg.autocheck_max_fetch = max(0, int(t.get("autocheck_max_fetch",
+                                                  cfg.autocheck_max_fetch)))
 
         c = raw.get("compact", {}) or {}
         cfg.compact_threshold = int(c.get("threshold", cfg.compact_threshold))

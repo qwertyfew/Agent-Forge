@@ -1,10 +1,10 @@
-"""侧栏服务按钮的后端支撑（webui._is_local_deployment / _restart_command /
-_restart_locked）回归。
+"""侧栏服务按钮的后端支撑（webui._is_local_deployment / _restart_locked /
+_Handler._handle_service_restart）回归。
 
 口径：云端判定以 start.bat / stop.bat 的在不在为准（镜像已排除 *.bat，
-文件不在 = 云端）；重启命令必须先给 HTTP 响应留时间、先 stop 后 start、
-全程不弹可见窗口、不依赖控制台、不借道 bat 转发层。不真的执行重启——
-那会把跑测试的机器服务干掉。
+文件不在 = 云端）；重启**只写 .run/restart.flag**，停/启交给 service.py 看门狗
+（父进程）——web 端自己拼命令链会变成「子进程杀父进程」，新实例来不及拉起；
+60s 内连点必须被单飞锁拒绝。不真的执行重启——那会把跑测试的机器服务干掉。
 删掉任何一条断言，对应行为坏了这里必须变红。
 """
 from __future__ import annotations
@@ -19,10 +19,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from webui import (  # noqa: E402
+    _Handler,
     _is_local_deployment,
-    _restart_command,
     _restart_locked,
 )
+import webui as _webui  # noqa: E402
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -55,27 +56,69 @@ with tempfile.TemporaryDirectory() as td:
 check("L4 本项目根目录判定为本地（两个 bat 在位）",
       _is_local_deployment(ROOT) is True, "")
 
-# L5 重启命令的结构：响应先行、先停后启、中间留端口释放时间
-# （新版直接点名解释器调 service.py，不再 call stop.bat / start.bat）
-cmd = _restart_command()
-check("L5a 先 ping 延时再动手（HTTP 响应先发出去）",
-      cmd.index("ping") < cmd.index("service.py --stop"), "")
-check("L5b 先 --stop 后 start", cmd.index("service.py --stop") < cmd.rindex("start "), "")
-check("L5c 停与启之间留端口释放时间（第二个 ping）",
-      cmd.index("service.py --stop") < cmd.rindex("ping") < cmd.rindex("start "), "")
+# L5-L7 重启链路（rerun4 根因修复后的契约）：web 端**只写 restart.flag**，
+# 停/启交给 service.py 看门狗（父进程）。旧实现让 web 子进程自己拼
+# `ping → service.py --stop → start pythonw` 的命令链，结果是「子进程杀父进程」，
+# 新实例永远来不及拉起。所以这里钉三件事：写标记、绝不起子进程、连点被锁。
+class _DummyHandler:
+    """只实现 _json 的假处理器：够 _handle_service_restart 用，不碰真 socket。"""
 
-# L6 上一版事故的三个根因，一个都不许回来
-check("L6a 不用 timeout /nobreak（无控制台时立即失效）", "timeout" not in cmd, cmd)
-check("L6b 不再借道任何 .bat（pause 误判 / 弹窗都出自转发层）", ".bat" not in cmd, cmd)
-check("L6c 解释器路径必须带引号（防路径空格断裂）",
-      cmd.count('"') >= 4 and '"' in cmd.split("service.py --stop")[0], cmd)
-check("L6d start 用空标题占位（路径不被当窗口名）", 'start "" ' in cmd, cmd)
-check("L6e 无参调用可用（默认解析 .venv / 当前解释器）", isinstance(cmd, str) and len(cmd) > 40, "")
+    def __init__(self):
+        self.reply = None
+        self.code = 0
 
-# L7 显式传入解释器路径要被采纳（便于测试与未来换解释器）
-c2 = _restart_command(py="C:/x/py.exe", pyw="C:/x/pyw.exe")
-check("L7a 自定义 python 被采纳", '"C:/x/py.exe" service.py --stop' in c2, c2)
-check("L7b 自定义 pythonw 被采纳", 'start "" "C:/x/pyw.exe" service.py' in c2, c2)
+    def _json(self, obj, code: int = 200):
+        self.reply, self.code = obj, code
+
+
+def _as_local_run(root: Path):
+    """把 webui 的 HERE 指到临时目录，并造出 start.bat/stop.bat（判本地的唯一口径）。"""
+    (root / "start.bat").write_text("rem x", encoding="ascii")
+    (root / "stop.bat").write_text("rem x", encoding="ascii")
+
+
+_real_here = _webui.HERE
+_real_popen = _webui.subprocess.Popen
+spawns: list = []
+try:
+    with tempfile.TemporaryDirectory() as td3:
+        local = Path(td3)
+        _as_local_run(local)
+        _webui.HERE = local
+        # 起子进程 = 旧事故复发（自杀 or 弹窗）。这里只是记账，不阻断。
+        _webui.subprocess.Popen = lambda *a, **kw: spawns.append((a, kw))
+
+        h = _DummyHandler()
+        _Handler._handle_service_restart(h)
+        flag = local / ".run" / "restart.flag"
+        check("L5a 重启只写 restart.flag 并即刻回成功（看门狗接管停/启）",
+              h.code == 200 and bool(h.reply.get("ok")) and flag.is_file(),
+              f"code={h.code} reply={h.reply}")
+        check("L5b 标记内容带发令时刻（备查）",
+              bool(flag.read_text(encoding="utf-8").strip()), "")
+        check("L5c web 端绝不起子进程（子进程杀父进程是 rerun4 的根因）",
+              spawns == [], str(spawns))
+
+        before = flag.read_text(encoding="utf-8")
+        h2 = _DummyHandler()
+        _Handler._handle_service_restart(h2)
+        check("L6a 60s 内连点 → 429 且不覆盖已有标记",
+              h2.code == 429 and "error" in h2.reply
+              and flag.read_text(encoding="utf-8") == before, f"{h2.reply}")
+        check("L6b 连点也不许起子进程", spawns == [], str(spawns))
+
+    # 云端（镜像已排除 *.bat，判定以 bat 在不在为准）→ 明确拒绝，不假装重启
+    with tempfile.TemporaryDirectory() as td4:
+        cloud = Path(td4)
+        _webui.HERE = cloud
+        h3 = _DummyHandler()
+        _Handler._handle_service_restart(h3)
+        check("L7 云端部署 → 400「本地服务重启不可用」且不写标记",
+              h3.code == 400 and "error" in h3.reply
+              and not (cloud / ".run" / "restart.flag").exists(), f"{h3.reply}")
+finally:
+    _webui.HERE = _real_here
+    _webui.subprocess.Popen = _real_popen
 
 # L8 重启单飞锁：60s 内重复请求被拒，过期放行，放行即续锁
 with tempfile.TemporaryDirectory() as td2:

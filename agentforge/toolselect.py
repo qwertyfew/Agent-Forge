@@ -88,6 +88,34 @@ FAMILIES: tuple[tuple[str, ...], ...] = (
 PTC_SURFACE: tuple[str, ...] = ("ops_batch", "ask_user", "find_tools")
 
 
+# 索引里每行「用途」的字数上限。超了截断而不是换行——索引是每轮都要重贴的
+# 固定开销，43 个工具各多占 20 字就是 800 字。要细节就去 find_tools 取。
+_PURPOSE_MAX = 26
+
+
+def _short_purpose(text: str) -> str:
+    """取描述的第一句，去掉「请」「用于」这类前缀噪声后截到 26 字。
+
+    工具描述写成什么样都有（有的第一句就是 60 字的方法论），索引里只留
+    「它是什么」，方法论留给 find_tools 的完整 description。
+    """
+    t = " ".join((text or "").split())
+    if not t:
+        return ""
+    head = t.split("。")[0]
+    if len(head) > _PURPOSE_MAX:
+        # 按「最早出现的分隔符」切，优先冒号/破折号（工具描述常写「名字：干什么」）。
+        # 括号不配对的不收：「联网搜索（Bing 双入口，…」这种半截括号比不切还难读。
+        cands = [head.split(sep)[0].strip()
+                 for sep in ("：", "——", "；", ";", "，", ",", "（", "(") if sep in head]
+        cands = [c for c in cands if c.count("（") == c.count("）")]
+        good = ([c for c in cands if 6 <= len(c) <= _PURPOSE_MAX]
+                or [c for c in cands if 3 <= len(c) <= _PURPOSE_MAX])
+        if good:
+            head = good[0]
+    return head if len(head) <= _PURPOSE_MAX else head[:_PURPOSE_MAX] + "…"
+
+
 def _param_tokens(schema: dict) -> set[str]:
     """把参数表里的名字与描述也当成关键词来源。
 
@@ -154,6 +182,19 @@ class ToolSelector:
         if name not in self._first:
             self._keywords(name)
         return self._first.get(name, "")
+
+    def signature(self, name: str) -> str:
+        """`name(必填参数…)` ——脚本里照抄就能调，不用先 find_tools。"""
+        tool = self.reg.get(name)
+        if tool is None:
+            return name
+        params = getattr(tool, "parameters", None) or {}
+        req = [str(x) for x in (params.get("required") or [])]
+        return f"{name}({', '.join(req)})" if req else name
+
+    def purpose(self, name: str) -> str:
+        """一句话用途（描述首句，超长截断）——只回答「这东西是干什么的」。"""
+        return _short_purpose(self._one_liner(name))
 
     # ---------- 相关度打分（IDF 加权）----------
     def _idf_table(self) -> None:
@@ -235,11 +276,17 @@ class ToolSelector:
         return rows[:limit]
 
     # ---------- Tier 1：索引 ----------
-    def index_text(self, exclude: Iterable[str] = ()) -> str:
-        """系统提示里那段"没有下发说明的工具清单"，按前缀分组压缩体积。
+    def index_text(self, exclude: Iterable[str] = (), compact: bool = False) -> str:
+        """系统提示里的「其余工具」清单：一行一个，`名字(必填参数) — 用途`。
 
-        git_add / git_commit / git_push → `git(add/commit/push)`
-        实测 35 个工具压缩后只要一百多 token，比逐个列一行描述省得多。
+        为什么从「只列名字」改成「名字+签名+用途」（2026-10-22）：31 轮浸泡跑里
+        模型 14 次调 `find_tools("github_search")` ——它知道有这么个东西，但不知道
+        参数，于是花一跳去换。查成熟做法（Anthropic Tool Search、Claude Code）的
+        结论一致：工具定义占上下文不到 10% 时，**把定义摊开比分两次取更划算**。
+        这里摊的是「必填参数名 + 一句话用途」（每行约 45 字），不是全量 schema
+        （43 个工具 4100 token）——省下的一跳远大于多贴的这几百字。
+
+        compact=True 退回旧行为（按前缀分组只列名字），留给调用方兜底。
         """
         if not self.lazy:
             return ""              # 全量下发模式下没有"未展开"的工具
@@ -247,17 +294,32 @@ class ToolSelector:
         names = sorted(n for n in self.reg.names() if n not in skip)
         if not names:
             return ""
-        grouped: dict[str, list[str]] = {}
-        singles: list[str] = []
+        if compact:
+            grouped: dict[str, list[str]] = {}
+            singles: list[str] = []
+            for n in names:
+                head, _, tail = n.partition("_")
+                if tail and any(m != n and m.startswith(head + "_") for m in names):
+                    grouped.setdefault(head, []).append(tail)
+                else:
+                    singles.append(n)
+            parts = [f"{k}({'/'.join(v)})" for k, v in grouped.items()]
+            parts += singles
+            return "、".join(parts)
+        lines = []
         for n in names:
-            head, _, tail = n.partition("_")
-            if tail and any(m != n and m.startswith(head + "_") for m in names):
-                grouped.setdefault(head, []).append(tail)
-            else:
-                singles.append(n)
-        parts = [f"{k}({'/'.join(v)})" for k, v in grouped.items()]
-        parts += singles
-        return "、".join(parts)
+            sig = self.signature(n)
+            use = self.purpose(n)
+            # 用途按「整行不超过 62 字符」分配预算：参数名长的工具（ssh_upload 三个
+            # 必填）就把用途压短一点。索引是每轮重贴的固定开销，行宽要可控。
+            budget = max(10, 62 - len(sig) - 6)
+            if len(use) > budget:
+                use = use[:budget] + "…"
+            line = f"- {sig} — {use}" if use else f"- {sig}"
+            if len(line) > 62:          # 兜底：任何情况下不给下一段留超长行
+                line = line[:61] + "…"
+            lines.append(line)
+        return "\n".join(lines)
 
     # ---------- Tier 2/3：下发 ----------
     def core_schemas(self) -> list[dict]:

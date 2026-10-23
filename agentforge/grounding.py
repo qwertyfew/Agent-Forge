@@ -558,10 +558,75 @@ def _ref_admitted(ref: str, pool: str, pool_urls: set[str]) -> bool:
     return False
 
 
-def evidence_admission_issues(reply: str, candidates: str) -> list[str]:
+def _ref_given_by_task(ref: str, task: str) -> bool:
+    """这个"引用"是不是用户自己在任务书里给出的？
+
+    soak17（h4）的现场：任务书点名「抓 agentforge-xyz/no-such-repo-… 这个仓库」，
+    模型如实回答「源里未提及该仓库，请核实名称」，答复里当然出现了那个名字——
+    旧口径把它当"未准入的引用"，于是给一条**诚实**答复盖了「不要照着操作」。
+    用户给的标识不是模型在断言来源，压根不该进准入判定。
+    """
+    k = _norm_ref(ref)
+    hay = _norm_ref(task)
+    if not k or not hay:
+        return False
+    if k in hay:
+        return True
+    m = re.match(r"(?:www\.)?(?:github|gitlab)\.com/([\w.-]+)/([\w.-]+)", k)
+    if m:
+        return _token_in_pool(f"{m.group(1)}/{m.group(2)}", hay)
+    if "/" in k:
+        return _token_in_pool(k, hay)
+    return False
+
+
+def repo_citation_split(reply: str, evidence: str) -> tuple[list[str], list[str]]:
+    """把答复里的仓库引用分成「能在本次工具输出里找到的」和「找不到的」。
+
+    这是 P2 的判据实现：旧判据只看「答复含 REA + 过程调过检索」，同一个 pass
+    既容臆造名字、也容逐条有据的真名，等于没测。改成可证伪的比对后，
+    「说出来的名字是不是搜来的」变成可判定的事。
+
+    刻意只比 `owner/name`（含 github URL 里的那一段），不比域名、不比描述性说法：
+    证据是工具输出，不是"这个域名存不存在"。占位写法（`owner/repo`、`your-org/x`）
+    不算引用——模型在教用户怎么填的时候会写这些。
+    """
+    hay = str(evidence or "").lower()
+    ok: list[str] = []
+    bad: list[str] = []
+    for ref in extract_citations(reply):
+        k = _norm_ref(ref)
+        if not k or "/" not in k:
+            continue
+        m = re.match(r"(?:www\.)?(?:github|gitlab)\.com/([\w.-]+)/([\w.-]+)", k)
+        repo = f"{m.group(1)}/{m.group(2)}" if m else k
+        if repo.split("/")[0].lower() in _PLACEHOLDER_OWNERS:
+            continue
+        if k in hay or repo in hay:
+            ok.append(ref)
+        else:
+            bad.append(ref)
+    return ok, bad
+
+
+# 明显是"示例写法"的 owner：模型教用户怎么填参数时会用到，不该被判成编造。
+_PLACEHOLDER_OWNERS = {
+    "owner", "your-org", "your_org", "your-name", "org", "user", "username",
+    "example", "you", "xxx", "foo", "bar", "repo", "name", "someone",
+}
+
+
+def evidence_has_repo(evidence: str) -> bool:
+    """本次工具输出里到底有没有仓库候选（诚实空结果时要靠它放过）。"""
+    return bool(_REPO_SLUG_RX.search(str(evidence or "")))
+
+
+def evidence_admission_issues(reply: str, candidates: str, *,
+                              task: str = "") -> list[str]:
     """答复引用的源是否都来自本次检索候选。返回「未准入」的引用（空=通过）。
 
     只在**本次确实做过检索**（候选池非空）时启用——没检索就谈不上准入。
+    任务书自己给出的标识（仓库名/链接）默认准入：那是用户输入，不是模型断言。
     """
     pool = (candidates or "")
     if not pool.strip():
@@ -570,6 +635,8 @@ def evidence_admission_issues(reply: str, candidates: str) -> list[str]:
     bad: list[str] = []
     for ref in extract_citations(reply):
         if _ref_admitted(ref, pool, pool_urls):
+            continue
+        if task and _ref_given_by_task(ref, task):
             continue
         bad.append(ref)
     return bad
@@ -630,12 +697,18 @@ def provenance_claims(reply: str) -> list[str]:
     return [m.group(0).strip() for m in _PROVENANCE_RX.finditer(reply or "")]
 
 
-def false_provenance_issues(reply: str, history: list[dict]) -> list[str]:
-    """声称已核实、但本次没抓过任何正文页 → 返回这些谎称句（空=没问题）。"""
+def false_provenance_issues(reply: str, history: list[dict], *,
+                            program_fetched: list[str] | None = None) -> list[str]:
+    """声称已核实、但本次没抓过任何正文页 → 返回这些谎称句（空=没问题）。
+
+    `program_fetched`：收尾阶段**程序自己**补抓到的正文页。此时「已核实」不是空话
+    ——交付物确实被一份一手源核对过（谁抓的不影响它是不是真源），所以不再判为
+    虚假来源声明。
+    """
     claims = provenance_claims(reply)
     if not claims:
         return []
-    if fetched_pages(history):
+    if fetched_pages(history) or program_fetched:
         return []
     return claims[:4]
 
@@ -835,7 +908,8 @@ _KIND_TITLE = {
 
 def diagnose(reply: str, sources: str, candidates: str, *,
              task: str = "", intent: bool = True,
-             history: list[dict] | None = None) -> dict:
+             history: list[dict] | None = None,
+             program_fetched: list[str] | None = None) -> dict:
     """答复诊断报告。ok=True 表示无需打回（此时 findings 为空）。
 
     注意：**是否打回的判定与旧逻辑完全一致**（reply_grounding_issues +
@@ -857,8 +931,9 @@ def diagnose(reply: str, sources: str, candidates: str, *,
     }
 
     issues = reply_grounding_issues(reply, src, intent=intent)
-    refs = evidence_admission_issues(reply, pool) if pool else []
-    prov = false_provenance_issues(reply, history or [])
+    refs = evidence_admission_issues(reply, pool, task=task) if pool else []
+    prov = false_provenance_issues(reply, history or [],
+                                   program_fetched=program_fetched)
     if not issues and not refs and not prov:
         return {"ok": True, "findings": [], "retrieval": retrieval,
                 "issues": [], "refs": [], "provenance": []}
@@ -1064,12 +1139,16 @@ def render_diagnosis(diag: dict, *, round_no: int = 1, max_rounds: int = 2) -> s
     return "\n".join(lines)
 
 
-def render_unverified_note(diag: dict) -> str:
+def render_unverified_note(diag: dict, checked: list[str] | None = None) -> str:
     """打回次数用尽仍未通过时，程序侧追加的「未经核实」声明。
 
     为什么由程序写、不让模型自己写：模型两次都没改对，第三次的自我声明同样
     不可信；用户看到的交付物上必须有一个不依赖模型的印记。措辞只陈述**机器
     能复核的事实**（打回几轮、几条没依据），不评判对错。
+
+    `checked`：收尾阶段程序自己补抓（复核）过的源。有它时声明要说清「程序抓过、
+    对不上」，与「没人核实过」是两件事——前者能让人放心删掉这段内容照着做，
+    后者只能提醒读者存疑。
     """
     if not diag or diag.get("ok"):
         return ""
@@ -1078,16 +1157,24 @@ def render_unverified_note(diag: dict) -> str:
     kinds = [f.get("kind") for f in (diag.get("findings") or [])]
     bits: list[str] = []
     if n_cmd:
-        bits.append(f"{n_cmd} 条命令/目录在本次抓到的源里找不到")
+        bits.append(f"{n_cmd} 条命令/目录在已抓到的源里找不到")
     if n_ref:
         bits.append(f"{n_ref} 处引用的地址不在本次检索候选里")
     if "false_provenance" in kinds:
         bits.append("存在「未抓正文却称已核实」的表述")
     if not bits:
         bits.append("答复的关键内容未通过程序核查")
-    return ("\n\n---\n"
-            "⚠ **程序核查未通过（已打回 2 轮仍不合格）**：" + "；".join(bits) + "。\n"
-            "上面这些内容请按「未经核实」对待——落地前请以官方文档为准。")
+    checked = [u for u in (checked or []) if u]
+    if checked:
+        head = ("⚠ **程序核查未通过（已打回 2 轮，程序又自行补抓 "
+                f"{len(checked)} 个源复核后仍不合格）**：")
+        tail = ("以上内容与程序抓到的一手源对不上，**不要照着操作**"
+                "——需要可采信的版本，让我重新查一遍即可。")
+    else:
+        head = "⚠ **程序核查未通过（已打回 2 轮仍不合格）**："
+        tail = ("以上内容未经核实，**不作为事实依据**"
+                "——需要可采信的版本，让我重新查一遍即可。")
+    return ("\n\n---\n" + head + "；".join(bits) + "。\n" + tail)
 
 
 __all__ = [

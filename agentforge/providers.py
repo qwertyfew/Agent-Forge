@@ -25,6 +25,7 @@ import requests
 
 from .config import ModelSpec
 from .llm import LLMResult, ThinkFilter, GenerationStopped, _finalize_tool_calls, _merge_tool_calls
+from . import streamprobe
 
 
 class ProviderError(RuntimeError):
@@ -48,13 +49,38 @@ def _extract_error(resp: requests.Response) -> str:
     return json.dumps(data, ensure_ascii=False)[:300]
 
 
+def _guarded_lines(resp, idle: int):
+    """流式读取，把「空闲超时」翻译成人话（P8）。
+
+    requests 的 read timeout 管的是「两次收到字节之间的间隔」，正好对应
+    「端侧不回包」。不翻译的话，它要么以裸 `ReadTimeout` 冒到上层（日志里只有
+    一行 traceback），要么因为默认 900s 而让任务看起来「还没跑完」——soak32 那次
+    卡了 10 分钟、一个事件都没有，就是这个形态。短空闲上限 + 明确措辞，
+    让一次挂起变成一次**可见**的失败。
+    """
+    try:
+        yield from resp.iter_lines(decode_unicode=False)
+    except requests.Timeout as e:
+        raise ProviderError(
+            f"模型 {idle}s 内没有返回任何新内容（端侧可能已卡住），本次生成已中断。"
+            "这不是慢，是没有响应：请按失败处理，不要原样重试同一请求。"
+        ) from e
+
+
 class OpenAIClient:
     """OpenAI 兼容 /chat/completions 流式客户端。"""
 
-    def __init__(self, base_url: str, api_key: str, timeout: int = 900):
+    def __init__(self, base_url: str, api_key: str, timeout: int = 900,
+                 idle_timeout: int = 180):
         self.base_url = (base_url or "").rstrip("/")
         self.api_key = api_key or ""
         self.timeout = timeout
+        # 流式读取的空闲上限（P8）：requests 的 read timeout 是「两次收字节之间」，
+        # 用它治"端侧不回包"才对症；用 total 超时会把长生成误杀。
+        self.idle_timeout = max(10, int(idle_timeout or 180))
+
+    def _read_timeout(self) -> int:
+        return self.idle_timeout
 
     # ---------- 基础 ----------
     def _headers(self) -> dict:
@@ -190,7 +216,7 @@ class OpenAIClient:
             resp = requests.post(
                 self._url("/chat/completions"),
                 headers=self._headers(), json=payload,
-                stream=True, timeout=self.timeout,
+                stream=True, timeout=(10, self._read_timeout()),
             )
         except requests.RequestException as e:
             raise ProviderError(f"请求失败：{e}") from e
@@ -199,7 +225,7 @@ class OpenAIClient:
             if resp.status_code >= 400:
                 raise ProviderError(f"HTTP {resp.status_code}: {_extract_error(resp)}")
 
-            for raw in resp.iter_lines(decode_unicode=False):
+            for raw in _guarded_lines(resp, self.idle_timeout):
                 if not raw:
                     continue
                 if stop_check is not None and stop_check():
@@ -272,11 +298,16 @@ class OpenAIClient:
 class AnthropicClient:
     """Claude 官方 /v1/messages 客户端（消息与工具格式需转换）。"""
 
-    def __init__(self, base_url: str, api_key: str, timeout: int = 900):
+    def __init__(self, base_url: str, api_key: str, timeout: int = 900,
+                 idle_timeout: int = 180):
         self.base_url = (base_url or "https://api.anthropic.com").rstrip("/")
         self.api_key = api_key or ""
         self.timeout = timeout
+        self.idle_timeout = max(10, int(idle_timeout or 180))
         self.version = "2023-06-01"
+
+    def _read_timeout(self) -> int:
+        return self.idle_timeout
 
     def _headers(self) -> dict:
         return {
@@ -401,7 +432,7 @@ class AnthropicClient:
         try:
             resp = requests.post(
                 self._url("/messages"), headers=self._headers(), json=payload,
-                stream=True, timeout=self.timeout,
+                stream=True, timeout=(10, self._read_timeout()),
             )
         except requests.RequestException as e:
             raise ProviderError(f"请求失败：{e}") from e
@@ -410,7 +441,7 @@ class AnthropicClient:
             if resp.status_code >= 400:
                 raise ProviderError(f"HTTP {resp.status_code}: {_extract_error(resp)}")
 
-            for raw in resp.iter_lines(decode_unicode=False):
+            for raw in _guarded_lines(resp, self.idle_timeout):
                 if not raw:
                     continue
                 if stop_check is not None and stop_check():
@@ -525,6 +556,36 @@ class AnthropicClient:
             return False
 
 
+def _observed(stream: Iterator[tuple[str, Any]], spec: ModelSpec
+              ) -> Iterator[tuple[str, Any]]:
+    """给流套一层观测哨：转发原样，另外记一条「生成了多少、最后一行何时」。
+
+    观测不能改行为：这里不吞异常、不改事件、不加延时；只是把边读边转发的
+    事实写进 streamprobe，供超时分支回读（P17）。
+    """
+    probe = streamprobe.begin(getattr(spec, "name", "") or "?",
+                              getattr(spec, "provider", "") or "?")
+    try:
+        for kind, payload in stream:
+            if kind == "delta":
+                streamprobe.tick(probe, chars=len(str(payload)), text=str(payload))
+            elif kind == "thinking":
+                streamprobe.tick(probe, chars=len(str(payload)))
+            elif kind == "result":
+                streamprobe.finish(
+                    probe, done=True,
+                    eval_count=int(getattr(payload, "eval_count", 0) or 0),
+                    done_reason=str(getattr(payload, "done_reason", "") or ""))
+            yield kind, payload
+    except BaseException as e:  # noqa: BLE001
+        streamprobe.finish(
+            probe, error=("调用方提前关闭" if isinstance(e, GeneratorExit)
+                          else f"{type(e).__name__}: {e}"))
+        raise
+    finally:
+        streamprobe.finish(probe)
+
+
 class ClientHub:
     """按 ModelSpec.provider 把请求分发给对应客户端。
 
@@ -542,12 +603,15 @@ class ClientHub:
             return self.ollama
         key = (provider, getattr(spec, "base_url", ""), getattr(spec, "api_key", ""))
         if key not in self._cache:
+            idle = getattr(self.cfg, "stream_idle_timeout", 180)
             if provider == "anthropic":
-                self._cache[key] = AnthropicClient(spec.base_url, spec.api_key,
-                                                   getattr(self.cfg, "request_timeout", 900))
+                self._cache[key] = AnthropicClient(
+                    spec.base_url, spec.api_key,
+                    getattr(self.cfg, "request_timeout", 900), idle_timeout=idle)
             else:
-                self._cache[key] = OpenAIClient(spec.base_url, spec.api_key,
-                                                getattr(self.cfg, "request_timeout", 900))
+                self._cache[key] = OpenAIClient(
+                    spec.base_url, spec.api_key,
+                    getattr(self.cfg, "request_timeout", 900), idle_timeout=idle)
         return self._cache[key]
 
     def chat_stream(self, spec: ModelSpec, messages: list[dict],
@@ -564,7 +628,12 @@ class ClientHub:
         )
         args.update(kw)
         if isinstance(client, (OpenAIClient, AnthropicClient)):
-            return client.chat_stream(**args, stop_check=stop_check)
+            # 在线模型的流是逐字放出的，但一样会在「发出去了就是不回包」时静默
+            # 卡住（read timeout 之前一个字都没有）。包一层观测哨，超时分支能
+            # 读到「收了多少字、最后一行是几秒前」。本地模型不在这里包——
+            # OllamaClient 自带更细的记录（含等本地串行锁的阶段）。
+            return _observed(
+                client.chat_stream(**args, stop_check=stop_check), spec)
         return client.chat_stream(
             model=args["model"], messages=messages, tools=tools,
             options=args["options"], think=args["think"],

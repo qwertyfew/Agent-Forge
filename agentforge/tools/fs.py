@@ -37,6 +37,39 @@ def _clip(text: str, limit: int) -> str:
     return text[:limit] + f"\n...[已截断，共 {len(text)} 字符]"
 
 
+# 同一文件第几次整写起要带 base_version（乐观并发）。定 2 的含义：
+# 第 1 次是首稿，第 2 次是「想清楚了大改」，都放行；第 3 次起几乎都是
+# 措辞润色——31 轮浸泡跑里 23/31 轮整写 ≥2 次、21/31 轮 ≥3 次，
+# 而两版之间常常只差几个字。这时要的不再是「再生成一整篇」。
+_OCC_AFTER = 2
+
+
+def _version_no(p: Path) -> int:
+    """本任务对 p 已**整写**过几次（没有任务记录器时返回 0，即不启用 OCC）。
+
+    只数 write_file：fill_section 的每一节也会留版本，但那是增量，
+    拿版本数当整写次数会把「一次写 + 六节填充」误判成七次重写。
+    """
+    rec = RECORDER_CTX.get()
+    if rec is None:
+        return 0
+    try:
+        return int(rec.whole_writes(p))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _note_whole_write(p: Path) -> int:
+    """成功整写后 +1，返回本任务对该路径的整写次数（无记录器时返回 0）。"""
+    rec = RECORDER_CTX.get()
+    if rec is None:
+        return 0
+    try:
+        return int(rec.note_whole_write(p))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def build_fs_tools(guard, cfg):
     max_out = cfg.max_tool_output_chars
 
@@ -51,7 +84,7 @@ def build_fs_tools(guard, cfg):
     MAX_LINE = 2000
 
     def read_file(path: str, offset: int = 1, limit: int = 2000) -> str:
-        p = guard.resolve(path)
+        p = getattr(guard, "resolve_for_read", guard.resolve)(path)
         if not p.exists():
             return f"[错误] 文件不存在: {p}"
         if p.is_dir():
@@ -145,10 +178,19 @@ def build_fs_tools(guard, cfg):
         return None, cit_audit
 
     def _write_target(path: str):
-        """写盘落点：产出目录重定向（resolve_for_write）+ 是否被重定向。"""
+        """写盘落点：点名交付 → output/，中间文件 → record/work/（P28）。
+
+        返回 (物理路径, 落点说明)；说明空串表示模型给的路径就是最终落点（绝对
+        路径或已在任务目录里），非空则回执必须告知模型实际落点。"""
         rfw = getattr(guard, "resolve_for_write", None)
         p = rfw(path) if rfw else guard.resolve(path)
-        return p, p != guard.resolve(path)
+        if p == guard.resolve(path):
+            return p, ""
+        # 落点类型按物理路径在任务目录里的位置判断（resolve_for_write 的约定）
+        s = str(p).replace("\\", "/").lower()
+        if "/output/" in s:
+            return p, "（任务书点名的交付：已写入交付区 output/）"
+        return p, "（未点名：已作为中间文件存入 record/work/，交付物请用任务书点名的路径）"
 
     def _snapshot(path: str, content: str, old: str) -> str:
         """落盘后留一份全文版本，返回写进回执的说明（无记录器时返回空串）。
@@ -185,12 +227,44 @@ def build_fs_tools(guard, cfg):
             pass
 
     # ---------- write_file ----------
-    def write_file(path: str, content: str) -> str:
+    def write_file(path: str, content: str, base_version: int | None = None) -> str:
         # 产出目录的架构级保证：任务设有产出目录时，相对路径强制落进去
         # （resolve_for_write；任务书点名的路径与绝对路径走例外通道）。
         p, redirected = _write_target(path)
         existed = p.exists()
         old = p.read_text(encoding="utf-8", errors="replace") if existed else ""
+        # 幂等写（= git 的 "nothing to commit"）：内容与磁盘上逐字节一致时不落盘、
+        # 不建版本。31 轮 w5 里 50 次覆盖中约 20 次是逐字节相同的重写——回执明明
+        # 印着「内容未变」，模型照写。把这一半直接变成立即返回的明确信号。
+        if existed and content and content == old:
+            return (f"已是最新内容：{p} 与你这次给的完全一致（{len(content)} 字符），"
+                    "本次未重复落盘、未建新版本。\n"
+                    "这就是「已经写好了」——不要再拿相同内容调一次 write_file。"
+                    "要改局部用 edit_file(path, old_text, new_text)，"
+                    "要补一节用 fill_section。")
+        # 乐观并发（OCC / HTTP If-Match）：同一文件第 3 次起整写必须带上
+        # 上次回执里给出的 base_version，证明自己是在最新内容上改，而不是把
+        # 上一版扔掉重打一遍。前两次整写不受限（首稿 + 一次大改是正常的）。
+        n_before = _version_no(p)
+        if existed and n_before >= _OCC_AFTER and int(base_version or -1) != n_before:
+            n_block = writepolicy.note_occ_block(path)
+            if n_block < 2:
+                cur_lines = old.count("\n") + (0 if old.endswith("\n") else 1)
+                return "\n".join([
+                    f"[错误] 这是本任务第 {n_before + 1} 次整写 {path}，缺 base_version，未写入。",
+                    f"  当前文件 {len(old)} 字符 / {cur_lines} 行，最新版本号 base_version={n_before}。",
+                    "整写一个已经改过两轮的文件，必须证明你看到的是最新内容：",
+                    f'  write_file(path="{path}", content=..., base_version={n_before})',
+                    "如果只是改几行，用下面这条更省（不用重新生成整篇）：",
+                    f'  edit_file(path="{path}", old_text=<原文那几行>, new_text=<改后的几行>)',
+                    "也可以用 fill_section 补某一节。base_version 每次写盘回执的最后都会印出来。",
+                ])
+            # 连拦两次就放行（见 writepolicy._occ_blocks）：闸门只该把「重复生成」
+            # 换成「改几行」，不该把交付物卡死。这次写入会照常过内容核查。
+            occ_pardon = (f"\n  注意：这是第 {n_before + 1} 次整写且仍未带 base_version，"
+                          "本次放行；但重复生成整篇不产生新信息。")
+        else:
+            occ_pardon = ""
         err, cit_audit = _content_gate(path, content)
         if err:
             return err
@@ -236,12 +310,19 @@ def build_fs_tools(guard, cfg):
         # 一次成功写盘清零该路径的拒绝计数：重写禁令针对的是「连续重写」
         # 这个行为，不是给路径判无期（writepolicy.clear_rejects）。
         writepolicy.clear_rejects(path)
+        writepolicy.clear_occ(path)
+        n_after = _note_whole_write(p)
         
         action = "覆盖" if existed else "新建"
         diff = "" if not existed else f"（原 {len(old)} 字符 → 现 {len(content)} 字符）"
-        note = "（相对路径已按产出规则自动写入产出目录）" if redirected else ""
+        note = redirected
         ver = _snapshot(path, content, old)
         note += ver
+        # 版本号回执：下一轮整写要带上它（OCC）。第 2 次起才印，首稿不啰嗦。
+        if n_after >= _OCC_AFTER:
+            note += (f"\n  base_version={n_after}（再整写这个文件时要带上它，"
+                     "只改几行用 edit_file 更省）")
+        note += occ_pardon
         if cit_audit is not None:
             _record_citations(path, cit_audit, ver.split("版本：")[-1].split("（")[0] if ver else "")
         # 软警示（不阻断）：把引用核查的 warning 回传给模型，让它有机会修正
@@ -272,7 +353,7 @@ def build_fs_tools(guard, cfg):
         ver = _snapshot(path, outline, "")
         st = skeleton.status(outline)
         names = "、".join(s.heading for s in skeleton.body_sections(outline)[:12])
-        note = "（相对路径已按产出规则自动写入产出目录）" if redirected else ""
+        note = redirected
         return (
             f"已{'覆盖' if existed else '新建'}骨架 {p}（{st['total']} 节 / "
             f"{len(outline)} 字符）{note}{ver}\n"
@@ -360,7 +441,7 @@ def build_fs_tools(guard, cfg):
 
     # ---------- edit_file ----------
     def edit_file(path: str, old_text: str, new_text: str) -> str:
-        p = guard.resolve(path)
+        p = getattr(guard, "resolve_for_read", guard.resolve)(path)
         if not p.exists():
             return f"[错误] 文件不存在: {p}"
         src = p.read_text(encoding="utf-8", errors="replace")
@@ -387,7 +468,7 @@ def build_fs_tools(guard, cfg):
 
     # ---------- delete_file ----------
     def delete_file(path: str) -> str:
-        p = guard.resolve(path)
+        p = getattr(guard, "resolve_for_read", guard.resolve)(path)
         if not p.exists():
             return f"[错误] 文件不存在: {p}"
         p.unlink()
@@ -396,7 +477,7 @@ def build_fs_tools(guard, cfg):
 
     # ---------- list_dir ----------
     def list_dir(path: str = ".", max_entries: int = 200) -> str:
-        p = guard.resolve(path)
+        p = getattr(guard, "resolve_for_read", guard.resolve)(path)
         if not p.exists():
             return f"[错误] 路径不存在: {p}"
         if p.is_file():
@@ -441,12 +522,17 @@ def build_fs_tools(guard, cfg):
         ),
         make_tool(
             "write_file",
-            "新建或整体覆盖一个文件。已有文件优先用 edit_file 做局部替换。",
+            "新建或整体覆盖一个文件。已有文件优先用 edit_file 做局部替换；"
+            "同一文件第 3 次起整写要带 base_version（回执里印的那个数）。",
             {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "目标文件路径"},
                     "content": {"type": "string", "description": "完整文件内容"},
+                    "base_version": {
+                        "type": "integer",
+                        "description": "上次写盘回执里给的 base_version。同一文件第 3 次起"
+                                       "整写必填，用来证明你是在最新内容上改（前两次不用给）"},
                 },
                 "required": ["path", "content"],
             },

@@ -365,6 +365,12 @@ def _verify_gate(agent, message: str, holder: dict,
     重写），调用方从 holder 里取最终值。
     """
     cfg = agent.cfg
+    # P28：验证命令的 cwd = 交付区 output/（种子与交付物都在），没有产出目录
+    # （纯问答/老流程）退回工作区根。
+    from pathlib import Path as _Path
+    _root = _Path(str(cfg.workspace_root))
+    _deliver = (_root / agent.outdir / "output"
+                if getattr(agent, "outdir", "") else _root)
     if not getattr(cfg, "verify_gate", True):
         return
     # 证据台账跨修正轮共用：首轮读过的文件，第二轮引用时仍算「读过」。
@@ -391,7 +397,7 @@ def _verify_gate(agent, message: str, holder: dict,
         # 每轮拦截结束后重新亲跑验证——修好了立即放行，修不了如实说明后放行
         # 并附权威报告。模型说修好不算，程序说了算。
         blocks = 0
-        res = verify_gate.run_verify_cmd(cmd, cfg.workspace_root)
+        res = verify_gate.run_verify_cmd(cmd, _deliver)
         # 任务级闸门拦到上限仍失败的命令（exhausted 里有记录）不再重跑：报告
         # 已由任务级闸门随子任务摘要出具，这里再拦只会把修正轮翻倍
         if cmd.strip().lower() in exhausted:
@@ -418,6 +424,9 @@ def _verify_gate(agent, message: str, holder: dict,
                         + (f"\n（任务书期望输出含：{expect}）" if expect else ""),
                 summary=summary or "（无）",
             )
+            # 修正轮会整段重写最终答复：告诉前端「上一版作废」。
+            # 不通知的话界面把两版拼成一段，而回看（台账 history）只有最终版。
+            yield {"type": "gate_discard", "reason": "corrective"}
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
                                 read_cache=read_cache, ledger=evidence,
@@ -431,7 +440,7 @@ def _verify_gate(agent, message: str, holder: dict,
                 yield ev
             # 修正轮结束后复核：重新亲跑，通过就放行，仍失败且没到拦截上限
             # 就再拦一轮（第 _VERIFY_BLOCK_ROUNDS 轮后放行，报告照附）。
-            res = verify_gate.run_verify_cmd(cmd, cfg.workspace_root)
+            res = verify_gate.run_verify_cmd(cmd, _deliver)
             res = verify_gate.apply_expect(res, expect)
             yield {
                 "type": "verify", "cmd": cmd, "ok": res["ok"],
@@ -443,7 +452,10 @@ def _verify_gate(agent, message: str, holder: dict,
             # 拦到上限仍失败：记入 exhausted，同一轮编排里更靠后的闸门不再重跑
             holder.setdefault("exhausted_cmds", set()).add(cmd.strip().lower())
             exhausted.add(cmd.strip().lower())
-        notes.append(verify_gate.report_block(cmd, res))
+        # 写盘末次失败时，自验报告不许说「以本结果为准」——命令是在没改成的
+        # 文件上跑的，一样能过（P3）。判定材料是 harness 自己印的权威块。
+        write_failed = [p for p, ok in verify_gate.write_outcomes(convo).items() if not ok]
+        notes.append(verify_gate.report_block(cmd, res, write_failed=write_failed))
     # 【设计原则·2026-10-15】删除原「声称验证通过但未调用 run_command → 追加『未经系统确认』」
     # 的分支。闸门只判定产物是否正确（上面的验证命令分支）与产物/声明的真实性
     # （下面几道核查）；是否调用过 run_command 属于执行过程，与任务是否完成无关，
@@ -485,6 +497,9 @@ def _verify_gate(agent, message: str, holder: dict,
                 issues="\n".join(verify_gate.issue_line(c) for c in issues),
                 summary=summary or "（无）",
             )
+            # 修正轮会整段重写最终答复：告诉前端「上一版作废」。
+            # 不通知的话界面把两版拼成一段，而回看（台账 history）只有最终版。
+            yield {"type": "gate_discard", "reason": "corrective"}
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
                                 read_cache=read_cache, ledger=evidence,
@@ -563,6 +578,7 @@ def _verify_gate(agent, message: str, holder: dict,
                     quote=verify_gate.unfinished_quote(summary, claim),
                     summary=summary or "（无）",
                 )
+                yield {"type": "gate_discard", "reason": "corrective"}
                 for ev in agent.run(convo, prompt, auto_route=False,
                                     stop_check=stop_check, auto_approve=auto_approve,
                                     read_cache=read_cache, ledger=evidence,
@@ -614,6 +630,9 @@ def _verify_gate(agent, message: str, holder: dict,
                 tokens="\n".join(f"- {t}" for t in hits),
                 summary=summary or "（无）",
             )
+            # 修正轮会整段重写最终答复：告诉前端「上一版作废」。
+            # 不通知的话界面把两版拼成一段，而回看（台账 history）只有最终版。
+            yield {"type": "gate_discard", "reason": "corrective"}
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
                                 read_cache=read_cache, ledger=evidence,
@@ -641,6 +660,7 @@ def _verify_gate(agent, message: str, holder: dict,
         if hres["verdict"] == "force_confess" and not corrected:
             corrected = True
             prompt = honesty_guard.corrective_prompt(summary)
+            yield {"type": "gate_discard", "reason": "corrective"}
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
                                 read_cache=read_cache, ledger=evidence,
@@ -664,13 +684,22 @@ def _verify_gate(agent, message: str, holder: dict,
     # 缺了给一轮修正；仍缺则在答复末尾附系统侧声明。治 w3 类「文件写对了、
     # 回复把关键事实丢了」——方案 B 保证信息在场，这里保证信息进答复。
     if getattr(cfg, "facts_gate", True):
-        miss_facts = verify_gate.missing_required_facts(summary, message)
+        # 比对面扩到「已确认写成过的产物」（P1）：写盘类任务的主出口是文件，
+        # 只比答复会把「文件里明明有」判成「未能核对到」（w5 误伤 5/31 轮）。
+        art_paths = [str(f.get("path") or "") for f in (files or []) if f]
+        art_paths += [str(p) for p in (produced_paths or [])]
+        art_text = verify_gate.artifacts_text(art_paths, cfg.workspace_root)
+        miss_facts = verify_gate.missing_required_facts(summary, message,
+                                                        artifacts=art_text)
         if miss_facts and not corrected:
             corrected = True
             prompt = verify_gate.FACTS_CORRECTIVE_PROMPT.format(
                 tokens="\n".join(f"- {t}" for t in miss_facts),
                 summary=summary or "（无）",
             )
+            # 修正轮会整段重写最终答复：告诉前端「上一版作废」。
+            # 不通知的话界面把两版拼成一段，而回看（台账 history）只有最终版。
+            yield {"type": "gate_discard", "reason": "corrective"}
             for ev in agent.run(convo, prompt, auto_route=False,
                                 stop_check=stop_check, auto_approve=auto_approve,
                                 read_cache=read_cache, ledger=evidence,
@@ -682,15 +711,35 @@ def _verify_gate(agent, message: str, holder: dict,
                     convo = ev["history"]
                     summary = (ev.get("content") or "").strip() or summary
                 yield ev
-            miss_facts = verify_gate.missing_required_facts(summary, message)
+            miss_facts = verify_gate.missing_required_facts(summary, message,
+                                                            artifacts=art_text)
         if miss_facts:
             yield {"type": "verify", "cmd": "", "ok": False, "exit": "",
                    "duration": "", "missing_facts": miss_facts}
             notes.append(verify_gate.missing_facts_block(miss_facts))
+        else:
+            # 产物里有、答复没复述：提示一句就够，不再判缺失（P1 的口径）。
+            unrestated = verify_gate.unrestated_facts(summary, message,
+                                                      artifacts=art_text)
+            if unrestated:
+                notes.append(verify_gate.unrestated_facts_block(unrestated))
 
     # 程序侧声明统一在这里拼回正文末尾——无论中途经历几轮修正轮重写
     if notes:
         summary = (summary + "\n\n---\n" + "\n\n---\n".join(notes)).strip()
+        # 台账 history 必须与界面显示同一个版本：把带声明的正文写回最后一条
+        # **有正文的** assistant 消息。不写回的话，实时画面有这段声明、回看
+        # （读 history）没有——同一个任务两副面孔（用户 2026-10-21 报的「切走
+        # 再切回来内容不一样」正是这一类；打回 2 轮的声明在 loop.py 里本来就是
+        # 写进正文的，这里只是把另一条路径对齐，不是新语义）。
+        # 只认有正文的那条：纯 tool_calls 的 assistant 消息不是「答复」，把声明
+        # 挂在它上面等于凭空多出一段正文。
+        for i in range(len(convo) - 1, -1, -1):
+            if convo[i].get("role") == "assistant" and str(convo[i].get("content") or "").strip():
+                convo[i] = {**convo[i], "content": summary}
+                break
+        else:
+            convo.append({"role": "assistant", "content": summary})
 
     if summary != holder.get("summary"):
         holder["summary"] = summary
@@ -1446,6 +1495,7 @@ def run_task(
     try:
         from pathlib import Path as _P
 
+        from . import layout as _layout
         from .record import Recorder
 
         # 过程记录放在 history/<任务>/record/（evidence / versions / citations），
@@ -1453,6 +1503,12 @@ def run_task(
         # 问题」看 record，不用在一个平铺目录里猜。
         agent.recorder = Recorder(_P(agent.cfg.workspace_root) / outdir / "record",
                                   rel_root=agent.cfg.workspace_root)
+        # P28：交付区 output/ 是模型的主工作目录——发起时把种子拷进去（有界），
+        # 之后模型读写、run_command、脚本 cwd 都在这里，任务结束整个目录即案卷。
+        try:
+            _layout.seed_output(_P(agent.cfg.workspace_root), outdir)
+        except Exception:  # noqa: BLE001 —— 拷不全由读侧镜像的根回退兜底
+            pass
     except Exception:  # noqa: BLE001 —— 记录不可用不该阻断任务
         agent.recorder = None
 

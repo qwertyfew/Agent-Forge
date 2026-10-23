@@ -41,7 +41,8 @@ class CLI:
     def __init__(self, cfg: Config, auto_approve: bool = False, model_key: str | None = None):
         self.cfg = cfg
         self.console = Console(highlight=False)
-        self.client = OllamaClient(cfg.ollama_host, cfg.keep_alive, cfg.request_timeout)
+        self.client = OllamaClient(cfg.ollama_host, cfg.keep_alive, cfg.request_timeout,
+                                   idle_timeout=getattr(cfg, "stream_idle_timeout", 180))
         # 本地模型串行执行开关（config.yaml 的 ollama.local_serial）：
         # 让所有本地模型推理排成一条队，避免并发任务同时压 Ollama 互相拖累。
         set_local_serial(getattr(cfg, "local_serial", True))

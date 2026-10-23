@@ -76,6 +76,33 @@ def main() -> None:
     bad_block = vg.report_block("python bad_script.py", res_bad)
     check("失败报告含输出节选", "失败" in bad_block and "boom" in bad_block)
 
+    # ---------- P3：末次写盘失败时不许说「以本结果为准」 ----------
+    # 现场（rerun64 的 c6）：edit_file 少参数 → 一个字没改 → 模型仍答「已完成」，
+    # 收尾又跑了一遍同一个测试（跑在原文件上，本来就能过），于是拿到程序背书。
+    check("正常报告仍写「以本结果为准」", "以本结果为准" in ok_block)
+    wf_block = vg.report_block("python ok_script.py", res_ok,
+                               write_failed=["src/pricing.py"])
+    check("有写盘失败时不再背书", "以本结果为准" not in wf_block, wf_block[:200])
+    check("有写盘失败时点名文件", "src/pricing.py" in wf_block, wf_block[:200])
+    check("有写盘失败时限定自验范围", "不证明改动发生过" in wf_block, wf_block[:200])
+
+    # 判定材料：harness 自己印的权威块；一次失败后重试成功算自愈，不算失败
+    def _tool(text):
+        return {"role": "tool", "content": text}
+
+    echo_fail = ("[ops_batch] 1 次工具调用（edit_file×1）\n\n【系统核对·写盘结果】\n"
+                 "  - edit_file → src/a.py: 写入失败\n")
+    echo_ok = ("[ops_batch] 1 次工具调用（write_file×1）\n\n【系统核对·写盘结果】\n"
+               "  - write_file → src/a.py: 已写入磁盘\n")
+    check("末次失败 → 记为失败",
+          vg.write_outcomes([_tool(echo_fail)]) == {"src/a.py": False})
+    check("先失败后成功 → 记为成功（自愈）",
+          vg.write_outcomes([_tool(echo_fail), _tool(echo_ok)]) == {"src/a.py": True})
+    check("先成功后失败 → 仍记为失败（末次为准）",
+          vg.write_outcomes([_tool(echo_ok), _tool(echo_fail)]) == {"src/a.py": False})
+    check("没有权威块 → 不产生判定（不猜）",
+          vg.write_outcomes([_tool("File updated successfully.")]) == {})
+
     # ---------- _verify_gate 四条路径（stub agent，不需要模型） ----------
     class StubCfg:
         workspace_root = str(tmp)

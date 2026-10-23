@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -99,6 +100,40 @@ def test_missing_required_facts() -> None:
           vf.missing_required_facts("一共三个文件。", "必须包含数字 3 的统计。") != [])
 
 
+def test_artifacts_count_as_present() -> None:
+    """P1：产物里有的关键事实，答复没复述也不算缺。
+
+    现场（w5 rerun65 / soak03，复现 5/31 轮）：reports/outline.md 里三个标题一个不少，
+    只因答复没复述，就被盖了一句「未能核对到」。写盘类任务的主出口是文件。
+    """
+    task = "整理会议纪要写到 reports/outline.md，必须保留 14:00 与「星港项目」。"
+    reply = "已整理完毕，见 reports/outline.md。"
+    art = "## 结论\n- 星港项目 10 月 28 日灰度\n会议时间 14:00\n"
+    check("只比答复时会被判缺（旧口径）",
+          set(vf.missing_required_facts(reply, task)) == {"14:00", "星港项目"},
+          repr(vf.missing_required_facts(reply, task)))
+    check("纳入产物后不再判缺（P1）",
+          vf.missing_required_facts(reply, task, artifacts=art) == [],
+          repr(vf.missing_required_facts(reply, task, artifacts=art)))
+    # 两边都没有的事实仍然要判缺：不能因为"有文件"就整体放过
+    check("两边都没有的仍判缺",
+          vf.missing_required_facts(reply, "必须保留 14:00 与 17:30。", artifacts=art) == ["17:30"],
+          repr(vf.missing_required_facts(reply, "必须保留 14:00 与 17:30。", artifacts=art)))
+    # 「复述」与「缺失」分开：产物里有、答复没写 → 只提示
+    check("产物有答复没有 → 记为未复述（不判缺）",
+          vf.unrestated_facts(reply, task, artifacts=art) and
+          vf.missing_required_facts(reply, task, artifacts=art) == [],
+          repr(vf.unrestated_facts(reply, task, artifacts=art)))
+    check("没有产物时不产生未复述提示",
+          vf.unrestated_facts(reply, task, artifacts="") == [])
+    # artifacts_text：读得到就读，读不到绝不抛（读失败不能变成新的误报）
+    tmpd = Path(tempfile.mkdtemp(prefix="af_facts_"))
+    (tmpd / "a.md").write_text("星港项目 14:00", encoding="utf-8")
+    got = vf.artifacts_text(["a.md", "不存在.md"], tmpd)
+    check("artifacts_text 读相对路径", "星港项目" in got, got[:80])
+    check("artifacts_text 容忍缺失文件", vf.artifacts_text(["不存在.md"], tmpd) == "")
+
+
 # ---------------------------------------------------------------- 闸门接入
 
 class FakeCfg:
@@ -179,6 +214,7 @@ def test_gate_wiring() -> None:
 def main() -> None:
     test_required_fact_tokens()
     test_missing_required_facts()
+    test_artifacts_count_as_present()
     test_gate_wiring()
     print("\n全部通过。")
 

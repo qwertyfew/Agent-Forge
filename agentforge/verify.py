@@ -423,14 +423,9 @@ _MTIME_EPS = 0.002
 
 
 def _tool_names(convo: list[dict] | None):
-    for m in convo or []:
-        if not isinstance(m, dict) or m.get("role") != "assistant":
-            continue
-        for tc in (m.get("tool_calls") or []):
-            name = ((tc.get("function") or {}).get("name")
-                    or tc.get("name") or "")
-            if name:
-                yield name
+    """轨迹里出现过的工具名（含 PTC 脚本内层调用，见 agentforge.tooltrace）。"""
+    from . import tooltrace
+    return tooltrace.tool_names(convo)
 
 
 # PTC 常驻下，写盘发生在 ops_batch 的脚本里，顶层只看得到 name="ops_batch"。
@@ -951,17 +946,62 @@ def apply_expect(res: dict, expect: str) -> dict:
     return res
 
 
-def report_block(cmd: str, res: dict) -> str:
-    """附在最终答复末尾的系统侧验证报告。模型只有解读权，这一段是程序写的。"""
+def report_block(cmd: str, res: dict, write_failed: list[str] | None = None) -> str:
+    """附在最终答复末尾的系统侧验证报告。模型只有解读权，这一段是程序写的。
+
+    `write_failed` 是本轮末次写盘仍失败的产物路径。有它的时候**不能**再说
+    「以本结果为准」：验证命令是在**现有文件**上跑的，改动一个字都没发生也照样
+    能过（P3，rerun64 的 c6 就是这样拿到程序背书的）。这时改为明确限定
+    自验的覆盖范围，并点名哪些文件没写成。
+    """
     verdict = "通过" if res["ok"] else "失败"
     head = (f"【系统侧验证】任务收尾时由系统亲自运行了 `{cmd}` → "
             f"**{verdict}**（退出码 {res['code']}，耗时 {res['duration']}s"
             + (f"，期望输出含 `{res['expect']}`" if res.get("expect") else "")
-            + "）。"
-            "此结果由程序产生，不依赖模型自报；若与本回复正文有出入，以本结果为准。")
+            + "）。")
+    if write_failed:
+        head += ("此结果由程序产生，但它只证明**命令能跑通**，不证明改动发生过；"
+                 "本轮末次写盘仍失败：" + "、".join(write_failed[:4])
+                 + "。**不要据此声明任务已完成。**")
+    else:
+        head += "此结果由程序产生，不依赖模型自报；若与本回复正文有出入，以本结果为准。"
     if res["ok"]:
         return head
     return head + "\n验证输出（节选）：\n```\n" + _clip(res["output"], 800) + "\n```"
+
+
+# 权威写盘块的逐行格式：`  - write_file → reports/x.md: 已写入磁盘`
+# 第三态「已存在未变」= 幂等层拦下的重复写：文件内容本来就是这样，既不是失败
+# （收尾不该判它没写），也不是一次落盘（不能计入"写过几次"）。
+_WRITE_ECHO_RX = re.compile(
+    r"-\s*(?P<tool>[a-zA-Z_][\w]*)\s*→\s*(?P<path>[^:：\n]+?)\s*[:：]\s*"
+    r"(?P<state>已写入磁盘|已存在未变|写入失败)")
+
+
+def write_outcomes(convo: list[dict] | None) -> dict[str, bool]:
+    """按产物路径汇总**末次**写盘结果（True=已写入，False=仍失败）。
+
+    只认 harness 自己印的【系统核对·写盘结果】块——脚本里的
+    `print("updated successfully")` 不算（rerun64 的 c6 正是靠这句假 print
+    撑起"已完成"）。为什么取「末次」：一次失败后重试成功属于自愈
+    （soak02 的 c6），只有末次仍失败才说明文件真没改成。
+    """
+    last: dict[str, bool] = {}
+    for m in convo or []:
+        if not isinstance(m, dict) or m.get("role") != "tool":
+            continue
+        text = str(m.get("content") or "")
+        if "【系统核对·写盘结果】" not in text:
+            continue
+        for hit in _WRITE_ECHO_RX.finditer(text):
+            path = hit.group("path").strip()
+            if path in ("(未给 path)", "未给 path"):
+                continue
+            # 「已存在未变」算成功：文件内容与模型这次给的完全一致，
+            # 交付物是对的，只是没重复落盘。
+            last[path] = hit.group("state") in ("已写入磁盘", "已存在未变")
+    return last
+
 
 
 UNVERIFIED_NOTE = (
@@ -1300,13 +1340,63 @@ def required_fact_tokens(text: str, cap: int = MAX_FACT_TOKENS) -> list[str]:
     return out
 
 
-def missing_required_facts(summary: str, text: str) -> list[str]:
-    """任务书要求的关键事实里，哪些没出现在答复里（归一后比对）。"""
+def artifacts_text(paths, root, *, limit: int = 6, max_chars: int = 20000) -> str:
+    """把「本轮写成过的产物」读成一段文本，供关键事实比对（P1）。
+
+    只读存在的、不太大的文本文件；读不到就跳过——这里只做「找到了就算存在」，
+    读失败绝不能反过来变成新的误报。
+    """
+    base = Path(root) if root else Path(".")
+    chunks: list[str] = []
+    total = 0
+    seen: set[str] = set()
+    for p in paths or []:
+        s = str(p or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        fp = Path(s)
+        if not fp.is_absolute():
+            fp = base / fp
+        try:
+            if not fp.is_file() or fp.stat().st_size > 400_000:
+                continue
+            text = fp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        chunks.append(text)
+        total += len(text)
+        if len(chunks) >= limit or total >= max_chars:
+            break
+    return "\n".join(chunks)[:max_chars]
+
+
+def missing_required_facts(summary: str, text: str, *,
+                          artifacts: str = "") -> list[str]:
+    """任务书要求的关键事实里，哪些在答复**和已写出的产物里都**找不到。
+
+    `artifacts` 只传「本轮确认写成过的文件内容」。写盘类任务里产物才是主出口：
+    w5（rerun65 / soak03）文件里三个标题齐全、答复没复述，旧口径照样判
+    「未能核对到」——误伤（P1）。命中产物即不再声明，修正轮也只针对
+    「两边都没有」的事实。
+    """
     toks = required_fact_tokens(text)
     if not toks:
         return []
     hay = _fact_norm(summary)
+    if artifacts:
+        hay += "\n" + _fact_norm(artifacts)
     return [t for t in toks if _fact_norm(t) not in hay]
+
+
+def unrestated_facts(summary: str, text: str, *, artifacts: str = "") -> list[str]:
+    """产物里有、答复里没复述的关键事实（只提示，不计缺失、不打回）。"""
+    toks = required_fact_tokens(text)
+    if not toks or not artifacts:
+        return []
+    hay = _fact_norm(summary)
+    art = _fact_norm(artifacts)
+    return [t for t in toks if _fact_norm(t) not in hay and _fact_norm(t) in art]
 
 
 FACTS_CORRECTIVE_PROMPT = """【系统侧核查 · 需要修正】
@@ -1329,4 +1419,12 @@ def missing_facts_block(tokens: list[str]) -> str:
     ]
     lines += [f"- {t}" for t in tokens]
     lines.append("请以产出文件为准核对这些事实。（此核查由程序完成，不依赖模型自报。）")
+    return "\n".join(lines)
+
+
+def unrestated_facts_block(tokens: list[str]) -> str:
+    """产物里有、答复里没复述：只提醒，不判缺失（P1 的措辞口径）。"""
+    lines = ["【系统侧核查】下列关键内容**已确认写在产出文件里**，但最终答复没有复述"
+             "（不算缺失，仅供核对是否需要补充说明）："]
+    lines += [f"- {t}" for t in tokens]
     return "\n".join(lines)

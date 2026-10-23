@@ -99,15 +99,14 @@ MAX_HITS = 6
 
 
 def tool_names(convo: list[dict] | None):
-    """遍历对话历史里模型调用过的工具名（与 verify.py 同一口径）。"""
-    for m in convo or []:
-        if not isinstance(m, dict) or m.get("role") != "assistant":
-            continue
-        for tc in (m.get("tool_calls") or []):
-            name = ((tc.get("function") or {}).get("name")
-                    or tc.get("name") or "")
-            if name:
-                yield name
+    """遍历对话历史里模型调用过的工具名——含 PTC(ops_batch) 脚本里的内层调用。
+
+    PTC 常驻后顶层只有 `ops_batch`：只按顶层名判定，会把「读了三次文件」读成
+    「全程没读过」，也会让「搜过/抓过」恒为假（rerun65 实测）。解析统一走
+    `agentforge.tooltrace`，与评测侧同一口径。
+    """
+    from . import tooltrace
+    return tooltrace.tool_names(convo)
 
 
 def ran_search(convo: list[dict] | None) -> bool:
@@ -265,9 +264,9 @@ def external_unverified_block(hits: list[str]) -> str:
     ]
     lines += [f"- {h}" for h in hits]
     lines.append(
-        "此核查由程序完成，不依赖模型自报；要采信这些数字，应先抓取一手来源"
-        "（官方站点 / 官方 API，如 GitHub 仓库用 `https://api.github.com/repos/<owner>/<repo>`、"
-        "找仓库用 `github_search`）核实。"
+        "此核查由程序完成，不依赖模型自报。以上数字 / 说法本轮没有一手来源支撑，"
+        "**不作为事实依据**——需要可采信的版本，让我把一手来源（官方站点 / 官方 API）"
+        "抓下来重写一遍即可。"
     )
     return "\n".join(lines)
 
@@ -453,8 +452,8 @@ def local_unverified_block(tokens: list[str]) -> str:
     ]
     lines += [f"- {t}" for t in tokens]
     lines.append(
-        "工作区里到底有什么只能看、不能想：先 `list_dir` 列一遍，再写结论。"
-        "（此核查由程序完成，不依赖模型自报。）"
+        "以上名字本轮没有任何读取结果支撑，**不作为事实依据**；需要准确清单时，"
+        "让我重新看一遍工作区即可。（此核查由程序完成，不依赖模型自报。）"
     )
     return "\n".join(lines)
 

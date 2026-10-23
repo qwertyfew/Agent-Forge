@@ -115,13 +115,17 @@ def _group_hit(groups: list, output_norm: str) -> tuple[int, int, list[int]]:
 
 
 def judge(case: EvalCase, output: str, sandbox: str | Path,
-          check_timeout: int = 60) -> dict:
+          check_timeout: int = 60, check_root: str | Path | None = None) -> dict:
     """按层判定一次任务产出。返回：
 
         verdict  pass | fail
         layer    通过时 = 实际跑到的最后一层；失败时 = 第一个失败的层（归因）
         detail   人话说明（缺了什么 / 差多少）
         data     各层的原始结果（给 bench_compare 做二次分析）
+
+    check_root：check 层命令的执行目录。P28 起交付物与种子都拷在
+    `history/<任务>/output/`，调用方（bench）应传交付区路径；不传则用 sandbox
+    （兼容旧调用与无产出目录的场景）。
     """
     out_raw = str(output or "")
     out_norm = _norm(out_raw)
@@ -163,7 +167,20 @@ def judge(case: EvalCase, output: str, sandbox: str | Path,
     groups = exp.get("keywords") or []
     if groups:
         min_ratio = float(exp.get("min_ratio", 0.7))
-        hit, total, miss_idx = _group_hit(groups, out_norm)
+        # P25：产物型任务（「结果写入 x.txt」）的关键词要能判产物文件——模型把
+        # 正确翻译写进了 zh.txt、答复里只说「已完成」，旧判据只查答复文本 0/2 误杀。
+        # 指定 expect.file 时把该文件内容并入判定语料；文件读不到就只剩答复
+        # （文件没写出来时判定照常失败，口径不放松）。
+        judge_norm = out_norm
+        file_rel = exp.get("file")
+        if file_rel:
+            try:
+                ftext = (Path(sandbox) / str(file_rel)).read_text(
+                    encoding="utf-8", errors="replace")
+                judge_norm = judge_norm + "\n" + _norm(ftext)
+            except OSError:
+                pass
+        hit, total, miss_idx = _group_hit(groups, judge_norm)
         ratio = (hit / total) if total else 1.0
         data["fuzzy"] = {"hit": hit, "total": total, "ratio": round(ratio, 2)}
         if ratio < min_ratio:
@@ -184,7 +201,8 @@ def judge(case: EvalCase, output: str, sandbox: str | Path,
     # ---- 6. check：真跑命令，硬证据 --------------------------------------
     check = str(exp.get("check") or "").strip()
     if check:
-        res = verify_mod.run_verify_cmd(check, sandbox, timeout=check_timeout)
+        res = verify_mod.run_verify_cmd(check, check_root or sandbox,
+                                        timeout=check_timeout)
         want_out = exp.get("check_contains")
         ok = bool(res.get("ok"))
         if ok and want_out:

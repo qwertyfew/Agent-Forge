@@ -111,6 +111,66 @@ def record_run_dir(root: str | Path, run: str) -> Path | None:
     return (d / RECORD / RUN) if d else None
 
 
+# ---------- output/ 交付区（P28：主写位置，不是收尾镜像） ----------
+#
+# 2026-10-23 起 output/ 从「收尾时镜像的案卷副本」升级为**交付物主写区**：
+# 任务书点名的路径（WRITE_ALLOW）由 resolve_for_write 直接写进
+# `history/<任务>/output/<声明路径>`；未点名的相对路径仍进 record/work/。
+# 工作区根回归「种子 + harness 自身文件」。
+#
+# 模型的可见世界 = output/（种子在任务发起时拷一份进来，读写都在这里），
+# 读侧镜像（resolve_for_read）按 output/ → record/work/ → 根 的顺序解析，
+# 保证「写进哪、从哪读」自洽。
+
+_SEED_COPY_EXCLUDE_DIRS = {
+    ".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache",
+    "history", ".agentforge", ".sessions", ".workbuddy", ".idea", ".vscode",
+}
+_SEED_COPY_MAX_FILE = 5 * 1024 * 1024      # 单文件 >5MB 不拷（大文件工具读不“顺”）
+_SEED_COPY_MAX_FILES = 500                 # 总数上限：真实仓库任务也不至于失控
+
+
+def seed_output(root: str | Path, outdir: str) -> Path:
+    """任务发起时把工作区种子拷进 `history/<任务>/output/`（有界复制）。
+
+    这是「模型可见世界 = output/」的前提：种子（评测用例材料 / 用户工程文件）
+    拷一份进交付区，之后模型的读写、run_command、ops_batch 脚本的 cwd 都在
+    output/ 上——「写完就运行」「改种子文件」与「新写交付物」三种工作流在
+    同一个目录里自洽。返回 output 目录的绝对路径。
+
+    有界：跳过排除目录（.git/.venv/history…）、>5MB 的单文件、总量 500 文件——
+    评测沙盒只有几颗种子必然全量拷入；真实仓库任务也不会失控。拷不全的部分
+    由读侧镜像的「根回退」兜底（工具读仍可达），只是脚本内裸 IO 看不见。
+    """
+    import shutil
+
+    base = Path(root).resolve()
+    dst_root = base / output_dir(outdir)
+    dst_root.mkdir(parents=True, exist_ok=True)
+    if outdir.rstrip("/").split("/")[-1] in _SEED_COPY_EXCLUDE_DIRS:
+        return dst_root
+    n = 0
+    for src in base.rglob("*"):
+        if n >= _SEED_COPY_MAX_FILES:
+            break
+        rel = src.relative_to(base)
+        first = rel.parts[0] if rel.parts else ""
+        if first in _SEED_COPY_EXCLUDE_DIRS:
+            continue
+        if src.is_dir():
+            continue
+        try:
+            if src.stat().st_size > _SEED_COPY_MAX_FILE:
+                continue
+            dst = dst_root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            n += 1
+        except OSError:
+            continue
+    return dst_root
+
+
 def mirror_outputs(files: list[dict] | None, root: str | Path, outdir: str,
                    cap: int = 50) -> list[str]:
     """把本任务的产出按声明路径镜像一份到 `output/`。返回镜像成功的相对路径。

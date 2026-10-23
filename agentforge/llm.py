@@ -7,6 +7,8 @@ from typing import Any, Iterator
 
 import requests
 
+from . import streamprobe
+
 # 服务端错误（5xx）与网络抖动的自动重试：复测里 14 个子任务死于同一形态的
 # Ollama 500——生成正常完成后响应处理阶段崩，同一 prompt 再请求往往就过
 # （Leader 的失败重排反复证明了这一点）。重试只发生在**还没吐出任何增量**
@@ -56,6 +58,29 @@ class GenerationStopped(Exception):
     def __init__(self, result: "LLMResult"):
         super().__init__("生成被停止信号打断")
         self.result = result
+
+
+class ModelIdleTimeout(RuntimeError):
+    """模型在空闲上限内没有任何新输出——是"没响应"，不是"慢"。
+
+    刻意**不继承** requests.Timeout：`chat_stream` 的重试分支会吞掉 Timeout
+    再重试，而端侧已经卡住时重试只是把等待翻倍（P8）。这里让它直接冒到上层，
+    变成一次可见的失败。
+    """
+
+
+def _idle_lines(resp, idle: int):
+    """逐行读流；空闲超时翻译成 ModelIdleTimeout（P8）。
+
+    requests 的 read timeout 管的是「两次收到字节之间」，正好对应「端侧不回包」。
+    不翻译的话它会以裸 ReadTimeout 冒上去，看起来像程序 bug 而不是模型没响应。
+    """
+    try:
+        yield from resp.iter_lines(decode_unicode=True)
+    except requests.Timeout as e:
+        raise ModelIdleTimeout(
+            f"模型 {idle}s 内没有返回任何新内容（端侧可能已卡住），本次生成已中断。"
+            "这不是慢，是没有响应：按失败处理，不要原样重试。") from e
 
 
 class _StreamCorrupt(Exception):
@@ -258,10 +283,14 @@ def local_serial_on() -> bool:
 class OllamaClient:
     """Ollama 原生 /api/chat 客户端（含流式与工具调用）。"""
 
-    def __init__(self, host: str, keep_alive: str = "15m", timeout: int = 900):
+    def __init__(self, host: str, keep_alive: str = "15m", timeout: int = 900,
+                 idle_timeout: int = 180):
         self.host = host.rstrip("/")
         self.keep_alive = keep_alive
         self.timeout = timeout
+        # 两次收到字节之间的上限（P8：soak32 卡 10 分钟无事件的根因就在这里——
+        # 900s 的总超时对"不回包"太宽，而报错出来也只是一行裸 traceback）。
+        self.idle_timeout = max(10, int(idle_timeout or 180))
 
     def _post_chat(self, payload: dict, *, stream: bool):
         """POST /api/chat，带 5xx/网络错误指数退避重试。
@@ -274,7 +303,7 @@ class OllamaClient:
             try:
                 resp = requests.post(
                     f"{self.host}/api/chat", json=payload,
-                    stream=stream, timeout=self.timeout,
+                    stream=stream, timeout=(10, self.idle_timeout),
                 )
                 resp.raise_for_status()
                 return resp
@@ -409,16 +438,23 @@ class OllamaClient:
             acc: dict[int, dict] = {}
             tf = ThinkFilter()
             emitted: list[tuple[str, Any]] = []
+            # 观测哨（P17）：整轮增量是缓冲的，生成过程中上层看不到任何 delta，
+            # 卡死时就只剩「超时」两个字。这里旁路记一行，超时分支读得到
+            # 「等锁多久 / 收到多少字 / 最后一行是几秒前」。
+            probe = streamprobe.begin(model, "ollama", attempt=attempt + 1)
 
             # 本地模型串行锁：整个生成过程（含流式输出）独占，确保同一时刻只有一个
             # 本地模型在跑。finally 保证无论是正常结束、被 stop_check 打断（抛
             # GenerationStopped），还是调用方提前 close() 生成器，锁都会被释放。
             if serial:
+                streamprobe.phase(probe, "lock_wait")
                 _LOCAL_LOCK.acquire()
+                streamprobe.phase(probe, "lock_got")
             try:
                 with self._post_chat(payload, stream=True) as resp:
+                    streamprobe.phase(probe, "resp")
                     done = False
-                    for line in resp.iter_lines(decode_unicode=True):
+                    for line in _idle_lines(resp, self.idle_timeout):
                         if not line:
                             continue
                         if stop_check is not None and stop_check():
@@ -431,6 +467,12 @@ class OllamaClient:
                             raise _StreamCorrupt("mid-stream non-JSON chunk")
                         msg = chunk.get("message", {}) or {}
                         text = msg.get("content") or ""
+                        th = msg.get("thinking") or ""
+                        if text or th:
+                            streamprobe.tick(probe, chars=len(text) + len(th),
+                                             text=text or th)
+                        else:
+                            streamprobe.tick(probe)
                         if text:
                             vis, hid = tf.feed(text)
                             if vis:
@@ -439,7 +481,6 @@ class OllamaClient:
                             if hid:
                                 result.thinking += hid
                                 emitted.append(("thinking", hid))
-                        th = msg.get("thinking") or ""
                         if th:
                             result.thinking += th
                             emitted.append(("thinking", th))
@@ -457,6 +498,9 @@ class OllamaClient:
                                 chunk.get("prompt_eval_duration") or 0)
                             result.load_duration_ns = int(chunk.get("load_duration") or 0)
                             result.done_reason = str(chunk.get("done_reason") or "")
+                            streamprobe.finish(probe, done=True,
+                                               done_reason=result.done_reason,
+                                               eval_count=result.eval_count)
                             break
                     vis, hid = tf.flush()
                     if vis:
@@ -476,13 +520,23 @@ class OllamaClient:
                 yield ("result", result)
                 break
             except GenerationStopped:
+                streamprobe.finish(probe, error="GenerationStopped（被停止信号打断）")
                 raise
             except (_StreamCorrupt, requests.ConnectionError, requests.Timeout) as e:
                 last_err = e
+                streamprobe.finish(probe, error=f"{type(e).__name__}: {e}")
                 if attempt < LLM_RETRIES:
                     time.sleep(LLM_RETRY_BACKOFF * (2 ** attempt))
                     continue
+            except BaseException as e:  # noqa: BLE001
+                # ModelIdleTimeout / 解析异常 / 调用方 close()：都记一笔再往上抛。
+                # 观测不能改变控制流——这里只写记录，不吞异常。
+                streamprobe.finish(
+                    probe, error=("调用方提前关闭" if isinstance(e, GeneratorExit)
+                                  else f"{type(e).__name__}: {e}"))
+                raise
             finally:
+                streamprobe.finish(probe)   # 兜底：无论哪条路出去，都不再算「活跃」
                 if serial:
                     try:
                         _LOCAL_LOCK.release()

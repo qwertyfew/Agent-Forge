@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import difflib
 import re
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from .journal import Journal, new_sid
 from .llm import OllamaClient, parse_text_tool_calls
 from .toolselect import PTC_SURFACE
 from . import grounding
+from . import autocheck
 from . import dedupe
 from .memory import MemoryStore
 from .llm import GenerationStopped
@@ -227,14 +229,18 @@ WRITE_RULES_TEMPLATE = """
 # 中间/最终产物一律集中放进去——工作区根目录不被散落的报告、草稿、脚本糊满，
 # 收尾清理或复盘时整个文件夹一删/一归档就是一次任务的全部产出。
 OUTDIR_RULE = """
-## 产出与中间文件
-- 本任务的产出目录（相对工作区根目录）：**{outdir}**（目录名即任务发起时间）
-- 你要新建的文件——分析报告、草稿、提取的数据、临时脚本、生成的文档等
-  中间产物与最终产物——**一律创建在上述产出目录里**。
-- 这是**架构保证**：write_file 的相对路径会被自动重定向进产出目录，写偏了
-  系统会告诉你实际落点。例外通道：任务书里明确点名的路径（按任务书写），
-  或绝对路径（显式意图，受工作区边界约束）。
-- 引用产出时在回复里给出相对工作区的完整路径，方便用户直接打开。
+## 产出与中间文件（目录由架构保证，你只需要用逻辑路径）
+- 本任务的任务目录（相对工作区根目录）：**{outdir}**（目录名即任务发起时间）。
+  里面两个固定去处：
+  - **`{outdir}/output/`** —— 最终交付物。任务书点名的文件（如 `reports/outline.md`、
+    `fizzbuzz.py`）写这里，自动按点名路径归位，不用你拼目录；
+  - **`{outdir}/record/work/`** —— 中间/过渡文件（草稿、提取片段、临时脚本）。
+- **架构保证**：write_file 会按「点名 → output/，未点名 → record/work/」自动落位；
+  读文件（read_file/list_dir/find_files/search_code）也自动从这两处找——写进哪、
+  从哪读，用同一个逻辑路径即可，不需要关心物理目录。
+- 命令执行（run_command 与 ops_batch 脚本）的工作目录就是 `{outdir}/output/`：
+  种子文件已拷在里面，写完脚本直接 `python xxx.py` 就能跑。
+- 引用产出时在回复里给出 `{outdir}/output/` 下的完整相对路径，方便用户直接打开。
 """
 
 # 系统提示里的路径规则一句话，按权限模式二选一（渲染见 _system()）。
@@ -287,20 +293,21 @@ TASK_NOTES_HEADER = """## 任务笔记（你自己记下的发现，不受上下
 压缩成一行摘要，但笔记是完整的——**先查笔记再决定要不要重新调用工具**。
 """
 
-# 工具索引：只给名字，不给说明。完整 schema 里 4000 tokens 大部分当轮用不上，
-# 但模型得知道"有这么个能力"，否则会说"我做不到"。要用时用 find_tools 现取。
-TOOL_INDEX_HEADER = """## 其他可用工具（本次未展开说明）
-下面这些工具现在就能用，只是为了省上下文没有下发详细参数。需要哪个就先调用
-find_tools("关键词") 取它的用法，然后再调用它；也可以直接按名字调用。
-  {names}
+# 工具索引：一行一个「名字(必填参数) — 用途」。2026-10-22 从「只列名字」改成
+# 摊开签名与用途：31 轮里 14 次 find_tools 只是为了问「这个工具要什么参数」，
+# 而索引就在同一份提示里——信息本该一步到位。全量 schema 仍然不下发（4100 token），
+# 这里只多花一千多字符。
+TOOL_INDEX_HEADER = """## 其余可用工具（括号里是必填参数，照抄即可）
+下面这些工具现在就能直接调用；可选参数与详细说明用 find_tools("关键词") 取。
+{names}
 """
 
 # PTC 常驻：模型只在 ops_batch 脚本里用 call("工具名", ...) 调这些工具，
 # 不能直接调用，所以索引说明换成「脚本内调用」口径。
-TOOL_INDEX_HEADER_PTC = """## 可编入脚本的工具（本次未展开说明）
-下面这些工具不能直接调用，只能在 ops_batch 脚本里用 call("工具名", ...) 调用（等价写法 tools.call(...) 也行）。
-需要哪个就先 find_tools("关键词") 取它的参数，再写进脚本：
-  {names}
+TOOL_INDEX_HEADER_PTC = """## 可编入脚本的工具（括号里是必填参数，照抄即可）
+下面这些工具不能直接调用，只能在 ops_batch 脚本里用 call("工具名", 参数=...) 调用。
+可选参数与详细说明用 find_tools("关键词") 取；能照签名写对就不用问。
+{names}
 """
 
 # PTC 常驻模式追加到系统提示的说明块（见 _system）。
@@ -311,8 +318,60 @@ PTC_RESIDENT_BLOCK = """## PTC 常驻（程序化工具调用）
   （`from tools import read_file`、`tools.read_file(...)` 也能用，但没有必要。）
 - 只读工具自动放行；写/命令类工具需本次运行是完全访问权限；脚本里不能调 ops_batch / ask_user。
 - 想知道某工具的精确参数，先 `find_tools("关键词")` 取用法，再写脚本。
+  常用的签名和其余工具的必填参数都已经贴在你后面两段里——照抄就行，不用先问。
 - 唯一允许直接调用的例外是 ask_user（交互式澄清弹窗，脚本内无法弹窗）。
 """
+
+# --- PTC 下的「签名摊开」（P10）-------------------------------------------
+# PTC 常驻只列工具名，模型于是按先验猜参数：31 轮浸泡跑里 21 次参数名错
+# （edit_file 传 content/old_content 共 15 次、缺 new_text 2 次，github_search
+# 传 type 4 次），每次都白烧一跳；而报错里明明写着正确签名——说明"看不见"
+# 才是根因。这里把最常用、最容易记错的几个签名直接摊开，十几行 token
+# 换掉这些往返。只列常用工具，不重蹈"全量 schema 吃掉 4000 token"的覆辙。
+_PTC_SIG_TOOLS = ("read_file", "write_file", "edit_file", "list_dir",
+                  "search_code", "run_command", "fetch_url", "fetch_json",
+                  "web_search", "github_search")
+
+# 签名之外，只有「会被误用」的三处值得多花一行（31 轮里踩过的坑）：
+# - fetch_json：返回值是**字符串**，404 也是字符串。模型当成 dict 去 .get()，
+#   于是 `AttributeError: 'str' object has no attribute 'get'`（6 次）。
+# - edit_file：old_text 要逐字节一致（空行也算），否则「未找到待替换文本」（6 次）。
+# - write_file：整篇覆盖，反复整写就是把上一版扔掉（w5 里 50 次）。
+_PTC_SIG_NOTES = {
+    "fetch_json": "// 返回格式化文本，不是 dict；404/网络错误也返回「[错误] …」字符串，不抛异常",
+    "edit_file": "// old_text 必须与文件逐字节一致（空行也算），匹配不唯一会被拒",
+    "write_file": "// 整篇覆盖：已写过就不必再整写，改局部用 edit_file",
+}
+
+
+def _sig_of(spec) -> str:
+    """`name(path, old_text, new_text)`：必填原样，可选写成 `x=…`。"""
+    params = (getattr(spec, "parameters", None) or {})
+    props = params.get("properties") or {}
+    req = [str(x) for x in (params.get("required") or [])]
+    parts = [p if p in req else f"{p}=…" for p in props]
+    return f"{getattr(spec, 'name', '?')}({', '.join(parts)})"
+
+
+def ptc_signature_block(registry) -> str:
+    """脚本内常用工具的一行签名。取不到的（没注册）跳过，不猜。"""
+    lines: list[str] = []
+    for name in _PTC_SIG_TOOLS:
+        spec = registry.get(name) if registry is not None else None
+        if spec is None:
+            continue
+        note = _PTC_SIG_NOTES.get(name, "")
+        lines.append("  - " + _sig_of(spec) + ((" " + note) if note else ""))
+    if not lines:
+        return ""
+    return ("## 脚本内工具签名（照抄，别猜）\n"
+            "参数名以这里为准，不要套用别的工具或别的 API 的写法"
+            "（最常见错：`edit_file` 用 `old_text` / `new_text`，"
+            "不是 `content` / `old_content`）。\n"
+            "返回值**一律是字符串**（含错误回执），不是 dict——"
+            "不要对结果 `.get(...)`，要结构化先自己 `json.loads`。\n"
+            + "\n".join(lines) + "\n")
+
 
 # 工具调用名格式校验：合法名应为小写字母/数字/下划线/点（如 read_file / git_clone /
 # 模型偶发的 git.clone 点号变体）。出现空白、CJK、问叹号、括号等特殊符号，或长度异常，
@@ -339,69 +398,17 @@ def _is_malformed_tool_name(name: str) -> bool:
 COMPACT_THRESHOLD = 60_000
 
 # ---------------------------------------------------------------------------
-# 确定性澄清触发：检索「未命中 / 多候选」不靠提示词祈祷，程序亲自识别。
+# 确定性澄清触发：判定逻辑已整体迁到 `agentforge/clarify.py`（试行版 v0，见
+# docs/clarify-policy.md §12）。这里只做重新导出，保持既有测试的 import 路径不变。
 #
-# 背景（2026-10-15 评测 r1 两轮同因失败）：gemma4:12b 检索不到时会把澄清
-# 问题写在回复文本里，而不是调用 ask_user——意图对、通道错。提示词第 9 条
-# 已在位但管不住小模型，所以把触发下沉到架构层：
-#   1. 每次工具返回后，按工具层**固定渲染格式**识别「未命中 / 多候选」信号
-#      （纯正则，不依赖模型任何自觉；工具改格式这里同步改）；
-#   2. 模型给出最终回复时，若本场 run 存在未消化的信号且回复带追问语气
-#      （同样是正则判定），harness 亲自发起 ask_user 弹窗——问题取模型
-#      追问的原话（拿不到就按信号合成），多候选时选项直接用命中项目名；
-#   3. 拿到答复（真实用户 / 评测脚本 / 无用户提示）回灌给模型继续任务。
-# 弹窗真实发生、答复真实回传，评测的 must_ask 由此按事实通过。
+# 为什么迁走：那套判定必须能**独立单测**（该弹/不该弹各一条用例，§12.5 的门槛），
+# 而它的输入是「单次调用的真实工具名 + 真实输出」——PTC 常驻后这件事只有执行层
+# 咽喉点（`Agent._execute`）拿得到，不能靠扫 ops_batch 的合并文本反解（§6）。
 # ---------------------------------------------------------------------------
-_GH_ROW_RX = re.compile(r"^\s*\d+\.\s+(\S+)\s+star=", re.M)   # github_search 渲染行
-_BRACKET_Q_RX = re.compile(r"「([^」]{1,60})」")
-# 追问语气：有问号 + 追问惯用词。宁可宽松——触发还要同时满足「本场有检索信号」
-# 和「每场至多一次」，误触发的代价只是一次正常澄清。
-_CLARIFY_RX = re.compile(r"[^。！？!?\n]{4,80}[？?]")
-_CLARIFY_HINTS = ("请问", "请告知", "请提供", "请说明", "请补充", "请确认",
-                  "是指", "哪一个", "哪个", "哪些", "是什么", "指的是")
-_EMPTY_MARKERS = (
-    "没拿到结果",                 # github_search：仓库搜索没拿到结果
-    "未找到匹配",                 # search_code / find_files
-    "共 0 个目录 / 0 个文件",     # list_dir：空目录
-    "没有返回结果",               # web_search
-    "文件不存在",                 # read_file
+from .clarify import (                     # noqa: E402
+    _EMPTY_OPTIONS, _CLARIFY_RX, _lookup_signal, _has_clarify_intent,
+    _tail_has_question, Watcher as ClarifyWatcher, Decision as ClarifyDecision,
 )
-_FETCH_MARKERS = ("请求失败", "未找到")   # fetch_url / fetch_json 拿不到来源
-_RETRIEVAL_TOOLS = {"list_dir", "find_files", "search_code", "read_file",
-                    "github_search", "web_search", "fetch_url", "fetch_json"}
-_EMPTY_OPTIONS = ["本地项目", "git上的项目", "其他"]
-
-
-def _lookup_signal(name: str, out: str) -> dict | None:
-    """按工具层固定输出格式识别检索信号。返回
-    {"kind": "multi"|"empty", "query": str, "candidates": [..]} 或 None。
-    只看检索类工具——写类工具报「文件不存在」是另一回事，不算检索未命中。"""
-    out = str(out or "")
-    if not out or name not in _RETRIEVAL_TOOLS:
-        return None
-    rows = _GH_ROW_RX.findall(out)
-    if len(rows) >= 2:                       # ≥2 个编号候选 =「多种可能不确定」
-        q = _BRACKET_Q_RX.search(out)
-        return {"kind": "multi", "query": q.group(1) if q else "",
-                "candidates": rows[:3]}
-    markers = list(_EMPTY_MARKERS) + (
-        list(_FETCH_MARKERS) if name.startswith("fetch") else [])
-    if any(m in out for m in markers):
-        q = _BRACKET_Q_RX.search(out)
-        if q:
-            query = q.group(1)
-        else:                                # list_dir 等无「」格式：首行就是路径
-            query = out.splitlines()[0].strip()[:60] if out.splitlines() else ""
-        return {"kind": "empty", "query": query, "candidates": []}
-    return None
-
-
-def _has_clarify_intent(text: str) -> bool:
-    """最终回复是否在向用户追问（问号 + 追问惯用词，双条件同时满足）。"""
-    if "？" not in text and "?" not in text:
-        return False
-    return any(w in text for w in _CLARIFY_HINTS)
-
 
 # 记忆检索时排除的泛词：命中它们等于没查（几乎所有记忆条目都带这些词）
 _MEM_STOPWORDS = {"项目", "文件", "信息", "检索", "记忆", "任务", "工作",
@@ -487,6 +494,15 @@ class Agent:
         # 连续失败计数：同一 agent 连续收到失败的工具结果时逐次升级提醒
         # （FAIL_NOTE / FAIL_REPEAT_NOTE），见 run() 里的工具结果分发处
         self.fail_streak = 0
+        # 澄清判定器（docs/clarify-policy.md §12）：每场 run 开头重建，_execute 喂。
+        # 放在这里而不是 run 里，是为了 _execute 在 run 之外被调用时也有个空壳可喂。
+        self._clarify = ClarifyWatcher(
+            mode="off", workspace_root=cfg.workspace_root)
+        # 指定工具执行期间产生的判定事件（脚本线程里发不出事件流，先攒着，
+        # 执行完由 run() 一次性 yield 出去）
+        self._clarify_events: list[dict] = []
+        # 已拦下但还没问的判定（R1）：弹窗必须在主线程发，见 _clarify_precheck
+        self._clarify_pending: list = []
 
     # ---------- 模型 ----------
     def set_model(self, key: str) -> None:
@@ -535,13 +551,21 @@ class Agent:
             base += "\n" + self.warmup_block + "\n"
         if self.skills and self.skills.skills:
             base += "\n" + self.skills.catalog() + "\n"
-        # 工具索引：把没下发说明的工具名字列出来（只列名字，很便宜），
-        # 让模型知道能力边界，而不是"没看到就当没有这个功能"
+        # 工具索引：一行一个「名字(必填参数) — 用途」，让模型知道能力边界与用法，
+        # 而不是"没看到就当没有这个功能"、或"看到了但不知道参数，再花一跳去问"。
+        sig_names: set[str] = set()
         if getattr(self.cfg, "ptc_resident", False):
             base += "\n" + PTC_RESIDENT_BLOCK
+            # 紧跟在 PTC 说明后面：那里刚说完"先 find_tools 查参数"，这里直接给答案，
+            # 省掉一次往返（模型在 155 次判定里只查过 14 次 find_tools）。
+            sig = ptc_signature_block(self.registry)
+            if sig:
+                base += "\n" + sig
+                # 签名块里已经摊开过的不在索引里重复一遍
+                sig_names = {n for n in _PTC_SIG_TOOLS if self.registry.get(n)}
         sel = self.registry.selector
         if sel is not None and getattr(self.cfg, "tools_lazy", True):
-            idx = sel.index_text(exclude=self._active_tool_names)
+            idx = sel.index_text(exclude=set(self._active_tool_names) | sig_names)
             if idx:
                 header = (TOOL_INDEX_HEADER_PTC
                           if getattr(self.cfg, "ptc_resident", False)
@@ -780,14 +804,33 @@ class Agent:
         self.permission_label = "完全访问权限" if full else "默认权限"
         self.full_access = full
 
-        # 写入放行名单：任务书（user_text）里点名的带目录层的相对路径。
-        # 这些路径不受「强制落产出目录」重定向——那是「必须放特定位置才能
-        # 生效」的例外通道（如任务书点名要交付到 evals/ 的报告）。只认带
-        # 目录层的路径（含 ./ 前缀）：裸文件名一律进产出目录，那正是根目录
-        # 违规写入的形态。绝对路径不走名单，本身就不受重定向。
+        # 写入放行名单：任务书（user_text）里点名的相对路径。这些路径写进
+        # 交付区 output/（P28），其余相对路径进 record/work/。三类都放行：
+        #   1) 带目录层的路径（reports/outline.md、./evals/a.md）；
+        #   2) 裸文件名（fizzbuzz.py、count.txt）——P23；
+        #   3) 组合路径（P27）：任务书分开点名目录零件（reports/2026）与
+        #      裸文件名（summary.md）时，模型自然组合出 reports/2026/summary.md
+        #      ——f1 两次失败（n1023/n1030）的根因：组合路径不在名单里被当成
+        #      中间文件落进 record/work/，核验在交付区找不到。
+        # 绝对路径不走名单，本身不受重定向。
         allow: set[str] = set()
         for m in re.finditer(r"(?:\./|(?:[\w.\-]+/)+)[\w.\-]+\.[A-Za-z0-9]{1,8}", user_text or ""):
             allow.add(m.group(0).replace("\\", "/").lstrip("./"))
+        bare: set[str] = set()
+        for m in re.finditer(r"(?<![\w.\-/])[\w\-]+\.[A-Za-z0-9]{1,8}(?![\w.\-/])", user_text or ""):
+            bare.add(m.group(0))
+        allow |= bare
+        # P27 组合：目录零件（带 / 但末段无扩展名）× 裸文件名。量级有界
+        # （任务书里点名碎片通常各只有几个），超过 400 组合不再凑（防病态文本）。
+        dirs: set[str] = set()
+        for m in re.finditer(r"(?<![\w.\-/])(?:[\w\-]+/)+[\w\-]+(?![\w.\-/])", user_text or ""):
+            d = m.group(0).strip("./")
+            if "/" in d and d not in allow:
+                dirs.add(d)
+        if dirs and bare and len(dirs) * len(bare) <= 400:
+            for d in dirs:
+                for b in bare:
+                    allow.add(f"{d}/{b}")
         self._write_allow = frozenset(allow)
 
         # 交付物契约（做之前就锁定「做对」的标准，而不是做完再核实返工）：
@@ -896,16 +939,29 @@ class Agent:
         # 操作类答复事实核查的打回次数上限（与 contract_blocks 同款自愈逻辑）：
         # 模型宣布收工、但最终答复里的具体命令/目录指令在源里找不到时打回重述。
         ground_blocks = 0
+        # 打满之后的「程序补查」：只做一次（见 agentforge/autocheck.py）。
+        # _auto_src/_auto_pool 是程序自己抓到的源与候选池，只用于收尾诊断，不进历史
+        # （进了历史就等于让模型平白多看一遍，而且 role=tool 的孤立消息会被
+        # provider 拒收）；_auto_urls 记已复核的地址，写进最终声明。
+        auto_checked = False
+        _auto_src = ""
+        _auto_pool = ""
+        _auto_urls: list[str] = []
         # 契约对账辅助：路径是否「未交付」——不存在，或自本轮开始从未更新。
+        # P28：交付物落交付区 output/，核对磁盘以交付区为准。
+        def _deliver_root() -> Path:
+            base = Path(self.cfg.workspace_root)
+            return base / self.outdir / "output" if self.outdir else base
+
         def _owe(p: str) -> bool:
-            f = Path(self.cfg.workspace_root) / p
+            f = _deliver_root() / p
             try:
                 if not f.exists():
                     self._owe_reasons[p] = "文件不存在"
                     return True
                 # 骨架先行后，「文件存在」不再等于「已交付」：write_skeleton 会
                 # 真的落盘并刷新 mtime，但里面只有标题。空着小节就当没写。
-                if skeleton.unfinished_file(self.cfg.workspace_root, p):
+                if skeleton.unfinished_file(_deliver_root(), p):
                     self._owe_reasons[p] = "骨架里的待填位还没填完"
                     return True
                 # 本轮压根没更新就不用再读内容了（mtime 先判，省一次全文读取）
@@ -915,7 +971,7 @@ class Agent:
                 # 覆盖核查：写过、也填满了，但任务书点名要覆盖的项没写全。
                 req = getattr(self, "_required", None)
                 if req:
-                    miss = skeleton.required_missing(self.cfg.workspace_root, p, req)
+                    miss = skeleton.required_missing(_deliver_root(), p, req)
                     if miss:
                         self._owe_reasons[p] = ("缺任务书要求覆盖的项：" +
                                                 "、".join(miss[:8]))
@@ -940,9 +996,16 @@ class Agent:
         # 每次都返回同一批无关结果，模型就这么原地打转到把 token 烧完。
         # 这里只计数不拦截：第 3 次起在结果后挂硬提示，第 5 次起不再执行。
         ops_repeat: dict[str, int] = {}
-        # 确定性澄清触发：本场 run 收集到的检索信号（未命中/多候选），
-        # 每场至多发起一次弹窗（见模块头「确定性澄清触发」）
-        amb_signals: list[dict] = []
+        # 澄清判定（试行版 v0，docs/clarify-policy.md §12）：一场 run 一个 watcher。
+        # 它按「单次调用的真实工具名 + 真实输出」记账（由 _execute 喂），所以 PTC
+        # 常驻下脚本里的内层调用同样可见——这正是 PTC 之后被掐断的那条通道。
+        self._clarify = ClarifyWatcher(
+            mode=getattr(self.cfg, "clarify_mode", "on"),
+            workspace_root=self.cfg.workspace_root,
+        )
+        self._clarify_events = []
+        self._clarify_pending = []
+        # 收尾澄清每场至多问一次（R2 另外按槽位去重）
         asked_once = False
         # 轮次预算：软预算起每轮催收敛；硬上限撤掉工具强制交卷。
         # hard 相对 max_steps 留 3 轮余量，保证「强制交卷」自己有轮次可用。
@@ -1155,48 +1218,110 @@ class Agent:
                                "no_source": not bool(_g_src.strip()),
                                "diagnosis": _g_diag}
                         continue
-                # 拦满放行（rerun58 新增）：打回 2 次仍未通过时不再无限循环，但
-                # **不能静默交付**——模型两次没改对，第三次的自我声明同样不可信。
-                # 由程序在交付物尾部盖一个可复核的印记（打回几轮、几条没依据），
-                # 用户至少知道哪些内容要按「未经核实」对待。
+                # 打满（rerun58 起）→ 2026-10-21 改：**不再直接盖章**。
+                # 当年「打满就标注」是为了省云端 token；本地 agent 只花电费，把
+                # 「核实」推回给用户说不过去。现在的顺序是：
+                #   ① 程序自己按诊断报告去抓一手源（autocheck.plan/run）；
+                #   ② 抓到 → 用「模型看到的源 + 程序抓到的源」重新诊断，能对上就
+                #      正常交付（不盖章）；对不上 → 把这些源交给模型做最后一轮对齐；
+                #   ③ 一个源都没抓到 → 才走声明，且声明里写清「程序抓过、没抓到」。
                 elif _g_on and ground_blocks >= 2:
-                    _g_diag = grounding.diagnose(
-                        result.content or "", _g_src, _g_cands,
-                        task=user_text, intent=grounding.is_howto_intent(user_text),
-                        history=history)
+                    def _diag_now() -> dict:
+                        return grounding.diagnose(
+                            result.content or "",
+                            "\n".join(x for x in (_g_src, _auto_src) if x.strip()),
+                            "\n".join(x for x in (_g_cands, _auto_pool) if x.strip()),
+                            task=user_text, intent=grounding.is_howto_intent(user_text),
+                            history=history, program_fetched=_auto_urls)
+
+                    _g_diag = _diag_now()
+                    if not _g_diag.get("ok") and not auto_checked and not stopped():
+                        auto_checked = True
+                        _limit = int(getattr(self.cfg, "autocheck_max_fetch", 3))
+                        _plan = (autocheck.plan(_g_diag, task=user_text,
+                                                reply=result.content or "",
+                                                history=history, limit=_limit)
+                                 if _limit > 0 else [])
+                        if _plan:
+                            yield {"type": "notify", "kind": "ok",
+                                   "text": "答复两轮未通过核查：程序开始自行补抓一手源"}
+                            _got = autocheck.run(_plan, self._auto_call, limit=_limit)
+                            _g_src_new = autocheck.sources(_got)
+                            _g_pool_new = autocheck.pool(_got)
+                            _g_urls_new = autocheck.urls(_got)
+                            if _g_src_new:
+                                _auto_src = "\n".join(x for x in (_auto_src, _g_src_new) if x)
+                                _auto_pool = "\n".join(x for x in (_auto_pool, _g_pool_new) if x)
+                                _auto_urls = _auto_urls + [u for u in _g_urls_new
+                                                           if u not in _auto_urls]
+                                _g_diag = _diag_now()
+                                if _g_diag.get("ok"):
+                                    yield {"type": "notify", "kind": "ok",
+                                           "text": "程序补抓的源能对上答复内容：核查改为通过"}
+                                else:
+                                    # 最后一轮：把程序抓到的一手源交给模型，只做对齐
+                                    _push({"role": "assistant",
+                                           "content": result.content or "", **replay_think})
+                                    _push({"role": "user",
+                                           "content": autocheck.render_prompt(_got)})
+                                    yield {"type": "grounding_gate",
+                                           "issues": _g_diag.get("issues") or [],
+                                           "refs": _g_diag.get("refs") or [],
+                                           "round": ground_blocks + 1,
+                                           "recheck": True, "sources": _auto_urls,
+                                           "diagnosis": _g_diag}
+                                    continue
+                            else:
+                                _why = "；".join(
+                                    f"{r.get('target') or r.get('url')}: "
+                                    f"{(r.get('text') or '空响应').strip()[:60]}"
+                                    for r in autocheck.failures(_got)) or "无可抓目标"
+                                yield {"type": "notify", "kind": "bad",
+                                       "text": f"程序补抓没拿到可用材料（{_why}），改为标注"}
+                        else:
+                            yield {"type": "notify", "kind": "bad",
+                                   "text": "程序补抓没有可执行的目标，改为标注"}
                     if not _g_diag.get("ok"):
-                        _note = grounding.render_unverified_note(_g_diag)
+                        _note = grounding.render_unverified_note(_g_diag, checked=_auto_urls)
                         if _note and _note not in (result.content or ""):
                             result.content = (result.content or "").rstrip() + _note
                             yield {"type": "notify", "kind": "bad",
-                                   "text": "答复核查两轮未通过，已在结尾附加「未经核实」声明"}
+                                   "text": "答复核查未通过：已在回复下方标注未核实条目"}
                         yield {"type": "grounding_gate",
                                "issues": _g_diag.get("issues") or [],
                                "refs": _g_diag.get("refs") or [],
                                "round": ground_blocks, "exhausted": True,
                                "no_source": not bool(_g_src.strip()),
+                               "checked": _auto_urls,
                                "diagnosis": _g_diag}
                 assistant_msg = {"role": "assistant", "content": result.content, **replay_think}
                 _push(assistant_msg)
                 yield {"type": "assistant", "content": result.content, "history": history}
 
-                # 确定性澄清触发：本场发生过「检索未命中 / 多候选」，模型的最终
-                # 回复又在向用户追问 → 不指望它自觉调 ask_user，harness 亲自处理。
-                # 顺序：先查长期记忆（确定性架构步，见模块头），记忆里也没有才弹窗。
-                if (not asked_once and amb_signals
-                        and _has_clarify_intent(result.content or "")):
-                    sig = amb_signals[-1]
+                # 澄清触发（试行版 v0，见 docs/clarify-policy.md §12）：
+                # 判定全在 ClarifyWatcher（R1 在执行前、R2 在这里），本段只负责
+                # 「问了之后怎么办」——先翻长期记忆（确定性架构步，不靠模型自觉），
+                # 记忆里也没有才弹窗；弹完把答复回灌，任务继续。
+                decision = None
+                if not asked_once:
+                    decision = self._clarify.on_reply(result.content or "")
+                if decision is not None:
+                    # 无论弹不弹，判定本身先落事件流：影子期靠它统计误报
+                    yield decision.event()
+                    if self._clarify.shadow:
+                        decision = None          # 影子期：只算不弹（§12.5 上线门槛）
+                if decision is not None:
+                    sig = decision.extra
                     m = _CLARIFY_RX.search(result.content or "")
 
                     # 第一步：本地没找到，先翻记忆条目（调记忆数据，不靠模型自觉）。
                     # 检索源=信号 query + 模型追问原话——list_dir 的 query 只是
                     # 路径（如 r1 场景），缺的实体名（REA）在追问句里
                     mem_lines = []
-                    if sig["kind"] == "empty":
-                        mem_src = sig["query"] + "\n" + (m.group(0) if m else "")
+                    if sig.get("kind") == "empty":
+                        mem_src = str(sig.get("query") or "") + "\n" + (m.group(0) if m else "")
                         mem_lines = _memory_hits(self.memory, mem_src)
                     if mem_lines:
-                        amb_signals.pop()          # 信号已被记忆消化
                         _push({"role": "user", "content": (
                             "（系统侧自动检索记忆）任务需要的信息在本地没有检索到，"
                             "但长期记忆里有这些相关记录：\n- "
@@ -1205,31 +1330,23 @@ class Agent:
                               "若与任务无关，如实说明并按最常见的情况假设。")})
                         continue          # 模型拿着记忆线索进入下一轮
 
-                    # 第二步：记忆里也没有 → 发起澄清弹窗
+                    # 第二步：记忆里也没有 → 发起澄清弹窗。
+                    # 问题与选项由 harness 用模板 + 真实证据生成（§12.3），
+                    # 不用模型的原话：弱模型的问题经常跑偏或夹带错误候选。
                     asked_once = True
-                    if sig["kind"] == "multi" and sig["candidates"]:
-                        question = (m.group(0).strip() if m else
-                                    f"检索到多个可能的结果，您指的是哪一个？")
-                        options = [*sig["candidates"], "其他"]
-                    else:
-                        question = (m.group(0).strip() if m else
-                                    (f"「{sig['query']}」没有检索到，您指的是什么？"
-                                     if sig["query"] else
-                                     "任务需要的关键信息没有检索到，请补充说明？"))
-                        options = list(_EMPTY_OPTIONS)
-                    question = question[:200]
-                    # 24 字上限：中文选项 12 字足够，但多候选取的是 repo 名
-                    #（如 react/react-native 18 字符），截到 12 会把名字切坏
-                    options = [str(o)[:24] for o in options if str(o).strip()][:4]
+                    question = decision.question
+                    options = list(decision.options)
                     yield {"type": "tool_start", "name": "ask_user",
-                           "args": {"question": question, "options": options}}
+                           "args": {"question": question, "options": options,
+                                    "reason": decision.reason,
+                                    "evidence": list(decision.evidence)}}
                     from . import interact as _amb_interact
                     answer = _amb_interact.ask(question, options)
                     yield {"type": "tool_result", "name": "ask_user", "output": answer}
 
                     # 第三步（仅信息补充型弹窗）：问用户要不要把这条信息存入记忆。
                     # 确定性流程的一部分，不指望模型记得问；选是/否都有绿色提示。
-                    if sig["kind"] == "empty":
+                    if sig.get("kind") == "empty":
                         confirm_q = f"是否将当前信息（{answer[:40]}）存入记忆？"
                         yield {"type": "tool_start", "name": "ask_user",
                                "args": {"question": confirm_q, "options": ["是", "否"]}}
@@ -1337,6 +1454,11 @@ class Agent:
                     finally:
                         OPS_AGENT_CTX.reset(_ops_t)
                     _tool_ms = (time.monotonic() - _t_tool0) * 1000.0
+                    # 澄清判定事件（脚本线程里发不出事件流，执行完在这里补发）。
+                    # R1 的弹窗就发生在这一小段里：判定在执行前，答复已经拿到。
+                    for _cev in self._clarify_events:
+                        yield _cev
+                    self._clarify_events.clear()
                     if tc.name == "ops_batch":
                         # 同脚本重复计数：第 3 次起在结果后挂硬提示（不拦截，
                         # 因为脚本可能确实要重跑），第 5 次起上面那个分支直接不执行。
@@ -1361,11 +1483,10 @@ class Agent:
                         else:
                             call_cache.clear()
 
-                # 检索信号登记（确定性，见模块头）：未命中 / 多候选都记下，
-                # 供模型收尾追问时由 harness 亲自发起澄清弹窗
-                sig = _lookup_signal(tc.name, out)
-                if sig is not None:
-                    amb_signals.append(sig)
+                # 检索信号登记已下沉到 Agent._execute（见该处注释）：那里是
+                # 「单次调用的真实工具名 + 真实输出」的唯一咽喉点，直连调用与
+                # ops_batch 脚本内层调用都经过它。这里不再扫 ops_batch 的合并文本
+                # ——合并后分不清「哪段输出属于哪次调用」，会张冠李戴。
 
                 # 失败结果强呈现：错误/拒绝不能混在普通输出里被无视。
                 # [错误] 附上两条禁令（不许无视失败继续、不许未验证声称完成）；
@@ -1391,7 +1512,7 @@ class Agent:
                     # 收尾才暴露。最多回灌 3 次（防死循环），终审仍归收尾闸门。
                     if tc.name in FILE_TOOLS and self.iv_fails < 3:
                         note, _ = verify_gate.inline_verify_note(
-                            user_text, self.cfg.workspace_root)
+                            user_text, _deliver_root())
                         if note:
                             self.iv_fails += 1
                             out = out + "\n\n" + note
@@ -1399,6 +1520,23 @@ class Agent:
                        "dur_ms": round(_tool_ms, 1),
                        **({"failed": True} if (failed or denied) else {})}
                 _push({"role": "tool", "content": out})
+
+                # R1 已拦下、还没问的那条：在主线程补发弹窗（脚本线程里问会退化成
+                # 「无用户作答」）。答复以 user 消息回灌，模型下一轮据此重定目标。
+                while self._clarify_pending:
+                    _d = self._clarify_pending.pop(0)
+                    yield {"type": "tool_start", "name": "ask_user",
+                           "args": {"question": _d.question,
+                                    "options": list(_d.options),
+                                    "reason": _d.reason,
+                                    "evidence": list(_d.evidence)}}
+                    from . import interact as _amb_interact
+                    _ans = _amb_interact.ask(_d.question, list(_d.options))
+                    yield {"type": "tool_result", "name": "ask_user", "output": _ans}
+                    _push({"role": "user", "content": (
+                        f"（澄清弹窗答复）{_d.question}\n用户的答复：{_ans}\n"
+                        "请按答复重新确定目标；若答复确认就是这个目标，"
+                        "先 read_file 确认内容再执行。")})
 
                 # A 方案：契约闸门下沉到 PTC 脚本边界。PTC 常驻下模型用 ops_batch
                 # （带 tool_calls）反复写-失败死循环，永不到「无 tool_calls 收工」，
@@ -1446,6 +1584,24 @@ class Agent:
         yield {"type": "error", "message": f"已达到最大步数 {self.cfg.max_steps}，任务未收敛，请拆小任务或提高上限。"}
 
     # ---------- 工具执行 ----------
+    def _auto_call(self, name: str, **kwargs) -> str:
+        """程序侧（非模型侧）直接跑一个只读工具。
+
+        专供打满后的「程序补查」：抓一手源这件事本来就该 harness 自己做，不必
+        经过模型的工具面（PTC 常驻下顶层 fetch_url 根本不可见），也不该被权限
+        确认拦一次——它只是读网页。所以只允许白名单里的只读检索工具。
+        """
+        if name not in ("fetch_url", "github_search", "web_search", "npm_search",
+                        "fetch_json"):
+            return f"[错误] 补查不允许调用 {name}"
+        tool = self.registry.get(name)
+        if tool is None:
+            return f"[错误] 工具不可用：{name}"
+        try:
+            return str(tool.run(**kwargs))
+        except Exception as e:  # noqa: BLE001
+            return f"[错误] {name} 调用失败: {e}"
+
     def _execute(
         self,
         name: str,
@@ -1495,6 +1651,13 @@ class Agent:
         ):
             return f"[已拒绝] 用户拒绝了 {name} 的执行。请不要重试，改换方案或向用户说明。"
 
+        # 澄清闸（试行版 v0 的 R1）：多候选里没读过内容就删/覆盖 → 执行前问一句。
+        # **必须在 claim_write 与 tool.run 之前**：问完再动手才有意义，事后问等于
+        # 事后道歉。返回非 None 表示这次调用被取消，字符串即回给模型的说明。
+        _clarified = self._clarify_precheck(name, args or {})
+        if _clarified is not None:
+            return _clarified
+
         # 多 agent 并行时可能有两个任务恰好改同一个文件：这里给该文件的写入排队
         # （见 permissions.claim_write）。只对写类工具生效，不同文件互不阻塞；
         # key 用「绝对路径归一化」而不是 guard.resolve，免得受越界权限影响。
@@ -1539,6 +1702,18 @@ class Agent:
                     req = set(params.get("required") or [])
                     msg += "\n[参数] " + name + " 接受：" + "、".join(
                         f"{k}（必填）" if k in req else k for k in props)
+                    # 参数校验本身几乎不花时间（一次 dict 查找），贵的是「模型得再猜
+                    # 一轮」。所以除了列出全部参数名，还把错的那个名字指向最近的正确
+                    # 名字——31 轮里 20 次参数错，12 次是 edit_file 传 content。
+                    for bad in re.findall(r"unexpected keyword argument '(\w+)'", str(e)):
+                        close = difflib.get_close_matches(bad, props, n=1, cutoff=0.4)
+                        if close:
+                            msg += f"\n[提示] {name} 没有 {bad} 这个参数，最接近的是 {close[0]}。"
+                        if bad == "content" and "content" not in props:
+                            msg += ("\n[提示] content 是「整篇内容」的意思："
+                                    "整篇替换用 write_file(path, content)，"
+                                    "局部替换用 edit_file(path, old_text, new_text)。"
+                                    "两者语义不同，不会自动转换。")
             except Exception:  # noqa: BLE001
                 pass
             if name == "write_file" and "path" in str(e):
@@ -1554,6 +1729,14 @@ class Agent:
             if rec_token is not None:
                 RECORDER_CTX.reset(rec_token)
 
+        # 澄清判定记账（docs/clarify-policy.md §12）：喂的是**单次调用的真实工具名
+        # + 本次输出**，不是 ops_batch 的合并文本。放在 _execute 这个咽喉点，直连
+        # 调用与 PTC 脚本内层调用都会经过，PTC 之后丢失的「名字↔产出」配对在此补回。
+        try:
+            self._clarify.observe(name, args or {}, out)
+        except Exception:  # noqa: BLE001  判定器坏了不该影响工具执行
+            pass
+
         # 证据台账：成功读取 / 检索 / 抓取到的路径记进来（架构层，供写报告校验引用）。
         # 只记成功结果（以 [错误] / [已拒绝] 开头视为失败，不记）。
         ledger = getattr(self.guard, "ledger", None)
@@ -1566,6 +1749,40 @@ class Agent:
             if rec:
                 file_log.append(rec)
         return out
+
+    def _clarify_precheck(self, name: str, args: dict) -> str | None:
+        """不可逆调用执行前的澄清闸（R1，docs/clarify-policy.md §12.2）。
+
+        触发条件全是确定性信号：检索回了 ≥2 个候选 → 没读过其中任何一个 →
+        紧接着要删/覆盖它挑中的那个。这时**先问，且本次调用不执行**。
+
+        返回 None = 放行；返回字符串 = 已澄清/已阻止，作为工具结果回给模型。
+        影子模式（`clarify_mode=shadow`）只记事件、照常放行。
+        """
+        w = self._clarify
+        if not w.enabled:
+            return None
+        try:
+            d = w.precheck(name, args)
+        except Exception:  # noqa: BLE001  判定器异常绝不阻塞正事
+            return None
+        if d is None:
+            return None
+        # 判定本身先落事件流（影子期靠它统计误报，§12.5）
+        self._clarify_events.append(d.event())
+        if w.shadow:
+            return None
+        # 弹窗**不在这个线程里发**：这次调用可能跑在 ops_batch 的脚本线程里，而
+        # interact 的会话上下文（评测脚本答案 / interactive 标志 / 预算）是
+        # thread-local——在那里问会静默退化成「无用户作答」，用户永远看不到弹窗。
+        # 所以这里只登记 + 就地拦下，由 run() 在主线程补发弹窗并回灌答复。
+        self._clarify_pending.append(d)
+        return (
+            "[澄清已介入] 这次调用**未执行**：检索到多个候选、但你没有读过其中任何"
+            "一个就要动手，harness 已在执行前拦下并去问用户。\n"
+            f"问：{d.question}\n"
+            "答复会随后以单独一条消息给你。拿到答复后请先 read_file 确认内容再做，"
+            "不要用同样的参数重试——那次会被静默放过（同一槽位只问一次）。")
 
     def _record_evidence(self, name: str, args: dict, out: str, ledger: EvidenceLedger) -> None:
         """把一次成功工具调用里出现的真实路径记入证据台账。

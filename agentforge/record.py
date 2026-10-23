@@ -79,6 +79,7 @@ class Recorder:
         self.rel_root = Path(rel_root) if rel_root else None
         self.root.mkdir(parents=True, exist_ok=True)
         self._seq: dict[str, int] = {}
+        self._whole: dict[str, int] = {}      # 整写次数（乐观并发用，与版本号分开）
 
     # ---------- 基础 ----------
     def _rel(self, p: Path | str) -> str:
@@ -143,6 +144,24 @@ class Recorder:
         return list(rec.get("ranges") or [])
 
     # ---------- 写 ----------
+    def whole_writes(self, path: Path | str) -> int:
+        """本任务对该路径**整写**（write_file 整篇覆盖）的次数。
+
+        只数整写：`fill_section` / `write_skeleton` 也各留一个版本，但它们
+        是**增量**（一节一行），拿版本数当整写次数会误判——occprobe 里
+        w5 写了 1 次 + 填了 3 节，版本号已经到 4，第 2 次整写就被 OCC 拦了。
+
+        用它做写盘侧的乐观并发（见 `agentforge/tools/fs.py` 的 `_OCC_AFTER`）。
+        """
+        return self._whole.get(self._rel(path).lower(), 0)
+
+    def note_whole_write(self, path: Path | str) -> int:
+        """记一次整写，返回这是第几次。"""
+        k = self._rel(path).lower()
+        n = self._whole.get(k, 0) + 1
+        self._whole[k] = n
+        return n
+
     def version(self, path: Path | str, content: str, old: str = "") -> tuple[str, int, int]:
         """给这次写盘留一份全文快照，返回 (相对路径, 新增行, 删除行)。
 

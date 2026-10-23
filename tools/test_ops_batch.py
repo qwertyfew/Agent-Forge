@@ -107,6 +107,29 @@ def main() -> None:
           repr((out or {}).get("output", ""))[:160])
     check("SDK read 记入证据台账（read 硬闸继承）",
           ag0.guard.ledger.was_read(tmp / "src" / "mod2.py"))
+
+    # ---------- P24：脚本裸 IO 的 cwd = 工作区根（与工具同一文件系统视角） ----------
+    import os as _os
+    _prev_cwd_snapshot = _os.getcwd()
+    ag_cwd = _mk_agent(tmp, [
+        _Res(tool_calls=[_TC("ops_batch", {"script":
+            "import os\n"
+            "print('CWD-IS:' + os.getcwd())\n"
+            "print('SEED-VIA-OPEN:' + open('seed.txt', encoding='utf-8').read())\n"})]),
+        _Res(content="裸 IO 读到了沙盒里的种子文件。"),
+    ])
+    (tmp / "seed.txt").write_text("P24-OK", encoding="utf-8")
+    evs_cwd = _run(ag_cwd, "用脚本裸 IO 读 seed.txt")
+    out_cwd = next((e for e in evs_cwd if e.get("type") == "tool_result"), None)
+    o = (out_cwd or {}).get("output") or ""
+    check("脚本 cwd = 工作区根（不再继承 harness 进程 cwd）",
+          f"CWD-IS:{tmp}" in o, repr(o)[:200])
+    check("脚本内 open('seed.txt') 读到沙盒文件（裸路径与工具同根）",
+          "SEED-VIA-OPEN:P24-OK" in o, repr(o)[:200])
+    import os as _os
+    check("脚本结束后进程 cwd 恢复原值（不污染 harness）",
+          _os.getcwd() == _prev_cwd_snapshot)
+    check("回执印出脚本 cwd（模型可自证视角）", "[script cwd]" in o, repr(o)[:200])
     finals = [e for e in evs if e.get("type") == "assistant"]
     check("PTC 轮次后正常收尾", finals and finals[-1]["content"] == "三个模块头部已汇总。")
 
@@ -353,6 +376,58 @@ def main() -> None:
           "没有拿到任何数据" in out_zero, out_zero[:300])
     check("0 次调用时给出常见原因（三引号/只有注释）",
           "三引号" in out_zero or "字符串" in out_zero, out_zero[:300])
+
+    # ---------- P9：`if __name__ == "__main__"` 不许静默跳过 ----------
+    # 现场（soak16）：脚本本身完全正确，但守卫恒假——因为 exec 的环境里没有
+    # `__name__`，查找回落到 builtins 模块（"builtins"），于是 main() 一次都不调，
+    # 脚本"成功"、零调用、零报错，连丢两轮。标准 Python 写法不该被坑。
+    guarded = ("def main():\n"
+               "    print(call('read_file', path='note.txt'))\n"
+               "\n"
+               'if __name__ == "__main__":\n'
+               "    main()\n")
+    ag_nm = _mk_agent(tmp_wrap, [
+        _Res(tool_calls=[_TC("ops_batch", {"script": guarded})]),
+        _Res(content="已读取。"),
+    ])
+    evs_nm = _run(ag_nm, "读取 note.txt")
+    out_nm = (next((e for e in evs_nm if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("__main__ 守卫下的调用真的执行了", "WRAPPED-OK" in out_nm, out_nm[:300])
+    check("__main__ 守卫不再退化成 0 次调用", "0 次工具调用" not in out_nm, out_nm[:200])
+
+    # ---------- P5：脚本内禁止直连网络 ----------
+    # 现场（soak04/soak08）：h4 用 `import requests` 打 api.github.com 拿到真结果，
+    # 但工具层统计是 0 次调用、数据没有「[实测]」标记——证据链静默断裂。
+    ag_net = _mk_agent(tmp_wrap, [
+        _Res(tool_calls=[_TC("ops_batch", {"script":
+             "import requests\nprint(requests.get('https://api.github.com').status_code)\n"})]),
+        _Res(content="好的。"),
+    ])
+    evs_net = _run(ag_net, "抓一下 GitHub")
+    out_net = (next((e for e in evs_net if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("直连网络被拦（[脚本拦截]）", "[脚本拦截]" in out_net, out_net[:300])
+    check("拦截时给出替代工具", "fetch_url" in out_net or "fetch_json" in out_net, out_net[:300])
+
+    # ---------- P11：0 次调用要分清「异常中断」和「写了没执行到」 ----------
+    ag_exc = _mk_agent(tmp_wrap, [
+        _Res(tool_calls=[_TC("ops_batch", {"script":
+             "content = read_file('note.txt')\nprint(content)\n"})]),
+        _Res(content="好的。"),
+    ])
+    evs_exc = _run(ag_exc, "读一下")
+    out_exc = (next((e for e in evs_exc if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("异常中断单独标注（不再混成「三引号」）",
+          "脚本异常中断" in out_exc and "NameError" in out_exc, out_exc[:300])
+
+    ag_plan = _mk_agent(tmp_wrap, [
+        _Res(tool_calls=[_TC("ops_batch", {"script":
+             "def go():\n    print(call('read_file', path='note.txt'))\n"})]),
+        _Res(content="好的。"),
+    ])
+    evs_plan = _run(ag_plan, "读一下")
+    out_plan = (next((e for e in evs_plan if e.get("type") == "tool_result"), None) or {}).get("output") or ""
+    check("「写了调用但没执行到」要点名并给改法",
+          "一次都没执行到" in out_plan and "read_file" in out_plan, out_plan[:300])
 
     print("\n结果：全部通过")
     sys.exit(0)

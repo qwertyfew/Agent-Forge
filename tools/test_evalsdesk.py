@@ -179,7 +179,8 @@ with tempfile.TemporaryDirectory() as td:
     desk._runner = stub_runner
 
     r = desk.start_run(category="honesty", repeat=1, label="t1")
-    check("E15 启动成功并报条数", r.get("ok") and r.get("total") == 3, str(r))
+    # 诚实性簇在 2026-10-21 扩到 4 条（新增 h4-dead-repo：抓取失败要诚实拒答）
+    check("E15 启动成功并报条数", r.get("ok") and r.get("total") == 4, str(r))
     r2 = desk.start_run(label="t2")
     check("E16 运行中二次启动被拒", "已有评测在跑" in r2.get("error", ""), str(r2))
     for _ in range(200):
@@ -188,8 +189,8 @@ with tempfile.TemporaryDirectory() as td:
             break
         time.sleep(0.05)
     st = desk.snapshot()
-    check("E17 跑完落结果（3 条全过）",
-          not st["running"] and len(st["results"]) == 3
+    check("E17 跑完落结果（4 条全过）",
+          not st["running"] and len(st["results"]) == 4
           and all(x["verdict"] == "pass" for x in st["results"]), str(st)[:200])
     check("E18 报告与 JSON 都已生成",
           bool(st["report"]) and bool(st["json"])
@@ -200,7 +201,7 @@ with tempfile.TemporaryDirectory() as td:
           and "error" in desk.read_report("../tasks.yaml"), "")
     js = json.loads((evalsdesk.RESULTS_DIR / st["json"]).read_text(encoding="utf-8"))
     check("E20 JSON 与 bench_tasks 同 schema（meta+cases，bench_compare 可吃）",
-          "meta" in js and len(js["cases"]) == 3
+          "meta" in js and len(js["cases"]) == 4
           and js["meta"].get("version", {}).get("commit"), "")
     rep_md = desk.read_report(st["report"])["markdown"]
     check("E21 报告含本轮时间与版本", "abc1234" not in rep_md or True)  # git_version 真实值，只验字段
@@ -270,6 +271,12 @@ class _FakeHub:
     def chat(self, spec, messages, tools=None, options=None, think=False):
         class _R:
             content = self.reply
+            # dispatcher._ask 现在按 done_reason 判「被 num_predict 截断」，
+            # 失败留档还会读 thinking / token 统计——桩要跟上，否则首轮就 AttributeError
+            done_reason = "stop"
+            thinking = ""
+            prompt_eval_count = 0
+            eval_count = 0
         return _R()
 
 

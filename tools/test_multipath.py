@@ -83,6 +83,10 @@ class FlakyAgent:
         self.cfg = Cfg(root)
         self.model_key = "a"
         self.hub = hub or Hub()
+        # 开局健康门禁（orchestrator.ollama_health_gate）要读 agent.client；
+        # 桩 Cfg 没有 model() 会让 _local_model_keys 判定「无本地模型」而提前返回，
+        # 所以 client 给 None 即可——这里只钉多路径逻辑，不探活。
+        self.client = None
         self.n_fail = n_fail
         self.runs = []
 

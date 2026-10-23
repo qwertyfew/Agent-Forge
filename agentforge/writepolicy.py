@@ -234,6 +234,27 @@ def clear_rejects(path: str) -> None:
     _rejects.pop(_key(path), None)
 
 
+# 整写 OCC（base_version）被拦的次数。见 fs.write_file：同一路径第 3 次整写
+# 要带 base_version；**连拦两次就 fail-open 放行**——闸门只该把「重复生成」
+# 换成「改几行」，不该把交付物卡死。这是 doctrine 里「闸门只能证伪，
+# 不能误伤交付」的落地。
+_occ_blocks: dict[str, int] = {}
+
+
+def note_occ_block(path: str) -> int:
+    """记一次 OCC 拦截，返回这是第几次。"""
+    k = _key(path)
+    n = _occ_blocks.get(k, 0) + 1
+    if len(_occ_blocks) > 500:
+        _occ_blocks.clear()
+    _occ_blocks[k] = n
+    return n
+
+
+def clear_occ(path: str) -> None:
+    _occ_blocks.pop(_key(path), None)
+
+
 def rewrite_ban(path: str, content: str, cfg) -> str:
     """同路径被拒 ≥2 次后，write_file 的整篇重写禁令——程序层强制，不是叮嘱。
 
