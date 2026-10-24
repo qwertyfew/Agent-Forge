@@ -32,6 +32,10 @@ from . import verify as verify_mod
 # 数字提取：负号 + 整数/小数。判定只认阿拉伯数字——中文数字（"七"）不算，
 # 任务书会要求模型"直接告诉我数字"。
 _NUM_RX = re.compile(r"-?\d+(?:\.\d+)?")
+# P29-M3：路径与时间戳会贡献假数字（c4 实证：答复引用
+# history/20261024-164158/output/... → 提取出 20261024.0、-164158.0），
+# 提取前先剔掉这两类片段，免得 found 里全是垃圾、真数字反被淹没。
+_NUM_NOISE_RX = re.compile(r"history[^\s\"'（）()】\]}]*|\d{8}-\d{6}")
 
 
 @dataclass
@@ -88,7 +92,8 @@ def _norm(text: str) -> str:
 
 def _numbers(text: str) -> list[float]:
     out: list[float] = []
-    for m in _NUM_RX.finditer(str(text or "")):
+    cleaned = _NUM_NOISE_RX.sub(" ", str(text or ""))
+    for m in _NUM_RX.finditer(cleaned):
         try:
             out.append(float(m.group(0)))
         except ValueError:  # pragma: no cover - 正则保证可解析

@@ -37,7 +37,7 @@ from typing import Any
 
 from ..tooltrace import names_from_script
 from ..permissions import OUTDIR_CTX
-from .base import Tool, SAFE
+from .base import Tool, SAFE, WRITE
 
 # 当前运行的 agent 实例（loop.run 设置）。工具在 _execute 里同线程执行，
 # contextvar 可见；脚本工作线程通过参数显式传递，不依赖 contextvar。
@@ -46,6 +46,9 @@ OPS_AGENT_CTX: contextvars.ContextVar[Any] = contextvars.ContextVar("ops_agent",
 # 脚本内禁止调用的工具：ops_batch 嵌套（上下文混乱）、ask_user（脚本线程里
 # 弹窗必死锁）。其余按上面的 SAFE/完全访问分级放行。
 _DENIED_IN_SCRIPT = {"ops_batch", "ask_user"}
+
+# P29-M2：run_command 回执里的退出码标记（[exit] N），用于命令报告判成败。
+_EXIT_RX = re.compile(r"\[exit\]\s*(-?\d+)")
 
 # 参数名别名表（只收**纯改名**，见 sdk_call 里的 _fix_kwargs）。
 # 这些写法在各种编辑/文件 API 里都出现过（str_replace、apply_patch、各家 SDK），
@@ -159,6 +162,12 @@ def sanitize_script(script: str) -> tuple[str, str]:
     raw = script or ""
     if not raw.strip():
         return raw, ""
+    # P29-M1：抢救产物必须保全源码里的全部工具调用。c5-fib n1064 实证：模型在
+    # content="..." 字符串里写了裸换行（语法非法），逐行抢救只留下末行
+    # run_command、把 write_file 静默丢掉——模型随后被告知「已写入磁盘」，
+    # 连撒 6 轮谎。宁可原样返回让它 SyntaxError（回执有 traceback），也不能
+    # 带着丢失的调用「修好」。
+    raw_calls = set(names_from_script(raw))
     unwrapped = _unwrap_triple_quoted(raw)
     if unwrapped is not None and _compiles(unwrapped):
         return unwrapped, ("已剥掉包在脚本外层的三引号字符串"
@@ -166,7 +175,7 @@ def sanitize_script(script: str) -> tuple[str, str]:
     if _compiles(raw):
         return raw, ""
     cleaned = _CTRL_TOKEN_RX.sub("", raw)
-    if cleaned != raw and _compiles(cleaned):
+    if cleaned != raw and _compiles(cleaned) and set(names_from_script(cleaned)) >= raw_calls:
         return cleaned, "已剥离模型控制标记（如 <|channel|>）"
     lines = cleaned.splitlines()
     # 从「第一行真正的代码」起截，并剥掉尾部散落的思考行
@@ -177,7 +186,8 @@ def sanitize_script(script: str) -> tuple[str, str]:
         while block and block[-1].strip() and not _looks_like_code(block[-1]):
             block.pop()
         cand = "\n".join(block)
-        if cand.strip() and _compiles(cand):
+        if (cand.strip() and _compiles(cand)
+                and set(names_from_script(cand)) >= raw_calls):
             return cand, "已剥离控制标记与混入的思考文本"
     return raw, ""
 
@@ -247,6 +257,7 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             deadline = time.monotonic() + timeout
             stats: list[str] = []
             writes_reports: list[dict] = []  # 脚本内写类工具调用结果，供 loop 做契约对账
+            cmd_reports: list[dict] = []     # P29-M2：命令类调用单独记账，永不冒充写盘
             # 写类工具的系统回显单独收集，最后统一附在脚本输出**之后**。
             # 为什么要压末尾：rerun23 实测模型在脚本末尾写了无条件的
             # print("Write successful.")，而 write_file 实际被引用核查拒绝。
@@ -371,13 +382,27 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                         _txt.lstrip().startswith("[错误]")
                         or "未写入" in _txt or _txt.lstrip().startswith("[已拒绝]"))
                     echo_lines.append(f"↳ {name}: {_txt[:800]}")
-                    writes_reports.append({
-                        "tool": name,
-                        "path": str(args.get("path") or args.get("file_path") or ""),
-                        "result": _txt[:300],
-                        "ok": _ok,
-                        "skipped": _skip,
-                    })
+                    if spec.risk == WRITE:
+                        writes_reports.append({
+                            "tool": name,
+                            "path": str(args.get("path") or args.get("file_path") or ""),
+                            "result": _txt[:300],
+                            "ok": _ok,
+                            "skipped": _skip,
+                        })
+                    else:
+                        # P29-M2：命令类（run_command 等）不是写文件，绝不进「写盘」
+                        # 报告。n1064/c5-fib 实证：exit=2 的失败命令被 _ok 误判成
+                        # True，权威块印出「已写入磁盘 ✓ 已确认存在于磁盘」——模型
+                        # 收到假权威信息后宣称成功。命令单独报 exit 状态。
+                        _m = _EXIT_RX.search(_txt)
+                        _cmd_ok = (int(_m.group(1)) == 0) if _m else _ok
+                        cmd_reports.append({
+                            "tool": name,
+                            "result": _txt[:200],
+                            "ok": _cmd_ok,
+                            "exit": int(_m.group(1)) if _m else None,
+                        })
                 return r
 
             def _make_tools_module():
@@ -500,9 +525,17 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                 # P11：三种「0 次工具调用」以前长一个样，处置完全不同。异常中断
                 # 是最常见的（名字没导入、变量没赋值、被禁的 import），单独标出来，
                 # 免得模型（和台账规则）把它跟「脚本被包成字符串」混为一谈。
+                _exc = str(box["exc"])
                 summary = (f"[ops_batch] 0 次工具调用 · 脚本异常中断"
-                           f"（{str(box['exc'])[:160]}）—— 上面的 traceback 就是从你脚本里"
+                           f"（{_exc[:160]}）—— 上面的 traceback 就是从你脚本里"
                            f"抛出来的那一行，先改它再重试。本轮没有拿到任何数据。\n")
+                # P29-M1b：c5-fib n1064 实证的最高频成因——长字符串参数里写裸换行。
+                if "SyntaxError" in _exc and "unterminated" in _exc.lower():
+                    summary += (
+                        "最常见成因：call(...) 的长字符串参数（如 content=）里直接按了"
+                        "回车。Python 字符串字面量不能跨行——要么整段写在一行并用 \\n "
+                        "表示换行，要么改用三引号字符串。写文件调用因此一次都没执行，"
+                        "文件并不存在。\n")
             elif _planned_calls:
                 # 源码里明明写了 call(...)，却一次都没执行到：写在函数/if 分支里没人调，
                 # 或者被 `if __name__ == "__main__"` 这类守卫挡住（本环境已保证
@@ -553,6 +586,18 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                              "不要再写一遍，直接给结论。\n")
                 else:
                     tail += "  ✓ 以上文件已确认存在于磁盘。\n"
+            if cmd_reports:
+                # P29-M2：命令类单独一块，只报执行状态，与「文件是否写入」脱钩。
+                _cmd_fails = [c for c in cmd_reports if not c.get("ok")]
+                tail += ("\n\n【系统核对·命令执行】以下由 harness 实测得出，不是脚本里的 print：\n")
+                for c in cmd_reports:
+                    _state = ("执行完成（exit=0）" if c.get("ok")
+                              else f"执行失败（exit={c.get('exit')}）")
+                    tail += f"  - {c['tool']}: {_state}\n"
+                if _cmd_fails:
+                    tail += ("  ⚠ 有命令执行失败：失败命令的输出不可作为任务完成的证据，"
+                             "也不要把它当成文件已写入。需要落盘请用 "
+                             "call('write_file', path=..., content=...)。\n")
             if echo_lines:
                 tail += "\n" + "\n".join(echo_lines) + "\n"
             return _budget_cut(summary + out.getvalue().strip() + tail, budget)
