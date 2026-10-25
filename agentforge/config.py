@@ -38,6 +38,9 @@ class ModelSpec:
     top_p: float = 0.9
     # 1.0 = 不惩罚。代码模型建议 1.05~1.15，可避免陷入重复循环
     repeat_penalty: float = 1.0
+    # 惩罚回看窗口（token 数）。Ollama 默认 64 只覆盖 ~50 词，抓不到段落级
+    # 复读循环；生态建议代码/长文场景 128-512。0 = 不下发（用 Ollama 默认 64）。
+    repeat_last_n: int = 0
     # 0 = 不限制单次生成长度。设上限可防止模型失控时无限输出
     num_predict: int = 0
     think: bool | None = None
@@ -78,6 +81,8 @@ class ModelSpec:
         }
         if self.repeat_penalty and self.repeat_penalty != 1.0:
             opts["repeat_penalty"] = self.repeat_penalty
+        if self.repeat_last_n and self.repeat_last_n > 0:
+            opts["repeat_last_n"] = self.repeat_last_n
         if self.num_predict and self.num_predict > 0:
             opts["num_predict"] = self.num_predict
         return opts
@@ -325,6 +330,7 @@ class Config:
                 temperature=float(spec.get("temperature", 0.6)),
                 top_p=float(spec.get("top_p", 0.9)),
                 repeat_penalty=float(spec.get("repeat_penalty", 1.0)),
+                repeat_last_n=int(spec.get("repeat_last_n", 0)),
                 num_predict=int(spec.get("num_predict", 0)),
                 think=spec.get("think", None),
                 desc=spec.get("desc", ""),

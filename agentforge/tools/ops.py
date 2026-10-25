@@ -223,6 +223,8 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             "名字见系统提示里的「可编入脚本的工具」清单；不知道某工具的参数就先 find_tools 查。"
             "find_files / search_code 支持 fmt=\"json\"（返回机器可读 JSON），"
             "脚本里优先用它并 json.loads——别用字符串解析散文回执。"
+            "脚本内 read_file 自动返回**原始文本**（无行号装饰），可直接喂 csv/json 解析或计数——"
+            "要统计行数、排序、解析结构化数据就用它，别再用展示格式。"
             "（等价写法 tools.call(...) / `from tools import X` 也可用。）")
         parameters = {
             "type": "object",
@@ -354,6 +356,12 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
                     raise TimeoutError(f"脚本超过 {timeout:.0f}s 预算，已中止")
                 args = _with_positional(name, pos, args)
                 args = _fix_kwargs(name, args)
+                # P31：脚本内 read_file 自动降级 raw。脚本上下文是程序化处理，
+                # 展示格式的头行+行号前缀会被模型/解析器当成内容（n3 归因：
+                # f2 数出 8=1+7、a1 csv 解析 0.0、c7 把展示文本写盘）。顶层
+                # 对话场景保留展示格式——引用核查需要行号。模型显式传 fmt 则尊重。
+                if name == "read_file":
+                    args.setdefault("fmt", "raw")
                 if name in _DENIED_IN_SCRIPT:
                     r = f"[已拒绝] 脚本内不能调用 {name}"
                     _print(r)

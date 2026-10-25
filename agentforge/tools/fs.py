@@ -83,7 +83,8 @@ def build_fs_tools(guard, cfg):
     read_budget: dict[str, int] = {}
     MAX_LINE = 2000
 
-    def read_file(path: str, offset: int = 1, limit: int = 2000) -> str:
+    def read_file(path: str, offset: int = 1, limit: int = 2000,
+                  fmt: str = "display") -> str:
         p = getattr(guard, "resolve_for_read", guard.resolve)(path)
         if not p.exists():
             return f"[错误] 文件不存在: {p}"
@@ -92,13 +93,27 @@ def build_fs_tools(guard, cfg):
         if p.suffix.lower() not in TEXT_SUFFIXES and p.stat().st_size > 2_000_000:
             return f"[错误] 疑似二进制文件，拒绝读取: {p}"
         try:
-            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            p_text = p.read_text(encoding="utf-8", errors="replace")
+            lines = p_text.splitlines()
         except OSError as e:
             return f"[错误] 读取失败: {e}"
         start = max(1, int(offset))
         if start > len(lines):
             return f"[错误] offset {start} 超出文件行数 {len(lines)}"
         end = min(len(lines), start + max(1, int(limit)) - 1)
+        # P31：raw 模式——ops_batch 脚本内自动启用（ops.py 注入）。无头行、无行号
+        # 前缀、无锚定尾巴，返回的就是磁盘字节。n3 归因实证：展示格式的头行 +
+        # 行号被模型当原始内容拿去计数（f2 数出 8=1+7）、解析（a1 csv 0.0）、
+        # 写盘（c7 产物开头是展示文本）。程序化处理场景装饰纯属污染。
+        if fmt == "raw":
+            body = "\n".join(lines[start - 1:end])
+            # 保住尾行换行符（splitlines+join 会吞掉），让 raw 与磁盘字节一致
+            if end >= len(lines) and p_text.endswith("\n"):
+                body += "\n"
+            if len(body) > max_out:
+                return (body[:max_out]
+                        + f"\n…[raw 已截断：全文 {len(body)} 字符，用 offset 续读]")
+            return body
         shown = [f"{p}  ({len(lines)} 行, 显示 {start}-{end})"]
         for i in range(start, end + 1):
             ln = lines[i - 1]
@@ -507,13 +522,17 @@ def build_fs_tools(guard, cfg):
     return [
         make_tool(
             "read_file",
-            "读取文本文件内容，带行号。修改文件前必须先用它确认原文。",
+            "读取文本文件内容，带行号。修改文件前必须先用它确认原文。"
+            "fmt=\"raw\" 返回不带行号的原始文本——ops_batch 脚本内会自动启用，"
+            "供程序解析（计数/排序/csv/json），别把展示格式当内容喂给解析器。",
             {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "文件绝对路径或相对工作区的路径"},
                     "offset": {"type": "integer", "description": "起始行号，从 1 开始，默认 1"},
                     "limit": {"type": "integer", "description": "最多读取多少行，默认 2000；大文件读不完时第二次会自动扩大预算"},
+                    "fmt": {"type": "string", "enum": ["display", "raw"],
+                            "description": "display=带行号展示（默认，顶层用）；raw=原始文本（脚本内自动启用，程序化处理用）"},
                 },
                 "required": ["path"],
             },

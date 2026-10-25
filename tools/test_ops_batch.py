@@ -101,7 +101,9 @@ def main() -> None:
     out = next((e for e in evs if e.get("type") == "tool_result"), None)
     check("脚本执行有结果回传",
           out is not None and "HEADS: " in (out.get("output") or "")
-          and "mod1.py" in (out.get("output") or "") and "mod3.py" in (out.get("output") or ""),
+          # P31：脚本内 read_file 自动 raw——取到的是真实首行（# module 1），
+          # 不再是展示格式的路径头行
+          and "# module 1" in (out.get("output") or "") and "# module 3" in (out.get("output") or ""),
           repr((out or {}).get("output", ""))[:160])
     check("结果带调用统计", "3 次工具调用" in (out.get("output") or ""),
           repr((out or {}).get("output", ""))[:160])
@@ -181,7 +183,7 @@ def main() -> None:
     evs4b = _run(ag0, "import tools 冲突回归")
     out4b = (next((e for e in evs4b if e.get("type") == "tool_result"), None) or {}).get("output") or ""
     check("import tools 后仍能用 call（冲突修复）",
-          "OK: " in out4b and "mod1.py" in out4b and "[脚本异常]" not in out4b,
+          "OK: " in out4b and "# module 1" in out4b and "[脚本异常]" not in out4b,
           repr(out4b)[:160])
     check("冲突场景下不再报 'has no attribute 'call''",
           "has no attribute 'call'" not in out4b, repr(out4b)[:160])
@@ -194,11 +196,11 @@ def main() -> None:
         _Res(tool_calls=[_TC("ops_batch", {"script":
              "import tools as T\n"
              "a = T.read_file(path='src/mod1.py')\n"
-             "print('A_OK' if 'mod1' in a else 'A_BAD')\n"
+             "print('A_OK' if 'module 1' in a else 'A_BAD')\n"
              "from tools import read_file\n"
              "b = read_file(path='src/mod2.py')\n"
-             "print('B_OK' if 'mod2' in b else 'B_BAD')\n"
-             "print('C_OK' if 'mod3' in T.call('read_file', path='src/mod3.py') else 'C_BAD')"})]),
+             "print('B_OK' if 'module 2' in b else 'B_BAD')\n"
+             "print('C_OK' if 'module 3' in T.call('read_file', path='src/mod3.py') else 'C_BAD')"})]),
         _Res(content="import 形态可用。"),
     ]
     evs4c = _run(ag0, "tools 壳 __getattr__")
@@ -224,12 +226,12 @@ def main() -> None:
     ag0.hub.script = [
         _Res(tool_calls=[_TC("ops_batch", {"script":
              "h = call('read_file', path='src/mod2.py')\n"
-             "print('HEAD2: ' + h[:80])"})]),   # 首行是路径头
+             "print('HEAD2: ' + h[:80])"})]),   # P31：首行是真实内容首行
         _Res(content="收到。"),
     ]
     evs4c = _run(ag0, "裸 call 主 API 测试")
     out4c = (next((e for e in evs4c if e.get("type") == "tool_result"), None) or {}).get("output") or ""
-    check("裸 call(...) 主 API 可用", "HEAD2:" in out4c and "mod2.py" in out4c, repr(out4c)[:160])
+    check("裸 call(...) 主 API 可用", "HEAD2:" in out4c and "# module 2" in out4c, repr(out4c)[:160])
 
     # 写类工具分级：完全访问 → 放行 + file_log 记账
     ag0.hub.script = [

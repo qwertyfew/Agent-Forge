@@ -1812,6 +1812,15 @@ class Agent:
                 if p.is_dir():
                     ledger.mark_dir(p)
                     return
+                # P31：脚本内 raw 模式没有展示头行可解析——区间按实际回传内容记
+                # （offset 起、回传行数为止），总行数未知置 None。引用核查
+                # 「引用的行号确实读过」按已回传行判定，口径不放松。
+                if str(args.get("fmt") or "") == "raw":
+                    start = max(1, int(args.get("offset") or 1))
+                    got = len(str(out).splitlines())
+                    rng = [(start, start + got - 1)] if got else []
+                    ledger.mark_file(p, lines=None, read=True, ranges=rng)
+                    return
                 # 成功回显头部带「(N 行, 显示 a-b)」：总行数供行号越界校验，
                 # **显示区间**供「引用的行号是否真读过」校验（rerun28 前的核查
                 # 只到文件级：读过第 1-60 行，照样能引用第 300 行而没人拦）。

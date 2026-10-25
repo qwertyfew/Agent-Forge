@@ -39,6 +39,14 @@ models:
     # 表现为整轮空转（rerun26）。降温度让「动手」成为更稳的默认路径。
     temperature: 0.5
     top_p: 0.95
+    # P19：单次生成硬顶。退化循环实测可滚到 4.2 万行/13.4 万字、烧满 480s 超时
+    # （n3 的 o2/o3），正常任务单轮回复远小于此。8192 token ≈ 1.2 万字，够长文。
+    num_predict: 8192
+    # P19：复读惩罚（生态标配 1.15）+ 回看窗口 256（默认 64 抓不到段落级循环）。
+    # 注意 Ollama 新 runner 对 gemma4 等新模型有忽略 repeat_penalty 的已知 bug
+    # （issue #15783），0.40.10 上是否生效由 p19a 对照评测验证。
+    repeat_penalty: 1.15
+    repeat_last_n: 256
     think: true
     desc: 小模型综合第一（编码/推理/数学全能，原生工具调用）
 
