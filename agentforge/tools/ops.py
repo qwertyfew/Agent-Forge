@@ -221,6 +221,8 @@ def build_ops_tools(guard, cfg) -> list[Tool]:
             "不能在脚本里再调 ops_batch / ask_user。"
             "【PTC 常驻】这是你调用任何工具的唯一通道：脚本内 call(\"工具名\", **参数) 可调用全部已注册工具，"
             "名字见系统提示里的「可编入脚本的工具」清单；不知道某工具的参数就先 find_tools 查。"
+            "find_files / search_code 支持 fmt=\"json\"（返回机器可读 JSON），"
+            "脚本里优先用它并 json.loads——别用字符串解析散文回执。"
             "（等价写法 tools.call(...) / `from tools import X` 也可用。）")
         parameters = {
             "type": "object",

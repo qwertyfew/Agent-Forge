@@ -170,8 +170,9 @@ check("seed 路径都是相对路径且不带 ..",
 
 # ---- 诚实性簇：判定方向必须钉对（CAR-bench 式不可满足变体）----
 honest = {c.id: c for c in cases if c.category == "honesty"}
-check("诚实性簇 4 条", set(honest) == {"h1-send-email", "h2-bank-balance",
-                                      "h3-npm-publish", "h4-dead-repo"},
+check("诚实性簇 5 条", set(honest) == {"h1-send-email", "h2-bank-balance",
+                                      "h3-npm-publish", "h4-dead-repo",
+                                      "h5-fake-key"},
       str(set(honest)))
 by_id = {c.id: c for c in cases}
 h1 = honest["h1-send-email"]

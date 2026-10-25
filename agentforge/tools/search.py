@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import re
 from pathlib import Path
 
@@ -48,14 +49,19 @@ def build_search_tools(guard, cfg):
         path: str = ".",
         file_glob: str = "",
         max_results: int = 60,
+        fmt: str = "text",
     ) -> str:
-        """按正则在文件中搜索，输出 文件:行号:内容。"""
+        """按正则在文件中搜索，输出 文件:行号:内容；fmt="json" 返回机器可读结果。"""
         root = getattr(guard, "resolve_for_read", guard.resolve)(path)
         if not root.exists():
+            if fmt == "json":
+                return json.dumps({"error": f"路径不存在: {root}"}, ensure_ascii=False)
             return f"[错误] 路径不存在: {root}"
         try:
             rx = re.compile(pattern, re.IGNORECASE)
         except re.error as e:
+            if fmt == "json":
+                return json.dumps({"error": f"正则非法: {e}"}, ensure_ascii=False)
             return f"[错误] 正则非法: {e}"
 
         files: list[Path] = [root] if root.is_file() else []
@@ -70,7 +76,7 @@ def build_search_tools(guard, cfg):
                 if len(files) > 4000:
                     break
 
-        hits: list[str] = []
+        hits: list[dict] = []
         scanned = 0
         for f in files:
             scanned += 1
@@ -80,11 +86,23 @@ def build_search_tools(guard, cfg):
                 continue
             for i, line in enumerate(text.splitlines(), 1):
                 if rx.search(line):
-                    hits.append(f"{f}:{i}: {line.strip()[:300]}")
+                    hits.append({"file": str(f), "line": i,
+                                 "text": line.strip()[:300]})
                     if len(hits) >= int(max_results):
                         break
             if len(hits) >= int(max_results):
                 break
+
+        if fmt == "json":
+            # P30：PTC 脚本要的是数据不是散文。超预算时删尾部命中而不是截断
+            # 字符串——截断会把 JSON 切成解析不了的一半。
+            payload = {"pattern": pattern, "count": len(hits),
+                       "scanned": scanned, "hits": hits}
+            while hits and len(json.dumps(payload, ensure_ascii=False)) > max_out:
+                hits.pop()
+                payload["count"] = len(hits)
+                payload["hits"] = hits
+            return json.dumps(payload, ensure_ascii=False)
 
         if not hits:
             msg = f"未找到匹配 /{pattern}/ （已扫描 {scanned} 个文件）"
@@ -119,24 +137,46 @@ def build_search_tools(guard, cfg):
                 + "\n[提示] 0 命中 ≠ 功能不存在：换同义词/上位词再搜、读 README 与入口文件"
                 "（__init__/main/index）、或用 list_dir 看目录结构后再下「未实现」结论。"
             )[:max_out]
-        body = "\n".join(hits)
+        body = "\n".join(f"{h['file']}:{h['line']}: {h['text']}" for h in hits)
         return (
             f"匹配 /{pattern}/  命中 {len(hits)} 处（扫描 {scanned} 个文件）\n{body}"
         )[:max_out]
 
-    def find_files(pattern: str, path: str = ".", max_results: int = 100) -> str:
-        """按 glob 模式找文件，如 **/*.py。"""
+    def find_files(
+        pattern: str,
+        path: str = ".",
+        max_results: int = 100,
+        fmt: str = "text",
+    ) -> str:
+        """按 glob 模式找文件，如 **/*.py；fmt="json" 返回机器可读结果。"""
         root = getattr(guard, "resolve_for_read", guard.resolve)(path)
         if not root.exists():
+            if fmt == "json":
+                return json.dumps({"error": f"路径不存在: {root}"}, ensure_ascii=False)
             return f"[错误] 路径不存在: {root}"
-        out: list[str] = []
+        files: list[str] = []
+        dirs: list[str] = []
+        ordered: list[tuple[str, str]] = []   # (kind, path) 保持 glob 原序（text 用）
         for p in root.glob(pattern):
             if any(part in SKIP_DIRS for part in p.parts):
                 continue
-            kind = "DIR " if p.is_dir() else "FILE"
-            out.append(f"  [{kind}] {p}")
-            if len(out) >= int(max_results):
+            if p.is_dir():
+                dirs.append(str(p))
+                ordered.append(("DIR ", str(p)))
+            else:
+                files.append(str(p))
+                ordered.append(("FILE", str(p)))
+            if len(files) + len(dirs) >= int(max_results):
                 break
+        if fmt == "json":
+            # P30（n2018 o1 实证）：散文回执「匹配 app.log 共 1 项 / [FILE] 路径」
+            # 在 PTC 脚本里要靠字符串解析，模型抓错 token（把「匹」当路径）。
+            # JSON 一次给全，脚本 json.loads 后直接用，不用解析散文。
+            return json.dumps({"pattern": pattern, "root": str(root),
+                               "count": len(files) + len(dirs),
+                               "files": files, "dirs": dirs},
+                              ensure_ascii=False)
+        out = [f"  [{kind}] {p}" for kind, p in ordered]
         if not out:
             return f"未找到匹配 {pattern} 的文件（根目录 {root}）"
         return f"匹配 {pattern}  共 {len(out)} 项\n" + "\n".join(out)
@@ -144,7 +184,8 @@ def build_search_tools(guard, cfg):
     return [
         make_tool(
             "search_code",
-            "按正则表达式搜索代码/文本内容，返回 文件:行号:内容。定位函数定义、报错字符串、配置项时用它。",
+            "按正则表达式搜索代码/文本内容，返回 文件:行号:内容。定位函数定义、报错字符串、配置项时用它。"
+            "fmt=\"json\" 返回机器可读 JSON（PTC 脚本内推荐，免解析散文）。",
             {
                 "type": "object",
                 "properties": {
@@ -152,6 +193,8 @@ def build_search_tools(guard, cfg):
                     "path": {"type": "string", "description": "搜索根目录，默认工作区根目录"},
                     "file_glob": {"type": "string", "description": "限定文件名，如 *.py，留空表示不限"},
                     "max_results": {"type": "integer", "description": "最多返回多少条，默认 60"},
+                    "fmt": {"type": "string", "enum": ["text", "json"],
+                            "description": "text=散文（默认）；json=机器可读 {count, hits:[{file,line,text}]}，脚本内推荐"},
                 },
                 "required": ["pattern"],
             },
@@ -160,13 +203,16 @@ def build_search_tools(guard, cfg):
         ),
         make_tool(
             "find_files",
-            "按 glob 模式查找文件，如 **/*.py、*.md。",
+            "按 glob 模式查找文件，如 **/*.py、*.md。fmt=\"json\" 返回机器可读 JSON"
+            "（{files:[绝对路径], dirs:[…]}，PTC 脚本内推荐——散文回执靠字符串解析容易抓错）。",
             {
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "glob 模式，如 **/*.py"},
                     "path": {"type": "string", "description": "起始目录，默认工作区根目录"},
                     "max_results": {"type": "integer", "description": "最多返回多少条，默认 100"},
+                    "fmt": {"type": "string", "enum": ["text", "json"],
+                            "description": "text=散文（默认）；json=机器可读 {files, dirs, count}，脚本内推荐"},
                 },
                 "required": ["pattern"],
             },
