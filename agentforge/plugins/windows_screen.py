@@ -252,7 +252,7 @@ def _render(result: dict, tool: str) -> str:
     return "\n".join(parts)
 
 
-def _fmt(text: str, maxlen: int = 12000) -> str:
+def _fmt(text: str, maxlen: int = 6000) -> str:
     text = text.strip()
     if len(text) > maxlen:
         return text[:maxlen] + f"\n…（已截断，原始长度 {len(text)} 字符）"
@@ -264,6 +264,15 @@ def _fmt(text: str, maxlen: int = 12000) -> str:
 _SCREEN_HINT = (
     "用于「看屏幕」。当需要知道用户当前屏幕上有什么窗口、什么按钮、什么文字，"
     "或者需要操作 GUI（点击、输入、快捷键）时使用。"
+)
+
+
+_EMPTY_TREE_MARKS = (
+    "No active window found",
+    "No windows found",
+    "No elements",
+    "UI Tree:\ndesktop",
+    "UI Tree: desktop",
 )
 
 
@@ -282,7 +291,20 @@ def _screen_state(use_dom: bool = False, region: str = "", display: str = "") ->
         except json.JSONDecodeError:
             return "display 需要写成 JSON 数组，例如 [0]。"
     text, is_err = client().call("Snapshot", args)
-    return _fmt(text)
+    text = _fmt(text, maxlen=6000)
+    # 空树引导：没读到任何窗口/元素时，明确告诉模型下一步怎么自救，
+    # 避免它对着空结果瞎猜坐标或误以为工具坏了。
+    body = text.split("UI Tree:")[-1]
+    if any(m in text for m in _EMPTY_TREE_MARKS) and len(body.strip()) < 40:
+        text += (
+            "\n\n[读屏为空的处理] 当前没有窗口拥有焦点（或目标窗口被最小化），"
+            "UIA 读不到任何元素。请这样做："
+            "① 从本次返回的任务栏按钮列表里找到目标应用的坐标，screen_click 点击它"
+            "（或按 alt+tab 切换窗口）；"
+            "② 等 2 秒后重新 screen_state，确认能读到窗口元素后再继续导航。"
+            "不要对着空结果猜坐标，也不要反复发同样的空读屏。"
+        )
+    return text
 
 
 def _screen_screenshot(region: str = "") -> str:
@@ -305,11 +327,21 @@ def _screen_click(x: int, y: int, clicks: int = 1, button: str = "left") -> str:
 
 def _screen_type(text: str, x: int | None = None, y: int | None = None,
                 clear: bool = False, press_enter: bool = False) -> str:
-    args: dict = {"text": text, "clear": bool(clear), "press_enter": bool(press_enter)}
     if x is not None and y is not None:
-        args["loc"] = [int(x), int(y)]
-    out, _ = client().call("Type", args)
-    return _fmt(out)
+        args: dict = {"text": text, "loc": [int(x), int(y)],
+                      "clear": bool(clear), "press_enter": bool(press_enter)}
+        out, _ = client().call("Type", args)
+        return _fmt(out)
+    # 无坐标：粘贴到当前焦点控件（适配 Ctrl+L 聚焦地址栏 / 已点击输入框后直接输入的场景）
+    client().call("Clipboard", {"mode": "set", "text": text})
+    if clear:
+        client().call("Shortcut", {"shortcut": "ctrl+a"})
+        client().call("Shortcut", {"shortcut": "delete"})
+    out, _ = client().call("Shortcut", {"shortcut": "ctrl+v"})
+    if press_enter:
+        client().call("Shortcut", {"shortcut": "enter"})
+        out = f"{out}\n已追加回车。" if out else "已追加回车。"
+    return _fmt(f"（无坐标，已通过剪贴板粘贴到当前焦点控件）\n{out}")
 
 
 def _screen_shortcut(shortcut: str) -> str:
@@ -320,7 +352,7 @@ def _screen_shortcut(shortcut: str) -> str:
 def _screen_windows_list() -> str:
     # Snapshot 关掉 UI 树提取就是「窗口清单 + 光标位置」，比整棵树便宜得多
     out, _ = client().call("Snapshot", {"use_ui_tree": False, "use_vision": False})
-    return _fmt(out, maxlen=6000)
+    return _fmt(out, maxlen=4000)
 
 
 def _screen_tool_raw(name: str, arguments: str = "{}") -> str:
@@ -402,7 +434,11 @@ def build_tools(guard, cfg):  # noqa: ARG001 - 插件签名固定
         ),
         make_tool(
             name="screen_type",
-            description="输入文字。给了 x,y 就先点过去再输入；press_enter=true 输入完直接回车提交。",
+            description=(
+                "输入文字。给了 x,y 就先点过去再输入；不给坐标则输入到当前焦点控件"
+                "（剪贴板粘贴，适配 ctrl+l 聚焦地址栏或已点击输入框后直接输入）；"
+                "press_enter=true 输入完直接回车提交。"
+            ),
             parameters={
                 "type": "object",
                 "properties": {

@@ -1462,15 +1462,26 @@ class Agent:
                     if tc.name == "ops_batch":
                         # 同脚本重复计数：第 3 次起在结果后挂硬提示（不拦截，
                         # 因为脚本可能确实要重跑），第 5 次起上面那个分支直接不执行。
-                        n_rep = ops_repeat.get(sig, 0) + 1
-                        ops_repeat[sig] = n_rep
-                        if n_rep >= 3:
-                            out += (f"\n\n[重复调用] 这段脚本与你此前发出的完全一样，"
-                                    f"这是第 {n_rep} 次，结果不会变。"
-                                    "不要再发同一段脚本——换查询词（带上具体项目名 / "
-                                    "site:github.com）、换工具（github_search / "
-                                    "exact_repo_lookup / npm / fetch_url），"
-                                    "或者停止检索并基于已有结果作答，同时说明还缺什么。")
+                        # 例外：纯 screen_* 脚本读的是「会变化的屏幕状态」——
+                        # 点击/输入之后同一段读屏脚本的结果就是会不一样，
+                        # 不能按「结果不会变」警告，更不能拦截。
+                        _script_text = str((tc.arguments or {}).get("script") or "")
+                        _screen_only = ("screen_" in _script_text and not any(
+                            _w in _script_text
+                            for _w in ("write_file", "run_cmd", "subprocess", "shell(")
+                        ))
+                        if _screen_only:
+                            ops_repeat.pop(sig, None)
+                        else:
+                            n_rep = ops_repeat.get(sig, 0) + 1
+                            ops_repeat[sig] = n_rep
+                            if n_rep >= 3:
+                                out += (f"\n\n[重复调用] 这段脚本与你此前发出的完全一样，"
+                                        f"这是第 {n_rep} 次，结果不会变。"
+                                        "不要再发同一段脚本——换查询词（带上具体项目名 / "
+                                        "site:github.com）、换工具（github_search / "
+                                        "exact_repo_lookup / npm / fetch_url），"
+                                        "或者停止检索并基于已有结果作答，同时说明还缺什么。")
                     if safe:
                         if read_cache is not None:
                             read_cache.put(sig, out)

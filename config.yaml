@@ -10,6 +10,11 @@ ollama:
   # 模型在显存中保持存活的时间，避免每次调用重新加载 18GB 权重
   keep_alive: 15m
   request_timeout: 900
+  # 流式读取的空闲上限（秒）：多久没有收到任何新字节就认定端侧卡住（P8）。
+  # 与 request_timeout 分工不同——后者是连接/总上限，管不了「TCP 还在、就是不回包」。
+  # soak32 卡 10 分钟没有一条事件，就是因为这个口子开着。180s 给 12B 本地模型的
+  # 长提示首字延迟留余量；在线模型可以调到 60。
+  stream_idle_timeout: 180
   # 检测到 Ollama 没起来时自动拉起（Windows 优先拉起桌面版「ollama app.exe」，
   # 没有就退回 `ollama serve`）。长期不关机的机器上，Ollama 可能被手动退出或
   # 升级时重启，本地模型会静默失效——开着这个就不用每次都自己去看。
@@ -48,8 +53,22 @@ models:
     think: true
     desc: 高效小模型（速度与能力兼顾，长上下文）
 
+  # 本地最强（2026-10-23 实测固定为默认）：20.9B，原生工具调用 + thinking，
+  # 13.8GB 权重单独占满 16GB 卡；屏幕操作/多步 agent 任务只有它能稳定走通。
+  # 注意：与 gemma/smart-mini 不要同时常驻，显存会挤爆。
+  gpt-oss:
+    name: gpt-oss:20b
+    # 131072 → 32768：屏幕 agent 任务的实际上下文远用不到 128K，
+    # 但 num_ctx 直接决定 Ollama 启动时预分配的 KV/计算缓冲大小——
+    # 128K 档在 16GB 卡上占到 ~15.1/16.3GB，浏览器一吃显存就 500。
+    # 32K 省下数 GB 余量，实测 500 大幅减少。
+    num_ctx: 32768
+    temperature: 0.5
+    think: true
+    desc: 本地旗舰（工具调用+推理最强，agent 任务默认）
+
 routing:
-  default: gemma
+  default: gpt-oss
   # 能力路由：按任务所需能力维度（编码/推理/写作/中文…）从可用模型里挑最强的；
   # 默认模型在该维度偏弱且存在更强可用模型时给出升级建议。
   # allow_upgrade=true 会直接改用更强的「本地」模型（默认只提示，不擅自切换）；
@@ -161,6 +180,9 @@ tools:
   core: []              # 常驻工具名，留空用内置清单
                         # （list_dir/find_files/read_file/write_file/edit_file/
                         #   search_code/run_command/remember/find_tools/…）
+  # 答复核查打满 2 轮后，先由程序自己去抓一手源复核（能抓的自己抓，抓不到才在
+  # 交付物上标注「未经核实」）。这里是最多几次网络动作（含 1 次重搜），0 = 关闭。
+  autocheck_max_fetch: 3
 
 # 上下文压缩：超过阈值自动瘦身，CLI 用 /compact、Web 点按钮可手动触发
 compact:
