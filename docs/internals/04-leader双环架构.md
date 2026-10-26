@@ -1,5 +1,10 @@
 # 04 · Leader 双环架构（第 47 步：七步架构更新）
 
+> ⚠️ **已退役（第 53 步，2026-10-26 砍多 LLM）**：本文描述的 Leader 双环 / 员工内环 /
+> 维度指派已整体删除（`agentforge/leader.py`、`dispatcher.py`、`orchestrator.run_leader`）。
+> 现行架构是「单模型 + 规则拆解」，见 README 特性与 `agentforge/orchestrator.py` 的 `run_task`。
+> 本文仅作历史存档。
+
 > 2026-10-17 用户口述新逻辑并逐条确认落地。本文记录现行实现的真实结构。
 
 ## 总体结构
