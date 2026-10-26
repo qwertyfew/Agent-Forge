@@ -1499,7 +1499,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"error": "message 为空"}, 400)
             return
 
-        auto_plan = bool(req.get("auto_plan", True))
         multi_path = bool(req.get("multi_path", False))
         model_key = (req.get("model_key") or "auto").strip()
 
@@ -1660,7 +1659,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "notice": cap_route.get("notice", ""),
                 })
             for ev in run_task(cli.agent, self.store, history, message,
-                               auto_plan=auto_plan, model_key=model_key,
+                               model_key=model_key,
                                preferred_key=preferred_key,
                                stop_check=stop_ev.is_set,
                                auto_approve=auto_approve, file_log=file_log,

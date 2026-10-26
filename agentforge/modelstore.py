@@ -83,6 +83,7 @@ class ModelEntry:
     name: str                # 送接口的模型名 / 展示名
     label: str = ""
     kind: str = "local"      # local | paid
+    free: bool = False       # 免费在线网关（如 FreeLLMAPI）：不花钱但走 HTTP 转发
     provider: str = "ollama"
     desc: str = ""
     enabled: bool = True
@@ -109,6 +110,7 @@ class ModelEntry:
             "name": self.display,
             "raw_name": self.name,
             "kind": self.kind,
+            "free": self.free,
             "provider": self.provider,
             "provider_label": PROVIDERS.get(self.provider, {}).get("label", self.provider),
             "desc": self.desc,
@@ -376,6 +378,7 @@ class ModelStore:
             name=model_id,
             label=label,
             kind="paid",
+            free=bool(item.get("free")),
             provider=provider,
             desc=item.get("desc") or f"{PROVIDERS.get(provider, {}).get('label', provider)} 云端模型",
             scores=scores,

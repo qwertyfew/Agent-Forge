@@ -890,20 +890,6 @@
     letter-spacing:.2px;background:var(--hover);color:var(--ink2);white-space:nowrap}
   .btn.primary .onnow{background:rgba(128,128,128,.34);color:inherit}
 
-  /* 组合得分卡 */
-  .combo-card{border:1px solid var(--line);border-radius:14px;background:var(--card);padding:14px 16px;margin-bottom:18px}
-  .combo-top{display:flex;align-items:center;gap:10px;margin-bottom:10px}
-  .combo-top b{font-size:13px}
-  .combo-total{margin-left:auto;font-size:20px;font-weight:700;line-height:1}
-  .combo-total small{font-size:11px;font-weight:400;color:var(--ink3);margin-left:4px}
-  .dims{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:8px 18px}
-  .dim{display:flex;align-items:center;gap:8px;font-size:11.5px}
-  .dim .dlabel{width:44px;color:var(--ink2);flex:none}
-  .dim .dbar{flex:1;height:5px;border-radius:99px;background:var(--bar);overflow:hidden;min-width:36px}
-  .dim .dbar i{display:block;height:100%;border-radius:99px;background:var(--ink2);transition:width .25s ease}
-  .dim .dval{width:22px;text-align:right;color:var(--ink);font-variant-numeric:tabular-nums}
-  .combo-note{margin-top:10px;font-size:11.5px;color:var(--ink3)}
-
   /* 模型列表 */
   .mlist{display:flex;flex-direction:column;gap:8px}
   .mrow{display:flex;gap:12px;border:1px solid var(--line);border-radius:13px;background:var(--panel);
@@ -917,6 +903,7 @@
   .badge{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--line2);color:var(--ink3);font-weight:500}
   .badge.local{color:var(--ok);border-color:var(--ok-soft);background:var(--ok-soft)}
   .badge.paid{color:var(--accent);border-color:var(--accent-soft);background:var(--accent-soft)}
+  .badge.free{color:var(--ok);border-color:var(--ok-soft);background:var(--ok-soft)}
   .badge.warn{color:var(--orange);border-color:var(--orange-soft);background:var(--orange-soft)}
   .mrow .mtotal{margin-left:auto;font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums}
   .mrow .mtotal b{font-size:15px;color:var(--ink)}
@@ -1258,11 +1245,7 @@
                  再挂 title 会被全局悬停卡片引擎接管、弹出第二张卡（双层弹窗） -->
             <button class="cbtn" id="btnModelConfig">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
-              <span id="modelCfgTxt">模型配置</span>
-            </button>
-            <button class="cbtn on" id="planBtn" title="开启后会把复合任务拆解并分配给不同模型">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3v4M3 5h4M6 17v4m-2-2h4M13 3l2.5 6.5L22 12l-6.5 2.5L13 21l-2.5-6.5L4 12l6.5-2.5z"/></svg>
-              <span>自动拆解</span>
+              <span id="modelCfgTxt">模型管理</span>
             </button>
             <button class="cbtn" id="pathBtn" title="已关闭：某一步失败时直接如实报错">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/><circle cx="18" cy="6" r="3"/></svg>
@@ -1312,7 +1295,6 @@
           <div class="kv"><span class="k">上下文阈值</span><span class="v" id="genThreshold"></span></div>
           <div class="kv"><span class="k">新任务默认权限</span><span class="v" id="genPerm"></span></div>
           <div class="kv"><span class="k">工作区记忆</span><span class="v" id="genMemory"></span></div>
-          <div class="kv"><span class="k">最优组合上限</span><span class="v">3 个模型（贪心覆盖各维度）</span></div>
         </div>
       </div>
     </section>
@@ -1366,18 +1348,7 @@
                 移除本地模型会把它从 Ollama 里真正删除（磁盘文件一并移除）。
               </p>
             </div>
-            <div class="pane-actions">
-              <div class="pane-col">
-                <div class="pane-row">
-                  <button class="btn danger hide" id="btnModelsClear">确认清理</button>
-                  <button class="btn" id="btnModelsSel">全选</button>
-                </div>
-                <button class="btn hide" id="btnModelApply">应用</button>
-              </div>
-            </div>
           </div>
-
-          <div class="combo-card" id="comboCard"></div>
 
           <div class="sk-sec">
             <div class="sk-sec-head">
@@ -1394,17 +1365,6 @@
             <div class="alist" id="modelItemList"></div>
           </div>
 
-          <div class="pane-actions" style="margin-top:14px">
-            <button class="btn" id="btnBest" title="开启按任务类型自动选模型：自动选用覆盖最全、含付费的最佳组合">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 13H11l-1 9 8.5-11H12z"/></svg>
-              自动配置最佳模型
-            </button>
-            <button class="btn" id="btnBestLocal" title="开启按任务类型自动选模型：只在本地模型里自动选用最强者，绝不用付费模型">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
-              自动配置本地模型
-            </button>
-          </div>
-          <div class="routing-status sub" id="routingStatus"></div>
         </div>
       </div>
     </section>
@@ -1556,7 +1516,6 @@ let history = [];
 let busy = false;
 let viewingHistory = false;   // 当前画面是不是「回看某条历史任务」
 let threshold = 60000;
-let autoPlan = true;
 let multiPath = false;   // 多路径尝试：某一步失败时换模型换路重试（默认关）
 /* 悬停卡片弹出延迟（毫秒）：真正生效值，来源是服务端持久化偏好
    （设置 → 通用 → 悬停提示延迟）。bindTipCard / bindModelPop 都读它。 */
@@ -2060,22 +2019,12 @@ function selUIOn(view, on){
     const go = $('btnEvalGo');
     if(go) go.classList.toggle('hide', !on || evalRunningFlag);
   }
-  if(view === 'models'){
-    const go = $('btnModelApply');
-    if(go) go.classList.toggle('hide', !on);
-  }
 }
 function enterSel(view){
   const st = selState[view];
   if(st.on) return;
   const keys = (view === 'eval')
     ? evalData.cases.filter(c => !evalData.protected.includes(c.id)).map(selKeyOf.eval)
-    : (view === 'models')
-    ? (catalog ? catalog.models
-        .filter(m => {                        // 测不通的付费模型不进全选方案（规则5）
-          const t = paidTest[m.id];
-          return !(m.kind === 'paid' && t && t.ok === false);
-        }).map(selKeyOf.models) : [])
     : (selRaw[view] ? (selRaw[view].items || selRaw[view].entries
         || (selRaw[view].extracted || []).concat(selRaw[view].installed || [])
         ).map(selKeyOf[view]) : []);
@@ -2135,20 +2084,6 @@ async function confirmSel(view){
       c => evalData.protected.includes(c.id) || !st.checked.has(c.id));
     exitSel(view, false);            // 退出全选但不重拉：保存后 loadEvals 统一刷
     await saveEvalTasks(null);
-  } else if(view === 'models'){
-    const yes = await confirmModal({
-      title: '移除模型',
-      sub: `确定移除勾选的 ${n} 个模型吗？付费模型会删除密钥配置；本地模型会从 Ollama 里删除（磁盘文件一并移除）。`,
-      okText: '移除', danger: true
-    });
-    if(!yes) return;
-    let okN = 0;
-    for(const id of st.checked){
-      const r = await postModels({action:'remove_model', id, delete_file:true});
-      if(!r.error) okN++;
-    }
-    toast(null, `已移除 ${okN}/${n} 个模型`, okN === n ? 'ok' : 'bad');
-    exitSel('models');
   }
 }
 /* 全选按钮 = 模式开关：点「全选」进入并勾选全部，点「退出」收场（确认清理在它左边） */
@@ -2157,17 +2092,6 @@ $('btnSkillSel').onclick = ()=> selState.skill.on ? exitSel('skill') : enterSel(
 $('btnGapSel').onclick = ()=> selState.gap.on ? exitSel('gap') : enterSel('gap');
 $('btnEvalSel').onclick = ()=> selState.eval.on ? exitSel('eval') : enterSel('eval');
 $('btnEvalClear').onclick = ()=> confirmSel('eval');
-/* 模型管理（规则3/4/9）：全选=待选方案＋应用一次性生效；＋=新增付费模型 */
-$('btnModelsSel').onclick = ()=> selState.models.on ? exitSel('models') : enterSel('models');
-$('btnModelsClear').onclick = ()=> confirmSel('models');
-$('btnModelApply').onclick = async ()=>{
-  const st = selState.models;
-  if(!st.checked.size){ toast(null, '至少要勾选一个模型', 'mute'); return; }
-  const r = await postModels({action:'enable', ids:[...st.checked]});
-  if(r.error){ toast(null, r.error, 'bad'); return; }
-  toast(null, `已应用勾选方案：${st.checked.size} 个模型参与任务`, 'ok');
-  exitSel('models');
-};
 $('btnModelAdd').onclick = openAddPaidModal;
 
 /* ================= 记忆管理 =================
@@ -2956,47 +2880,13 @@ document.querySelectorAll('.set-nav button').forEach(b =>
 // 后端 snapshot.dimensions 也只下发这六项；这里保留硬编码作 catalog 未到时的兜底。
 const DIM_ORDER = ['coding','reasoning','writing','chinese','math','context'];
 
-const ICON_BEST = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 13H11l-1 9 8.5-11H12z"/></svg>';
-const ICON_LOCAL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
-
-/* 两个「一键应用」按钮的样式跟着**当前实际生效的那套配置**走：
-   哪套配置正生效，哪个按钮就是黑底白字（primary）并标出「生效中」，另一颗回落成普通样式。
-   否则用户会误以为黑底那颗才是当前在用的配置。 */
-function updateApplyButtons(){
-  const bAll = $('btnBest'), bLocal = $('btnBestLocal');
-  if(!bAll || !bLocal) return;
-  const rt = (catalog && catalog.routing) || {mode:'off'};
-  const mode = rt.mode || 'off';
-  const onBest = mode === 'best';
-  const onLocal = mode === 'local';
-  bAll.classList.toggle('primary', onBest);
-  bLocal.classList.toggle('primary', onLocal);
-  bAll.innerHTML = ICON_BEST + ' 自动配置最佳模型' + (onBest ? '<span class="onnow">生效中</span>' : '');
-  bLocal.innerHTML = ICON_LOCAL + ' 自动配置本地模型' + (onLocal ? '<span class="onnow">生效中</span>' : '');
-  bAll.title = onBest ? '该配置正在生效。再次点击可取消：路由关闭，方案勾选的模型同步取消勾选'
-                      : '一键勾选覆盖最全的组合（含付费），入口模型按任务类型初选；执行分配仍按小步骤规则';
-  bLocal.title = onLocal ? '该配置正在生效。再次点击可取消：路由关闭，方案勾选的模型同步取消勾选'
-                         : '一键勾选本地最强组合（不用付费），入口模型按任务类型初选；执行分配仍按小步骤规则';
-  const st = $('routingStatus');
-  if(st){
-    // 如实描述：路由只决定「入口模型」的初选；真正的执行分配按小步骤规则，
-    // 由调度器把每一步交给该维度最强的已勾选模型（第 42 步起）。
-    if(mode === 'best') st.textContent = '路由模式：入口模型按任务类型初选，偏弱时自动升级（含付费）。执行分配不受影响——每步仍交给该维度最强的已勾选模型';
-    else if(mode === 'local') st.textContent = '路由模式：入口模型按任务类型初选，偏弱时自动升级（仅本地）。执行分配不受影响——每步仍交给该维度最强的已勾选模型';
-    else st.textContent = '路由模式：关闭（入口用默认模型，偏弱时仅提示）。执行分配不受影响——每步仍交给该维度最强的已勾选模型';
-  }
-  // 本地串行执行已是硬规则（第 42 步），不再有开关
-}
-
 function refreshModels(){
   fetch('/api/models').then(r=>r.json()).then(data=>{
     if(data.error){ return; }
     catalog = data;
-    renderCombo();
     renderModelList();
     ensurePaidTests();   // 只在模型管理页里生效（进入页面时由 showView 触发本轮实测）
     updatePoolHint();
-    updateApplyButtons();
     // 窗口与固定开销都来自这份目录，拿到后重算一次占比（首屏时它可能还没回来）
     updateContextMeter(history.length ? history : 0, threshold);
     // 后端发现新模型时会自动探一次原生窗口并写好配置，这里告诉用户做了什么
@@ -3027,48 +2917,6 @@ function labelOf(dim){
   if(!catalog) return dim;
   const d = catalog.dimensions.find(x=>x.key===dim);
   return d ? d.label : dim;
-}
-
-function renderCombo(){
-  if(!catalog) return;
-  const c = comboOf(catalog.models);
-  const box = $('comboCard');
-  box.innerHTML = '';
-  const top = el('div','combo-top');
-  top.appendChild(el('b','', '当前组合各维度得分'));
-  if(c.count) top.appendChild(el('span','muted','（' + c.count + ' 个模型，各维度取组合内最高分）'));
-  const tt = el('div','combo-total');
-  tt.innerHTML = c.total + '<small>总分</small>';
-  top.appendChild(tt);
-  box.appendChild(top);
-
-  const dims = el('div','dims');
-  for(const d of DIM_ORDER){
-    const b = c.best[d] || {value:0, model:''};
-    const row = el('div','dim');
-    row.appendChild(el('span','dlabel', labelOf(d)));
-    const bar = el('div','dbar');
-    const fill = el('i');
-    fill.style.width = b.value + '%';
-    bar.appendChild(fill);
-    row.appendChild(bar);
-    row.appendChild(el('span','dval', String(b.value)));
-    row.title = b.model ? `${labelOf(d)}：${b.value} 分，由 ${b.model} 提供` : `${labelOf(d)}：暂无`;
-    dims.appendChild(row);
-  }
-  box.appendChild(dims);
-
-  const note = el('div','combo-note');
-  if(!c.count){
-    note.textContent = '还没有勾选任何模型，任务无法执行。用下方「自动配置」选一组，或逐个勾选。';
-  }else{
-    const strong = DIM_ORDER.map(d=>({d, v:c.best[d].value})).sort((a,b)=>b.v-a.v).slice(0,3)
-      .map(x=>`${labelOf(x.d)} ${x.v}（${c.best[x.d].model}）`).join(' · ');
-    const weak = DIM_ORDER.map(d=>({d, v:c.best[d].value})).sort((a,b)=>a.v-b.v).slice(0,2)
-      .map(x=>labelOf(x.d)).join('、');
-    note.textContent = `组合强项：${strong}。相对薄弱：${weak} —— 想补强可以再勾一个该维度更高的模型。`;
-  }
-  box.appendChild(note);
 }
 
 /* ================= 模型条目（第 42 步规则 5/6/7/9，第 44 步修订） =================
@@ -3119,7 +2967,7 @@ function ensurePaidTests(){
 }
 
 function removeModel(m){
-  const paid = m.kind === 'paid';
+  const paid = m.kind !== 'local';   // 付费或免费在线模型都不删本地文件
   return confirmModal({
     title: paid ? '移除付费模型' : '移除本地模型',
     sub: paid
@@ -3137,7 +2985,7 @@ function removeModel(m){
 function openModelModal(m, lockReason){
   formModal({
     title: m.name,
-    sub: (m.kind === 'local' ? '本地模型' : '付费模型') + (m.provider_label ? ' · ' + m.provider_label : ''),
+    sub: (m.kind === 'local' ? '本地模型' : (m.free ? '免费模型' : '付费模型')) + (m.provider_label ? ' · ' + m.provider_label : ''),
     okText: '关闭',
     build:(body)=>{
       if(lockReason){
@@ -3236,8 +3084,6 @@ function renderModelList(){
   const list = $('modelItemList');
   if(!list) return;
   list.innerHTML = '';
-  const c = comboOf(catalog.models);
-  const st = selState.models;
   const cnt = $('modelCount');
   if(cnt) cnt.textContent = '(' + catalog.models.length + ')';
   for(const m of catalog.models){
@@ -3250,8 +3096,8 @@ function renderModelList(){
     const body = el('div','aitem');
     const h = el('div','ah');
     h.appendChild(el('span','aname mono', m.name));
-    h.appendChild(el('span','badge ' + (m.kind === 'local' ? 'local' : 'paid'),
-      m.kind === 'local' ? '本地' : '付费'));
+    h.appendChild(el('span','badge ' + (m.kind === 'local' ? 'local' : (m.free ? 'free' : 'paid')),
+      m.kind === 'local' ? '本地' : (m.free ? '免费' : '付费')));
     if(m.provider_label) h.appendChild(el('span','badge', m.provider_label));
     if(m.discovered) h.appendChild(el('span','badge warn','自动发现'));
     if(m.source === '估算') h.appendChild(el('span','badge','估算分'));
@@ -3271,15 +3117,13 @@ function renderModelList(){
     if(m.desc) body.appendChild(el('div','adesc', m.desc));
     const sc = el('div','arow');
     for(const d of DIM_ORDER){
-      const isTop = c.models.length > 1 && c.best[d] && c.best[d].model === m.name
-        && m.enabled && m.scores[d] === c.best[d].value;
-      const chip = el('span','chip' + (isTop ? ' top' : ''));
+      const chip = el('span','chip');
       chip.textContent = `${labelOf(d)} ${m.scores[d]}`;
-      chip.title = `${labelOf(d)} ${m.scores[d]} 分` + (isTop ? '（当前组合该维度最强）' : '');
+      chip.title = `${labelOf(d)} ${m.scores[d]} 分`;
       sc.appendChild(chip);
     }
     body.appendChild(sc);
-    const checked = st.on ? st.checked.has(key) : !!m.enabled;
+    const checked = !!m.enabled;
     const cb = document.createElement('input');
     cb.type = 'checkbox'; cb.className = 'sel-cb';
     cb.checked = checked;
@@ -3287,22 +3131,18 @@ function renderModelList(){
     else if(lockReason){ cb.disabled = true; cb.title = '连接测试未通过，无法勾选：' + lockReason; }
     cb.onclick = e => e.stopPropagation();
     cb.onchange = ()=>{
-      if(st.on){
-        // 全选模式：只调整待选方案，点「应用」才一次性落盘（规则3）
-        if(cb.checked) st.checked.add(key); else st.checked.delete(key);
-        renderSelBar('models');
-        renderModelList();
-        return;
-      }
-      // 普通模式：立即生效；规则9——勾选变化弹绿/橙提示。
-      // 乐观更新：先改本地状态+当场反馈，再后台落盘。实测 fetch 可能被同连接上
-      // 在途的付费模型连接测试拖到 2s（往返本身只有 10ms），不能让勾选干等它；
-      // postModels 拿回快照后按服务端真相重渲染，失败才回滚。
+      // 单选（单模型化）——勾选一个，其他自动取消；取消到空则阻止。
       const want = cb.checked;
       const m = catalog.models.find(x => x.id === key);
-      if(m) m.enabled = want;
-      row.classList.toggle('m-on', want);
-      toast(null, want ? '已新增模型' : '已减少模型', want ? 'ok' : 'warn');
+      if(want){
+        catalog.models.forEach(x => { x.enabled = (x.id === key); });
+        toast(null, '已切换到 ' + (m ? m.name : key), 'ok');
+      }else{
+        // 取消当前唯一模型：阻止，保持勾选，提示直接勾选另一个切换
+        cb.checked = true;
+        toast(null, '至少保留一个模型，直接勾选另一个即可切换', 'warn');
+        return;
+      }
       const ids = catalog.models.filter(x => x.enabled).map(x => x.id);
       postModels({action:'enable', ids}).then(r=>{
         if(r.error){
@@ -3311,6 +3151,7 @@ function renderModelList(){
           renderModelList();
         }
       });
+      renderModelList();  // 立即重渲染，让其他模型变灰
     };
     const row = itRow('models', body, [
       {icon:'del', label:'移除', onclick: ()=> removeModel(m)},
@@ -3331,7 +3172,7 @@ async function postModels(payload){
   // 只有 action=test 那条分支才把它包在 snapshot 字段里。两种形状都得认——
   // 否则「一键应用」之后下方的勾选状态和按钮高亮都不会更新，要退出页面重进才对。
   const snap = r.snapshot || (r && r.models ? r : null);
-  if(snap){ catalog = snap; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons(); }
+  if(snap){ catalog = snap; renderModelList(); updatePoolHint(); }
   return r;
 }
 
@@ -3617,40 +3458,6 @@ function confirmModal(cfg){
   });
 }
 
-/* 本地模型串行执行开关：切换后立即持久化到配置文件，并热更新到运行中的客户端，
-   无需重启。勾选 = 同一时刻只跑一个本地模型（避免并发任务互抢显存）。 */
-$('btnBest').onclick = async ()=>{
-  const b = $('btnBest');
-  const mode = ((catalog && catalog.routing) || {}).mode || 'off';
-  const canceling = mode === 'best';   // P35：再次点击「生效中」的按钮 = 取消
-  b.disabled = true; b.textContent = '配置中…';
-  const r = await postModels(canceling
-    ? {action:'auto_config_off', scope:'best'}
-    : {action:'auto_config', scope:'best'});
-  b.disabled = false;
-  if(r.error){ toast(b, r.error, 'bad'); return; }
-  catalog = r; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons();
-  toast(b, canceling
-    ? (r.note || '已取消自动配置，勾选已同步取消')
-    : `已勾选最佳组合（含付费） · 入口模型按任务类型初选`, canceling ? 'bad' : 'ok');
-};
-
-$('btnBestLocal').onclick = async ()=>{
-  const b = $('btnBestLocal');
-  const mode = ((catalog && catalog.routing) || {}).mode || 'off';
-  const canceling = mode === 'local';   // P35：再次点击「生效中」的按钮 = 取消
-  b.disabled = true; b.textContent = '配置中…';
-  const r = await postModels(canceling
-    ? {action:'auto_config_off', scope:'local'}
-    : {action:'auto_config', scope:'local'});
-  b.disabled = false;
-  if(r.error){ toast(b, r.error, 'bad'); return; }
-  catalog = r; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons();
-  toast(b, canceling
-    ? (r.note || '已取消自动配置，勾选已同步取消')
-    : `已勾选本地最佳组合 · 入口模型按任务类型初选（仅本地）`, canceling ? 'bad' : 'ok');
-};
-
 function updatePoolHint(){
   if(!catalog) return;
   const c = comboOf(catalog.models);
@@ -3658,39 +3465,24 @@ function updatePoolHint(){
     $('poolHint').textContent = '';
     $('poolHint').classList.add('hide');
   }else{
-    $('poolHint').textContent = '当前没有启用任何模型 —— 点左侧「模型配置」去勾选';
+    $('poolHint').textContent = '当前没有启用任何模型 —— 点左侧「模型管理」去勾选';
     $('poolHint').classList.remove('hide');
   }
-  $('modelCfgTxt').textContent = c.count ? `模型配置 · ${c.count}` : '模型配置';
+  $('modelCfgTxt').textContent = c.count ? `模型管理 · ${c.count}` : '模型管理';
   renderModelPop();
 }
 
-/* 悬停卡片：当前启用了哪些模型、各维度最高分是谁、总分多少 */
+/* 悬停卡片：当前用的是哪个模型（单模型化后不再展示组合得分） */
 function renderModelPop(){
   const box = $('modelPop');
   if(!box || !catalog) return;
   if(box.matches(':hover')) return;      // 鼠标还在卡片上就别重渲染，免得抖
-  const c = comboOf(catalog.models);
+  const on = (catalog.models || []).filter(m=>m.enabled);
   box.innerHTML = '';
   const head = el('div','mp-head');
-  head.appendChild(el('b','', c.count ? `${c.count} 个模型已启用` : '未配置模型'));
-  head.appendChild(el('span','mp-total','总分 ' + c.total));
+  head.appendChild(el('b','', on.length ? `当前模型：${on[0].name}` : '未配置模型'));
   box.appendChild(head);
-  box.appendChild(el('div','mp-names',
-    c.count ? c.models.map(m=>m.name).join('、') : '到侧栏「模型管理」去勾选'));
-  const dims = el('div','mp-dims');
-  for(const d of DIM_ORDER){
-    const row = el('div','mp-dim');
-    row.appendChild(el('span','k', labelOf(d)));
-    const bar = el('div','b');
-    const fill = el('i');
-    fill.style.width = Math.max(0, Math.min(100, c.best[d].value)) + '%';
-    bar.appendChild(fill);
-    row.appendChild(bar);
-    row.appendChild(el('span','v', String(c.best[d].value)));
-    dims.appendChild(row);
-  }
-  box.appendChild(dims);
+  if(!on.length) box.appendChild(el('div','mp-names','到侧栏「模型管理」去勾选'));
   const foot = el('div','mp-foot');
   foot.appendChild(el('span','', '点一下进入模型管理'));
   box.appendChild(foot);
@@ -6204,13 +5996,6 @@ async function steer(){
   }
 }
 sendBtn.onclick = ()=>{ if(taskActive()) stopTask(); else send(); };
-$('planBtn').onclick = ()=>{
-  autoPlan = !autoPlan;
-  $('planBtn').classList.toggle('on', autoPlan);
-  $('planBtn').title = autoPlan
-    ? '已开启：复合任务会被拆解并分配给不同模型'
-    : '已关闭：整段任务交给单个最合适的模型';
-};
 $('pathBtn').onclick = ()=>{
   multiPath = !multiPath;
   $('pathBtn').classList.toggle('on', multiPath);
@@ -6862,7 +6647,6 @@ async function streamChat(text, hist, extra){
         // 显式带上本次任务的权限；服务端在没有这个字段时才回落到持久化的默认值
         permission: allowWrite ? 'full' : 'default',
         allow_write: allowWrite,
-        auto_plan: autoPlan,
         multi_path: multiPath
       }, extra || {}))
     });
