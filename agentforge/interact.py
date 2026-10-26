@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 import threading
 
-from . import runcontrol
+from .runtime import runcontrol
 
 _LOCK = threading.Lock()
 _PENDING: dict[str, tuple[threading.Event, dict]] = {}   # qid -> (Event, box)

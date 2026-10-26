@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agentforge import runcontrol as rc      # noqa: E402
+from agentforge.runtime import runcontrol as rc      # noqa: E402
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:

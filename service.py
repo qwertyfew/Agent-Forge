@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parent
 RUN = ROOT / ".run"
 sys.path.insert(0, str(ROOT))
 
-from agentforge import ollamaguard  # noqa: E402
+from agentforge.runtime import ollamaguard  # noqa: E402
 from agentforge.config import Config  # noqa: E402
 
 CHECK_INTERVAL = 10      # 每多少秒体检一次

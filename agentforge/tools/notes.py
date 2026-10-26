@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ..runcontrol import current_task
+from ..runtime.runcontrol import current_task
 from .base import SAFE, make_tool
 
 

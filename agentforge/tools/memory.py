@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ..autonote import dupe_of
 from ..memory import MemoryStore
-from ..runcontrol import current_task
+from ..runtime.runcontrol import current_task
 from .base import WRITE, make_tool
 
 

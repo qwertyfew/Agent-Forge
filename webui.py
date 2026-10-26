@@ -18,8 +18,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from agentforge import artifact
-from agentforge import (layout, autonote, autoskill, gaps, interact, ollamaguard,
-                        reveal, runcontrol, runstate, steering)
+from agentforge import (layout, autonote, autoskill, gaps, interact, reveal,
+                        steering)
+from agentforge.runtime import ollamaguard, runcontrol, runstate
 from agentforge.cli import CLI
 from agentforge.loop import display_history
 from agentforge.config import Config

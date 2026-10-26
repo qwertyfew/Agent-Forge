@@ -24,8 +24,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agentforge import runcontrol                      # noqa: E402
-from agentforge.runstate import (                      # noqa: E402
+from agentforge.runtime import runcontrol                      # noqa: E402
+from agentforge.runtime.runstate import (                      # noqa: E402
     QUEUED, RUNNING, STOPPING, RunState,
 )
 

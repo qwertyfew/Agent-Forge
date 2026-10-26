@@ -39,7 +39,7 @@ from . import gaps
 from . import interact
 from . import honesty_guard
 from .tasksession import TaskSession, batch_dependency_reason, contract_block, contract_paths
-from . import runcontrol
+from .runtime import runcontrol
 from . import steering
 from . import sources as sources_gate
 from . import skeleton as skel

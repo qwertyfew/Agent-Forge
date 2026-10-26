@@ -38,7 +38,7 @@ from .permissions import (
 from .pricing import cost_of, is_free
 from .providers import ClientHub
 from .router import Router
-from .runcontrol import current_task
+from .runtime.runcontrol import current_task
 from .skills import SkillRegistry
 from .tools import ToolRegistry
 from .tools.base import SAFE

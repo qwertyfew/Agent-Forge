@@ -21,7 +21,7 @@ from __future__ import annotations
 import threading
 import time
 
-from . import runcontrol
+from .runtime import runcontrol
 
 _lock = threading.Lock()
 _boxes: dict[str, list[dict]] = {}     # task_id -> [{"id","text","ts","seen":set}]

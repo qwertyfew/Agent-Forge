@@ -11,7 +11,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
-from agentforge import runcontrol, steering  # noqa: E402
+from agentforge.runtime import runcontrol
+from agentforge import steering  # noqa: E402
 import agentforge.loop as loop_mod  # noqa: E402
 import agentforge.orchestrator as orch_mod  # noqa: E402
 

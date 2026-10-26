@@ -110,7 +110,7 @@ class Config:
     # 大模型就填 1；超出的任务登记为「排队中」，有空位自动开跑。填 2 表示
     # 跑着 A 的同时还能立刻开 B（显存够才行）。
     compute_max_running: int = 1
-    # Ollama 没起来时自动拉起（见 agentforge/ollamaguard.py）。
+    # Ollama 没起来时自动拉起（见 agentforge/runtime/ollamaguard.py）。
     # 本机长期不关机，Ollama 可能被手动退出或升级时重启，本地模型会静默失效。
     ollama_auto_start: bool = True
     # 拉起后最多等多少秒才判定失败。冷启动要加载模型索引，别给太短。
