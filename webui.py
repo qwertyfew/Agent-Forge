@@ -1522,7 +1522,25 @@ class _Handler(BaseHTTPRequestHandler):
         # 台账/界面展示用 display_prompt（恢复任务时 = 原任务指令 + 恢复标记），
         # 模型实际收到的是 message——两者在恢复场景下刻意不同。
         started_at = time.time()
-        task_id = self.tasks.begin(display_prompt or message, permission=permission)
+        # 追问续接：同一对话里接着问，续到上一条「已完成」的任务，而不是新建台账
+        # 条目。前端在「非回看历史、且开着一条已完成任务」时带 continue_of=<旧任务 id>；
+        # 目标不存在或仍在跑时退回新建，保证续接永远安全（绝不误挂到别人的任务上）。
+        continue_of = str(req.get("continue_of") or "").strip()
+        cont_task = None
+        if continue_of:
+            _old = self.tasks.get(continue_of)
+            if _old and _old.get("status") not in ("running", "queued"):
+                cont_task = _old
+        if cont_task is not None:
+            task_id = continue_of
+            # 标题/提问气泡保持原任务指令不变；追问只是让对话继续，不改任务名
+            display_prompt = cont_task.get("prompt") or message
+            # 上下文优先用前端传的完整历史；兜底用台账存的（被裁剪过，聊胜于无）
+            if not history:
+                history = cont_task.get("history") or []
+            self.tasks.set_status(task_id, "running", progress="继续对话…")
+        else:
+            task_id = self.tasks.begin(display_prompt or message, permission=permission)
         # 评测编号（rerunNN）：评测任务要和 .run/rerunNN.* 的日志、文档里的复盘对得上号。
         # 前端/脚本传 label 时把编号顶在标题上，侧栏与案卷里都看得见「这是第几跑」。
         label = str(req.get("label") or "").strip()[:24]

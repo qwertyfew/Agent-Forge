@@ -6166,6 +6166,12 @@ async function send(){
   // 任务「已完成」后 openTaskId 只是残留，此时发消息应续接当前上下文继续对话，
   // 而不是当作新任务——否则同一个对话里的第二条话会凭空变成新任务。
   if(viewingHistory){ resetChat(); }
+  // 追问续接：当前开着一条「已完成」的任务（非回看历史）时，接着问就续到它，
+  // 后端复用该任务的台账条目、不再新建——否则侧栏会凭空多一条新任务。
+  const contOf = (!viewingHistory && openTaskId && history.length)
+    ? ((taskData || []).some(t => t && t.id === openTaskId
+        && t.status !== 'running' && t.status !== 'queued') ? openTaskId : '')
+    : '';
   input.value = ''; autoGrow();
   attachments = []; renderAttach();
   // 先标记执行中再切视图：发送键立刻变停止键（可取消排队中的任务）
@@ -6176,7 +6182,7 @@ async function send(){
   renderLanding();   // 有了真实消息，落地页标题立刻收起
   // 本地先临时拼上这条提问刷一次计量（不动 history 本身，后端会自己 append）
   updateContextMeter(history.concat([{ role: 'user', content: text }]), threshold);
-  await streamChat(text, history);
+  await streamChat(text, history, contOf ? { continue_of: contOf } : {});
 }
 
 /* 发送消息与「重新回答」共用的流式管线：text 是这次要执行的话，
