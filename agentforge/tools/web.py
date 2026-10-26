@@ -789,18 +789,58 @@ def build_web_tools(guard, cfg):
             out.append((url, _clean(title), _clean(snippet)))
         return out
 
+    def _search_sogou(query: str, max_results: int) -> list[tuple[str, str, str]]:
+        """搜狗（P34：中文长尾查询的对口后端。实测搜「冷冻莓果 品牌 推荐」
+        相关 7/8，首条即京东购物榜单；Bing 国内端点同查询返回词条垃圾）。
+        链接是搜狗跳转链，摘要用途足够；标题带高亮标签，_clean 统一剥掉。
+        注意：百度 /s 端点有无 cookie 都回「安全验证」页（要 JS），不设后端。"""
+        r = requests.get(
+            "https://www.sogou.com/web",
+            params={"query": query},
+            timeout=20,
+            headers={**_UA, "Accept-Language": "zh-CN,zh;q=0.9"},
+        )
+        r.raise_for_status()
+        out = []
+        for block in re.findall(r"<h3[^>]*>.*?</h3>", r.text, re.S)[:max_results]:
+            a = re.search(r'href="([^"]+)"', block)
+            if not a:
+                continue
+            title = _clean(re.sub(r"<[^>]+>", " ", block))
+            if not title:
+                continue
+            url = a.group(1)
+            if url.startswith("/"):
+                url = "https://www.sogou.com" + url
+            out.append((url, title, ""))
+        return out
+
     def _search_once(query: str, n: int):
-        """跑一次搜索（Bing 优先、DDG 兜底），返回 (rows, errors)。"""
-        rows: list[tuple[str, str, str]] = []
+        """跑一次搜索（P34 相关性感知的后端回退），返回 (rows, errors)。
+
+        后端链：Bing → 搜狗 → DDG。不再「第一个非空就用」——Bing 国内
+        端点对中文长尾查询会返回整页无关内容（实证见 _search_sogou 注释），
+        逐个后端检查词面交集，第一个**有相关结果**的胜出；全军覆没时回退
+        最长的一份（外层相关性闸门照常丢弃并指路）。
+        百度 /s 端点实测被「安全验证」墙挡死（有 cookie 也一样，要 JS 执行），
+        不设后端——省一次注定失败的请求。"""
         errs: list[str] = []
-        for name, fn in (("bing", _search_bing), ("duckduckgo", _search_ddg)):
+        best: list[tuple[str, str, str]] = []
+        for name, fn in (("bing", _search_bing), ("sogou", _search_sogou),
+                         ("duckduckgo", _search_ddg)):
             try:
                 rows = fn(query, max(1, int(n)))
-                if rows:
-                    break
             except requests.RequestException as e:
                 errs.append(f"{name}: {e}")
-        return rows, errs
+                continue
+            if not rows:
+                continue
+            if rows_relevant_count(query, rows) > 0:
+                return rows, errs
+            if len(rows) > len(best):
+                best = rows
+            errs.append(f"{name}: 返回的 {len(rows)} 条与查询词无词面交集")
+        return best, errs
 
     def _render_rows(query: str, rows, note: str = "") -> str:
         out = [f"[搜索摘要 · 转述 · 未核实] {query} — 前 {len(rows)} 条"
