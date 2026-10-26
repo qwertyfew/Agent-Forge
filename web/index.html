@@ -3834,10 +3834,32 @@ async function loadTasks(){
     if(typeof d.max_running === 'number') maxRunning = Math.max(1, d.max_running);
     renderTasks();
     adoptRunning();
+    restoreThread();
   }catch(e){
     // 拉不到就保持侧栏原样，别清空——清空会让「数据没了」和「服务挂了」更难分辨。
     // 原因由侧栏的离线横幅交代（apiGet 已经点亮了它）。
   }
+}
+
+/* 刷新/自动刷新后，把上次的对话线程恢复到画面（标记为可续接，不是回看）。
+   不恢复的话用户会停在一张空白对话上，只好去侧栏点那条任务——那会进入
+   「回看历史」态，接着输入就被当成开新任务。恢复后 threadId 不变、viewingHistory
+   为 false，下一条追问自然续到同一条任务。 */
+function restoreThread(){
+  if(!threadId || threadRestored) return;
+  const t = (taskData || []).find(x => x && x.id === threadId);
+  if(!t) return;
+  if(t.status === 'running' || t.status === 'queued') return;  // 还在跑的交给接管
+  threadRestored = true;
+  fetch('/api/tasks?id=' + encodeURIComponent(threadId)).then(r=>r.json()).then(d=>{
+    const task = d.task;
+    if(!task) return;
+    enterTaskView(task);        // 渲染出那条对话（viewingHistory 会被置 true）
+    viewingHistory = false;     // 但这里是「续接线程」，不是回看
+    threadId = task.id;
+    try{ sessionStorage.setItem('af_threadId', task.id); }catch(e){}
+    syncTopRun();
+  }).catch(()=>{ threadRestored = false; });
 }
 
 /* ================= 执行中状态条（计时 / 进度 / 预估费用） =================
@@ -4694,6 +4716,7 @@ let svcLocal = true;        // 本地部署才可重启；云端由 /api/health 
 let svcRestarting = false;  // 重启流程进行中：期间轮询不与其抢状态
 let uiStamp = null;           // 前端版本戳（见 /api/health 的 ui 字段）
 let pendingReload = false;    // 有对话时发现版本变化，先挂起，开新对话时再刷
+let threadRestored = false;   // 刷新后是否已把上次对话线程恢复到画面
 const svcWait = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Ollama 是本地模型的上游。本机长期不关机，它可能被手动退出或升级时重启，
@@ -6279,10 +6302,11 @@ async function send(){
   // 到它，后端复用该任务的台账条目、不再新建——否则侧栏会凭空多一条新任务。
   // 用 threadId 而非 openTaskId：切换窗口/回看别的任务会改 openTaskId，但不会改
   // 对话线程，追问必须锚定到「自己这条对话」上，不能锚到刚看过的别的任务。
-  const contOf = (!viewingHistory && threadId)
-    ? ((taskData || []).some(t => t && t.id === threadId
-        && t.status !== 'running' && t.status !== 'queued') ? threadId : '')
-    : '';
+  // 追问续接：只看 threadId 与 viewingHistory。目标是否存在/是否还在跑，交给
+  // 后端判定（目标缺失或在跑/排队就安全回落成新建）。原来这里还要求 taskData
+  // 里能看到该任务且非 running——刷新后 taskData 还没来得及拉回来时，这里就会
+  // 误判成「没有可续接的任务」，于是追问被当成新任务（实测反复出现）。
+  const contOf = (!viewingHistory && threadId) ? threadId : '';
   input.value = ''; autoGrow();
   attachments = []; renderAttach();
   // 先标记执行中再切视图：发送键立刻变停止键（可取消排队中的任务）
