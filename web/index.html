@@ -6294,10 +6294,17 @@ async function send(){
     addPillNote('还没有勾选任何模型——到「模型管理」里勾选后才能执行任务。');
     return;
   }
-  // 回看历史任务时发消息 = 开一条全新对话，绝不把旧任务的上下文带进来。
-  // 任务「已完成」后 openTaskId 只是残留，此时发消息应续接当前上下文继续对话，
-  // 而不是当作新任务——否则同一个对话里的第二条话会凭空变成新任务。
-  if(viewingHistory){ resetChat(); }
+  // 在某条已完成任务的画面里发消息 = 在这条任务里接着问，续接到**当前正在看的
+  // 那条**。原实现在这里直接 resetChat()（清空线程 → 必然新建任务），与「追问
+  // 续接」的预期正好相反：点开侧栏那条任务、再输入，就被当成新任务（反复出现）。
+  // 现在锚定到 openTaskId 把它变成可续接线程；想开全新对话请点「新建任务」。
+  if(viewingHistory && openTaskId){
+    threadId = openTaskId;
+    try{ sessionStorage.setItem('af_threadId', threadId); }catch(e){}
+    viewingHistory = false;
+  }else if(viewingHistory){
+    resetChat();
+  }
   // 追问续接：当前对话线程（threadId）指向上一条「已完成」的任务时，接着问就续
   // 到它，后端复用该任务的台账条目、不再新建——否则侧栏会凭空多一条新任务。
   // 用 threadId 而非 openTaskId：切换窗口/回看别的任务会改 openTaskId，但不会改
