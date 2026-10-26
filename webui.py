@@ -18,7 +18,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from agentforge import artifact
-from agentforge import layout, autonote, autoskill, gaps, interact, ollamaguard, reveal, runcontrol, steering
+from agentforge import (layout, autonote, autoskill, gaps, interact, ollamaguard,
+                        reveal, runcontrol, runstate, steering)
 from agentforge.cli import CLI
 from agentforge.loop import display_history
 from agentforge.config import Config
@@ -1597,6 +1598,8 @@ class _Handler(BaseHTTPRequestHandler):
         got_slot = _COMPUTE_GATE.acquire(blocking=False)
         if not got_slot:
             self.tasks.set_status(task_id, "queued", progress="排队等待算力…")
+            # 运行期状态唯一事实源：台账负责展示，run_state 负责「现在到底在干嘛」
+            runstate.run_state.set_status(task_id, runstate.QUEUED)
         file_log: list[dict] = []              # 写类工具动过的文件
         # 开工前拍一张工作区索引，收工时再拍一张相减，兜住 run_command 的副作用
         try:
@@ -2041,9 +2044,10 @@ class _Handler(BaseHTTPRequestHandler):
                                           getattr(self.cli.agent, "outdir", "") or "")
                 except Exception:  # noqa: BLE001
                     pass
+            _final = "stopped" if was_stopped else ("error" if err_msg else "done")
             self.tasks.finish(
                 task_id,
-                "stopped" if was_stopped else ("error" if err_msg else "done"),
+                _final,
                 summary=summary[:800],
                 error=err_msg[:500],
                 # 台账/界面只留「人说的话」：harness 插的内部指令（程序补查、
@@ -2053,6 +2057,9 @@ class _Handler(BaseHTTPRequestHandler):
                 steps=steps,
                 files=merged,
             )
+            # 终态先落状态机、再摘标志：两边顺序反了会让「已结束的任务」在
+            # running_ids 里残留一瞬，界面据此画的「执行中」就会晚一拍才灭。
+            runstate.run_state.set_status(task_id, _final)
             runcontrol.release(task_id)   # 摘掉停止标志，避免越攒越多
             runcontrol.clear_current_task()
             steering.clear(task_id)       # 收尾清空收件箱：没投递完的补充作废

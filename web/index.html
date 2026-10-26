@@ -1834,7 +1834,7 @@ function showView(v){
   $('navSkill').classList.toggle('on', isSkill);
   $('navGaps').classList.toggle('on', isGaps);
   $('navEval').classList.toggle('on', isEval);
-  syncTopRun();   // 角标跟着视图走：离开在跑的那条对话就收起来，切回去再亮
+  renderRunUI();   // 角标跟着视图走：离开在跑的那条对话就收起来，切回去再亮
   // 栏目互斥高亮：进侧栏任一栏目时，「新建任务」也跟着变淡
   $('btnNew').classList.toggle('dimmed', sidePane);
   updateCompactBtn();
@@ -3637,6 +3637,19 @@ function runningTaskCount(){
 /* 「任务执行中」角标只挂在正在执行的那条对话上：
    回看别的已完成任务、停在新建任务空态、或在记忆/技能等栏目里都不显示——
    哪条任务在跑，侧栏任务项自己的「运行中 · 计时」已经交代了。 */
+/* 运行状态 → 界面：**唯一渲染入口**。
+   以前 syncTopRun / syncComposer / renderRunBar 各自被不同地方零散调用，
+   漏掉一个就会出现「状态变了但界面没重算」——停止后「执行中」角标不灭就是
+   这么来的（轮询拉回了 stopped，却没人去重算角标）。
+   现在这三件事由同一个函数派生：任何地方要刷运行状态 UI，只调 renderRunUI()，
+   不必记住该调哪几个。输入仍是这一层的状态（busy / liveTask / taskData）。
+   注意：只替换调用，三个函数本身保留，供 renderRunUI 内部组合。 */
+function renderRunUI(){
+  syncTopRun();
+  syncComposer();
+  renderRunBar();
+}
+
 function syncTopRun(){
   const running = (taskData || []).filter(t => t.status === 'running').length;
   const curRunning = view === 'chat' && openTaskId && running > 0
@@ -3765,7 +3778,7 @@ function showTaskMenu(e, t){
 
 function renderTasks(){
   $('taskSecTitle').textContent = '任务(' + taskData.length + ')';
-  syncTopRun();
+  renderRunUI();
   renderLanding();   // 任务状态变化后落地态判定可能变（空对话标题亮/暗），及时刷新
 
   const box = $('taskList');
@@ -3838,7 +3851,7 @@ async function loadTasks(){
     // 「执行中」角标必须跟着轮询重算：它原来只在切换视图/右键菜单时才更新，
     // 于是任务停了、台账里 status 已经是 stopped，角标却一直亮着（点停止后
     // 灯不灭的根源）。
-    syncTopRun();
+    renderRunUI();
   }catch(e){
     // 拉不到就保持侧栏原样，别清空——清空会让「数据没了」和「服务挂了」更难分辨。
     // 原因由侧栏的离线横幅交代（apiGet 已经点亮了它）。
@@ -3862,7 +3875,7 @@ function restoreThread(){
     viewingHistory = false;     // 但这里是「续接线程」，不是回看
     threadId = task.id;
     try{ sessionStorage.setItem('af_threadId', task.id); }catch(e){}
-    syncTopRun();
+    renderRunUI();
   }).catch(()=>{ threadRestored = false; });
 }
 
@@ -3926,7 +3939,7 @@ function adoptRunning(){
       if(running.progress) liveTask.progress = running.progress;
       if(running.local_only === false) liveTask.localOnly = false;
     }
-    renderRunBar();
+    renderRunUI();
   }else if(liveTask && liveTask.status === 'running' && !busy){
     // 服务端已经没有在跑的任务了，但界面还停在执行中：按台账里的真实结局收尾
     // （可能是被停止的，别一律当成「已完成」）
@@ -3941,7 +3954,7 @@ function adoptRunning(){
     endLiveTask(st === 'stopped' ? 'stopped' : (st === 'error' ? 'error' : 'done'));
     return;
   }
-  syncComposer();
+  renderRunUI();
 }
 
 /* 服务端的第一帧（task 事件）带回了台账里记的真实开始时间：把头像行的计时基准
@@ -3969,8 +3982,7 @@ function beginLiveTask(info){
     round: 0, stepIndex: 0, stepTotal: 0, filesRendered: false
   };
   rebaseAIHeadTime(info.created_at);
-  renderRunBar();
-  syncComposer();
+  renderRunUI();
 }
 
 function endLiveTask(status){
@@ -3978,13 +3990,11 @@ function endLiveTask(status){
   liveTask.status = status || 'done';
   liveTask.endedAt = Date.now()/1000;
   headTimeOverride = 0;
-  renderRunBar();
-  syncComposer();
-  syncTopRun();          // 收尾即灭灯，不等下一次轮询
+  renderRunUI();// 收尾即灭灯，不等下一次轮询
   const id = liveTask.id;
   setTimeout(()=>{
     if(liveTask && liveTask.id === id && liveTask.status !== 'running'){
-      liveTask = null; renderRunBar(); syncTopRun();
+      liveTask = null; renderRunUI(); 
     }
   }, 6000);
 }
@@ -3999,7 +4009,7 @@ function renderRunBar(){
 async function stopTask(){
   const id = (liveTask && liveTask.id) || '';
   if(liveTask) liveTask.stopping = true;
-  renderRunBar();
+  renderRunUI();
   let r = null;
   try{
     r = await fetch('/api/tasks',{
@@ -4010,7 +4020,7 @@ async function stopTask(){
   if(r && r.note) addPillNote(r.note);
   if(!r || !r.ok){
     if(liveTask) liveTask.stopping = false;
-    renderRunBar();
+    renderRunUI();
     toast(null, '停止失败：' + ((r && (r.note || r.error)) || '服务未响应'), 'bad');
     return;
   }
@@ -4349,7 +4359,7 @@ function openTask(id){
       if(!liveTask || liveTask.id !== task.id) liveTask = liveTaskFrom(task);
       enterTaskView(task, {live: true});
       followTaskStream(task.id);
-      renderRunBar(); syncComposer();
+      renderRunUI(); 
       return;
     }
     // 打开的是已完成的任务：把上一条任务的接管流关掉。留着它只会让连接
@@ -6287,7 +6297,7 @@ function syncComposer(){
     : '向 AgentForge 描述任何事，回车发送，Shift+回车换行';
 }
 
-function setBusy(b){ busy = b; syncComposer(); renderLanding(); }
+function setBusy(b){ busy = b; renderRunUI(); renderLanding(); }
 
 async function send(){
   // 不再因「有任务在跑」拦截发送（需求③）：算力有空位就立即执行，
@@ -6362,7 +6372,7 @@ function handleTaskEvent(ev, data){
         liveTask.stepTotal = (data.subtasks || []).length;
         if(data.summary) liveTask.progress = data.summary;
       }
-      renderRunBar();
+      renderRunUI();
     }
     else if(ev === 'assign'){
       // 不再渲染「通用 → gemma4:12b」那条分配胶囊，模型信息挪到回复底部工具条；
@@ -6381,7 +6391,7 @@ function handleTaskEvent(ev, data){
           liveTask.models = Array.from(new Set([...(liveTask.models || []), data.model_name]));
         }
       }
-      renderRunBar();
+      renderRunUI();
     }
     else if(ev === 'subtask'){
       // 并行分栏模式下，各任务在自己的列里跑；计划卡模式下进度由计划卡+进度卡承担，
@@ -6563,7 +6573,7 @@ function handleTaskEvent(ev, data){
         cur = null;
         curTool = addTool(data.name, data.args);
       }
-      if(liveTask){ liveTask.tools = (liveTask.tools || 0) + 1; renderRunBar(); }
+      if(liveTask){ liveTask.tools = (liveTask.tools || 0) + 1; renderRunUI(); }
       // 工具行落进展开的卡片/泳道时也要贴底；主对话流同样——此前这条分支
       // 不调 scrollBottom，一次工具行追加把离底距离顶过阈值，贴底就此失效
       if(wc) pinNearBottom(wc.body);
@@ -6642,15 +6652,14 @@ function handleTaskEvent(ev, data){
         if(data.local_only === false) liveTask.localOnly = false;
         if(data.progress) liveTask.progress = data.progress;
       }
-      renderRunBar();
-      syncComposer();
+      renderRunUI();
     }
     else if(ev === 'step'){
       if(liveTask){
         liveTask.round = data.step || liveTask.round;
         if(data.progress) liveTask.progress = data.progress;
       }
-      renderRunBar();
+      renderRunUI();
     }
     else if(ev === 'task'){
       // 服务端第一帧就把任务落了台账：侧栏立刻出现「执行中/排队中」，

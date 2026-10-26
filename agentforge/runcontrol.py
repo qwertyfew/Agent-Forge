@@ -9,79 +9,59 @@
 
 停止是**协作式**的：当前正在生成的那一次模型回复会先跑完，框架在下一个
 检查点退出，然后把已有产出照常返回。这样不会把半截工具调用留在历史里。
+
+实现已下沉到 `agentforge.runstate.RunState`（运行状态的唯一事实源），本模块
+保留旧调用方在用的函数名，语义一字不改：调用方散在 webui / loop / orchestrator
+/ steering / interact 与两个工具模块里，一次性改签名风险太大；先收敛状态，
+再逐步把调用改为直连 run_state。
 """
 
 from __future__ import annotations
 
 import threading
 
-_lock = threading.Lock()
-_flags: dict[str, threading.Event] = {}
+from .runstate import RunState, run_state
 
-# 「当前正在跑的是哪个任务」。工具的入参里没有任务 id，但写入记忆时要知道
-# 这条记忆是哪次任务留下的（清空时才能按任务精确删除）。Web 端每个请求
-# 独占一个线程，所以用线程局部变量传递是安全的。
-_local = threading.local()
-
-
-def set_current_task(task_id: str) -> None:
-    _local.task_id = str(task_id or "")
+__all__ = [
+    "register", "request_stop", "is_stopping", "release", "running_ids",
+    "set_current_task", "current_task", "clear_current_task", "state",
+]
 
 
-def current_task() -> str:
-    return getattr(_local, "task_id", "") or ""
-
-
-def clear_current_task() -> None:
-    _local.task_id = ""
+def state() -> RunState:
+    """底层状态对象：要读状态机/快照就用它。"""
+    return run_state
 
 
 def register(task_id: str) -> threading.Event:
-    """给一次任务注册停止标志（同名任务重复注册则复用）。"""
-    tid = str(task_id or "")
-    with _lock:
-        ev = _flags.get(tid)
-        if ev is not None and ev.is_set():
-            # 复用只该发生在标志还没立起来的时候：上一轮把标志立了、release
-            # 又因异常路径漏调的话，这里复用拿到的是已 set 的 Event——
-            # 重试的同名任务第一轮就误判「要停止」直接退出。立过的作废，换新的。
-            ev = None
-        if ev is None:
-            ev = threading.Event()
-            _flags[tid] = ev
-        return ev
+    """给一次任务注册停止标志（同名任务重复注册则复用，立过的作废换新）。"""
+    return run_state.register(task_id)
 
 
 def request_stop(task_id: str) -> bool:
     """请求停止。返回 True 表示确实有这么个在跑的任务。"""
-    tid = str(task_id or "")
-    with _lock:
-        ev = _flags.get(tid)
-    if ev is None:
-        return False
-    ev.set()
-    return True
+    return run_state.request_stop(task_id)
 
 
 def is_stopping(task_id: str) -> bool:
-    tid = str(task_id or "")
-    with _lock:
-        ev = _flags.get(tid)
-    return bool(ev and ev.is_set())
+    return run_state.is_stopping(task_id)
 
 
 def release(task_id: str) -> None:
-    tid = str(task_id or "")
-    with _lock:
-        _flags.pop(tid, None)
+    run_state.release(task_id)
 
 
 def running_ids() -> list[str]:
-    with _lock:
-        return [k for k, v in _flags.items() if not v.is_set()]
+    return run_state.running_ids()
 
 
-__all__ = [
-    "register", "request_stop", "is_stopping", "release", "running_ids",
-    "set_current_task", "current_task", "clear_current_task",
-]
+def set_current_task(task_id: str) -> None:
+    run_state.set_current_task(task_id)
+
+
+def current_task() -> str:
+    return run_state.current_task()
+
+
+def clear_current_task() -> None:
+    run_state.clear_current_task()
