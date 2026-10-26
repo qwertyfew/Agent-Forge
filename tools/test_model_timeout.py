@@ -19,7 +19,8 @@ sys.path.insert(0, str(ROOT))
 
 import requests                                            # noqa: E402
 
-from agentforge import llm, providers                      # noqa: E402
+from agentforge.llm import providers
+from agentforge.llm import ollama as llm                      # noqa: E402
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:

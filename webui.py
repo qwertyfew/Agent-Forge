@@ -26,7 +26,7 @@ from agentforge.loop import display_history
 from agentforge.config import Config
 from agentforge.evalsdesk import EvalsDesk
 from agentforge.memory import MemoryStore
-from agentforge.llm import ollama_probe, set_local_serial
+from agentforge.llm.ollama import ollama_probe, set_local_serial
 from agentforge.modelstore import ModelStore
 from agentforge.orchestrator import run_task
 from agentforge.planner import short_title

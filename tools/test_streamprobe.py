@@ -20,7 +20,8 @@ sys.path.insert(0, str(ROOT))
 
 import requests                                            # noqa: E402
 
-from agentforge import llm, streamprobe                    # noqa: E402
+from agentforge.llm import streamprobe
+from agentforge.llm import ollama as llm                    # noqa: E402
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:

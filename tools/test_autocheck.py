@@ -287,7 +287,7 @@ def test_loop(tmp: Path) -> None:
     _check("E15 用户原始任务仍在台账视图里",
           any(m.get("role") == "user" and GOAL in str(m.get("content") or "")
               for m in shown))
-    from agentforge.llm import clean_messages                         # noqa: E402
+    from agentforge.llm.ollama import clean_messages                         # noqa: E402
     plain = [{"role": "user", "content": "x", "_internal": "autocheck"}]
     _check("E16 请求体里不带 _internal 标记",
           "_internal" not in clean_messages(plain)[0])

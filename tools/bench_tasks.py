@@ -52,7 +52,7 @@ RUN_DIR = ROOT / "evals" / ".run"
 # 却被记成「全程未调用」）。解析口径统一由 agentforge.tooltrace 提供，产品侧的
 # 闸门（sources/verify）也在用同一份——评测与产品各写一套，迟早互相打架。
 from agentforge import tooltrace  # noqa: E402
-from agentforge import streamprobe  # noqa: E402
+from agentforge.llm import streamprobe  # noqa: E402
 
 
 def _inner_calls(name: str, args) -> list[str]:

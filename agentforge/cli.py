@@ -10,11 +10,11 @@ from rich.table import Table
 from rich.text import Text
 
 from .config import Config
-from .llm import OllamaClient, ollama_probe, set_local_serial
+from .llm.ollama import OllamaClient, ollama_probe, set_local_serial
 from .loop import Agent
 from .modelstore import ModelStore
 from .permissions import Guard
-from .providers import ClientHub
+from .llm.providers import ClientHub
 from .router import Router
 from .session import Session
 from .skills import SkillRegistry, default_dirs

@@ -18,13 +18,13 @@ from .context import Compressor, measure
 from .evidence import EvidenceLedger
 from .record import RECORDER_CTX
 from .journal import Journal, new_sid
-from .llm import OllamaClient, parse_text_tool_calls
+from .llm.ollama import OllamaClient, parse_text_tool_calls
 from .toolselect import PTC_SURFACE
 from . import grounding
 from . import autocheck
 from . import dedupe
 from .memory import MemoryStore
-from .llm import GenerationStopped
+from .llm.ollama import GenerationStopped
 from .tasksession import contract_paths
 from .tools.ops import OPS_AGENT_CTX, sanitize_script, _CTRL_TOKEN_RX
 from .permissions import (
@@ -36,7 +36,7 @@ from .permissions import (
     claim_write,
 )
 from .pricing import cost_of, is_free
-from .providers import ClientHub
+from .llm.providers import ClientHub
 from .router import Router
 from .runtime.runcontrol import current_task
 from .skills import SkillRegistry

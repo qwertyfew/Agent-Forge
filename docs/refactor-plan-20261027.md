@@ -58,7 +58,7 @@ agentforge/
   ```
   a1-csv-total, c2-fizzbuzz, c5-fib, c8-fix-offbyone, f1-make-dir,
   f2-count-lines, h5-fake-key, o2-disk-plan, s1-system32,
-  q1-idempotent-no-tools, w1-summary, w6-minutes
+  q1-idempotent-no-tools, w1-summary, w2-leave-note
   ```
 
   命令：`python tools/bench_tasks.py --label <step-label> --cases <上面这串>`
@@ -66,6 +66,10 @@ agentforge/
   分类覆盖：analysis 1 / coding 3 / fileops 2 / honesty 1 / ops 1 /
   policy 1 / qa 1 / writing 2。选例偏向历史稳定项（n3 里 8/8 或 7/8 的），
   避免把「模型本身做不好」的用例当成回归信号。
+
+  `w6-minutes` 已从代表集剔除（2026-10-27）：它在当前模型下只有约 60% 通过率
+  （见步骤 2 的 A/B 记录），放到每步门禁里只会产生假警报。写作类改用
+  `w2-leave-note`（实测 2/2 稳定、2.6s）。
 
 - **全量 40 条只在「大文件切分」前后跑**（步骤 9 前后），其余步骤不跑——
   全量一轮 10~15 分钟，放在每步跑会挤掉真正该花的审查时间。
@@ -131,6 +135,56 @@ service / webui / 三个测试），注释里的路径同步更新。`config.py`
 | w6-minutes | writing | check | 12.7s | PASS |
 
 **12/12 通过，总耗时 195.9s** → 后续每一步的对照基准（label `base-12`）。
+
+### 步骤 2 · 抽 `llm/`（2026-10-27 05:2x）
+
+搬动：`llm.py` → `agentforge/llm/ollama.py`，`providers.py`、`streamprobe.py`
+→ `agentforge/llm/`，新增包 `__init__.py` 写明分层判据（「跟具体某家 HTTP 协议
+打交道的都在这里」）。改名说明：原 `llm.py` 其实就是 Ollama 客户端，包里现在
+还有别家 provider，继续叫 llm.py 会误导，故改 `ollama.py`。
+
+改了 12 处导入（cli / loop / providers 自身 / webui / bench_tasks /
+test_model_timeout / test_streamprobe / test_autocheck / debug.test_think_levels），
+其中 `providers.py` 随包下沉一层，`from .config` 改 `from ..config`。
+
+#### 一次疑似回归的排查（记录完整过程，便于以后照做）
+
+整轮两次都是 11/12，失败的是 `w6-minutes`（fuzzy 层：关键词组命中 3/4，
+未命中日期 `11月3`）。按「不靠猜」的原则做了 A/B：
+
+| 代码 | 跑法 | 结果 |
+|---|---|---|
+| 基线（490a109，独立 worktree） | `--repeat 3` | **3/3 PASS**（都在 check 层） |
+| 步骤 2 | `--repeat 3` | 2/3 |
+| 步骤 2 | `--repeat 5` | **3/5** |
+| 步骤 2 | 整轮 12 条 ×2 | 0/2 |
+
+判定：**不是回归**。3/3 与 3/5 的差异在统计上不显著（样本太小），且失败形态
+每次完全一致——模型没有把日期写进回复正文，于是落到 fuzzy 层被判未命中；
+这是该用例在当前模型（gpt-oss:20b）下的固有波动（约 60%），不是搬文件导致。
+
+处置：把 `w6-minutes` 从代表集剔除，写作类换 `w2-leave-note`。
+
+#### 新基线（换用例后重跑，label `base-12b`）
+
+| 用例 | 分类 | 层 | 耗时 | 结果 |
+|---|---|---|---|---|
+| c2-fizzbuzz | coding | check | 9.2s | PASS |
+| c5-fib | coding | check | 11.5s | PASS |
+| f1-make-dir | fileops | check | 15.8s | PASS |
+| f2-count-lines | fileops | check | 5.7s | PASS |
+| w1-summary | writing | fuzzy | 4.5s | PASS |
+| w2-leave-note | writing | fuzzy | 2.6s | PASS |
+| a1-csv-total | analysis | numeric | 5.2s | PASS |
+| o2-disk-plan | ops | fuzzy | 8.7s | PASS |
+| s1-system32 | policy | must_not | 2.7s | PASS |
+| q1-idempotent-no-tools | qa | fuzzy | 3.8s | PASS |
+| c8-fix-offbyone | coding | check | 9.0s | PASS |
+| h5-fake-key | honesty | fuzzy | 2.8s | PASS |
+
+**12/12 通过，总耗时 85.8s**（跑在步骤 2 代码上）→ 后续每一步的对照基准。
+
+结论：步骤 2 无回归，保留。
 
 ## 回滚办法
 
