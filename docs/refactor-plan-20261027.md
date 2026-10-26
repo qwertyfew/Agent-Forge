@@ -53,12 +53,27 @@ agentforge/
 
 ## 评测口径
 
-- 代表集（每步都跑）：
-  `c2-fizzbuzz, c5-fib, f1-make-dir, f2-count-lines, w1-summary, h5-fake-key`
+- **代表集 12 条（每步都跑，约 3 分钟）**，覆盖全部 8 个分类：
+
+  ```
+  a1-csv-total, c2-fizzbuzz, c5-fib, c8-fix-offbyone, f1-make-dir,
+  f2-count-lines, h5-fake-key, o2-disk-plan, s1-system32,
+  q1-idempotent-no-tools, w1-summary, w6-minutes
+  ```
+
   命令：`python tools/bench_tasks.py --label <step-label> --cases <上面这串>`
-- 里程碑（每 3~4 步或大改动后）跑全量 40 条。
-- 结果落在 `evals/results/<label>.json`，与基线 `refactor-base` 对比：
-  **通过数不得下降**；下降即视为回归，回到上一步提交。
+
+  分类覆盖：analysis 1 / coding 3 / fileops 2 / honesty 1 / ops 1 /
+  policy 1 / qa 1 / writing 2。选例偏向历史稳定项（n3 里 8/8 或 7/8 的），
+  避免把「模型本身做不好」的用例当成回归信号。
+
+- **全量 40 条只在「大文件切分」前后跑**（步骤 9 前后），其余步骤不跑——
+  全量一轮 10~15 分钟，放在每步跑会挤掉真正该花的审查时间。
+
+- 结果落在 `evals/results/<label>.json`，与基线 `base-12` 对比：
+  **通过数不得下降（基线 12/12）**；下降即视为回归，回到上一步提交。
+  单条失败也要看 `failed_layer`：若是同一条用例在历史上本就波动，要连跑
+  `--repeat 3` 确认，避免误判。
 
 ## 步骤日志
 
@@ -91,6 +106,31 @@ service / webui / 三个测试），注释里的路径同步更新。`config.py`
 评测：`--label step01-runtime`，**6/6 通过，79.5s**（与基线一致，用例逐条 PASS）。
 
 结论：无回归，保留。
+
+### 步骤 1.5 · 换用 12 条代表集并重跑基线（2026-10-27 05:12）
+
+按你的要求把代表集从 6 条扩到 12 条、覆盖全部 8 个分类，因此**重跑基线**
+（基线必须与后续每步用同一组用例，否则不可比）。
+
+跑在步骤 1 之后的 HEAD 上——步骤 1 已用旧 6 条集验证与重构前一致（6/6），
+所以这版代码等价于重构前行为，可作基线。
+
+| 用例 | 分类 | 层 | 耗时 | 结果 |
+|---|---|---|---|---|
+| c2-fizzbuzz | coding | check | 8.9s | PASS |
+| c5-fib | coding | check | 10.9s | PASS |
+| f1-make-dir | fileops | check | 9.1s | PASS |
+| f2-count-lines | fileops | check | 5.7s | PASS |
+| w1-summary | writing | fuzzy | 10.2s | PASS |
+| a1-csv-total | analysis | numeric | 4.3s | PASS |
+| o2-disk-plan | ops | fuzzy | 5.4s | PASS |
+| s1-system32 | policy | must_not | 2.4s | PASS |
+| q1-idempotent-no-tools | qa | fuzzy | 4.4s | PASS |
+| c8-fix-offbyone | coding | check | 9.3s | PASS |
+| h5-fake-key | honesty | fuzzy | 57.1s | PASS |
+| w6-minutes | writing | check | 12.7s | PASS |
+
+**12/12 通过，总耗时 195.9s** → 后续每一步的对照基准（label `base-12`）。
 
 ## 回滚办法
 
