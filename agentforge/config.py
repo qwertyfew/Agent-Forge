@@ -120,6 +120,9 @@ class Config:
     # 而不是硬冲进主流程被连环 500 拖垮（复测里 86 分钟里有大段是 Ollama 开局不稳
     # 时 Leader 双环空转）。给 0 关闭门禁。
     ollama_warmup_timeout: int = 90
+    # 服务启动时后台预热默认本地模型：把「加载 12~14GB 权重」的一次性开销
+    # 从「用户发第一条消息之后」挪到「服务刚起来时」。关掉则仍是首次任务现加载。
+    ollama_prewarm: bool = True
 
     models: dict[str, ModelSpec] = field(default_factory=dict)
     routing_default: str = "general"
@@ -276,6 +279,7 @@ class Config:
         cfg.ollama_auto_start = bool(o.get("auto_start", cfg.ollama_auto_start))
         cfg.ollama_wait = int(o.get("auto_start_wait", cfg.ollama_wait))
         cfg.ollama_warmup_timeout = int(o.get("warmup_timeout", cfg.ollama_warmup_timeout))
+        cfg.ollama_prewarm = bool(o.get("prewarm", cfg.ollama_prewarm))
         # 容器/云端部署：环境变量优先于配置文件——镜像里的 config.yaml 不用改，
         # 换个上游（云服务器上的 Ollama 容器 / 局域网机器）只动 compose 的 env。
         # auto_start 置假时 ollamaguard.ensure 只探测不拉起，容器里没有

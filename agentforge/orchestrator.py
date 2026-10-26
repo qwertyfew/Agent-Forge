@@ -205,14 +205,24 @@ def _norm_goal(goal: str) -> str:
     return re.sub(r"\s+", "", str(goal or "")).casefold()[:200]
 
 
-def _local_model_keys(entries: list[dict], agent) -> list[str]:
-    """从模型池里挑出本地（kind=local）模型的 key——健康门禁只对本地 Ollama 模型做
-    最小生成探活；在线/付费模型由各自的 provider 负责存活，不在此探。"""
+def _plan_local_keys(plan, agent) -> list[str]:
+    """本次任务**真正会用到的**本地模型 key——健康门禁只该探这些。
+
+    为什么不能拿整个模型池去探：探活一个本地大模型 = 一次真实生成 = 一次权重
+    加载。20B 权重十几秒，而且一装就把刚驻留的别的模型挤出显存——门禁把池子
+    挨个探一遍的结果是：用户白等 30 秒，最后任务要用的那个模型还得再加载一次。
+    门禁的本意是「我要用的模型能不能生成」，所以探的集合就该是计划里的模型。
+    """
     out: list[str] = []
-    for e in entries or []:
+    seen: set[str] = set()
+    for st in plan or []:
+        key = getattr(st, "model_key", "") or ""
+        if not key or key in seen:
+            continue
+        seen.add(key)
         try:
-            if getattr(agent.cfg.model(e["key"]), "kind", "local") == "local":
-                out.append(e["key"])
+            if getattr(agent.cfg.model(key), "kind", "local") == "local":
+                out.append(key)
         except Exception:  # noqa: BLE001  模型配置查不到就跳过，宁可少探不炸
             continue
     return out
@@ -234,16 +244,26 @@ def ollama_health_gate(agent, model_keys: list[str], stop_check=None):
     deadline = time.time() + budget
     for key in sorted(set(model_keys)):
         try:
-            model_name = agent.cfg.model(key).name
+            spec = agent.cfg.model(key)
+            model_name = spec.name
         except Exception:  # noqa: BLE001
             continue
         yield {"type": "health", "phase": "warmup", "model": model_name}
+        # 探活必须带**与真实调用完全相同的加载参数**（num_ctx 等）。
+        # Ollama 按「模型 + 影响加载的参数」缓存 runner：探活用默认 4K 窗口、
+        # 真实调用用 32K，就是两个 runner——探活刚把模型读进显存，真实调用又
+        # 得整个重读一遍。用户看到的「我已经打开了，怎么还在加载」就是这一下。
+        opts = {}
+        try:
+            opts = spec.options()
+        except Exception:  # noqa: BLE001
+            pass
         ok = False
         last_err = ""
         while time.time() < deadline:
             if stop_check and stop_check():
                 return "用户停止"
-            ok, last_err = client.warmup(model_name)
+            ok, last_err = client.warmup(model_name, opts)
             if ok:
                 break
             remaining = deadline - time.time()
@@ -944,13 +964,6 @@ def run_task(
     if warm_block and not warm_reused:
         yield {"type": "warmup", **warm_stats}
 
-    # 单模型 / 计划接力路径过开局健康门禁：Ollama 开局不稳时在这里就被拦下，
-    # 避免后续 Agent.run 直接连环 500。
-    gate_err = yield from ollama_health_gate(agent, _local_model_keys(entries, agent), stopped)
-    if gate_err:
-        yield {"type": "error", "message": gate_err}
-        return
-
     plan: list[Subtask] = []
     # T2：接力拆步（单模型顺序多步）同样只在明确并行诉求时启用——默认一个
     # agent 从头做到尾，配合 T3 的工具结果老化与 ops_batch（PTC）控住 token。
@@ -986,6 +999,15 @@ def run_task(
             "subtasks": [s.as_dict() for s in plan],
             "summary": plan_summary(plan),
         }
+
+    # 单模型 / 计划接力路径过开局健康门禁。放在「选完模型之后」是刻意的：
+    # 门禁要回答的是「本次要用的模型能不能生成」，不是「整张模型清单体检」。
+    # 池子里多模型挨个探活，每个都要加载十几 GB 权重，还会把将要使用的模型
+    # 挤出显存——那是纯等待（实测三个本地模型串着探 = 33 秒，比一次生成还贵）。
+    gate_err = yield from ollama_health_gate(agent, _plan_local_keys(plan, agent), stopped)
+    if gate_err:
+        yield {"type": "error", "message": gate_err}
+        return
 
     # 展示/回看用的全量历史（一路接力，内容完整）
     hist = list(history)

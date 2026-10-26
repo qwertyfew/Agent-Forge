@@ -286,10 +286,21 @@ class ModelStore:
         for item in self.paid:
             entries.append(self._paid_entry(item))
 
-        # 启用状态：首次运行默认全选；之后以保存的列表为准
+        # 启用状态：首次运行默认全选；之后以保存的列表为准。
+        # 匹配同时认 id 与模型名：历史版本（以及部分前端路径）把「模型名」写进
+        # 了 enabled（如 local:gpt-oss:20b），而配置声明的 key 是 local:gpt-oss。
+        # 只比 id 会让勾选整个失效——任务池退化成「所有能跑的模型」，一句
+        # 「你好」就可能被派给线上旗舰模型（实测如此），既慢又可能要钱。
         enabled = self.enabled_ids
+        wanted = set(enabled) if enabled is not None else None
         for e in entries:
-            e.enabled = True if enabled is None else (e.id in enabled)
+            if wanted is None:
+                e.enabled = True
+                continue
+            aliases = {e.id}
+            if getattr(e, "kind", "") == "local":
+                aliases |= {f"local:{e.name}", e.name}
+            e.enabled = bool(aliases & wanted)
         if enabled is None:
             self.enabled_ids = [e.id for e in entries]
 

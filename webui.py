@@ -345,6 +345,9 @@ class _Handler(BaseHTTPRequestHandler):
                 "ollama_host": self.cfg.ollama_host,
                 "ollama_launcher": ollamaguard.launcher_label(),
                 "ollama_last": ollamaguard.last_result(),
+                # 后台预热进度：{ok, model, seconds, detail}；界面可据此提示
+                # 「默认模型正在加载」而不是让用户以为卡住了。
+                "ollama_warm": ollamaguard.warm_state(),
                 # 本地部署才有重启一说：云端一律绿 + 不可点（见侧栏服务按钮）
                 "local": _is_local_deployment(),
             })
@@ -2450,5 +2453,22 @@ def serve(cfg: Config, auto_approve: bool, port: int, host: str = "127.0.0.1"):
         print(f"工作区记忆: {mem.path}（{mem.count()} 条，新任务会自动读取）")
     if orphans:
         print(f"已把 {orphans} 条上次未收尾的任务标记为「已中断」")
+    # 后台预热：把默认本地模型提前加载进显存。模型加载是 5~15 秒的一次性重活，
+    # 放在这里等于把它从「用户按下回车之后」挪到「服务启动时」——用户第一条
+    # 消息就只剩生成时间。放在线程里做，服务本身不等它，界面照常可用。
+    if getattr(cfg, "ollama_prewarm", True):
+        def _prewarm_job():
+            entry = ollamaguard.pick_prewarm_entry(cfg, cli.store)
+            if entry is None:
+                return
+            print(f"后台预热: 正在加载 {entry.name} …（不阻塞界面）")
+            info = ollamaguard.prewarm(cfg, cli.store, cli.agent.client)
+            if info.get("ok"):
+                print(f"后台预热: {info['model']} 就绪（{info['seconds']}s）")
+            else:
+                print(f"后台预热: {info.get('model') or '-'} 未就绪"
+                      f"（{info.get('detail')}）；首个任务会再试一次")
+
+        threading.Thread(target=_prewarm_job, daemon=True, name="model-prewarm").start()
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd, url

@@ -333,36 +333,74 @@ class OllamaClient:
         except requests.RequestException:
             return []
 
-    def warmup(self, model: str, timeout: int = 60) -> tuple[bool, str]:
+    def warmup(self, model: str, options: dict | None = None) -> tuple[bool, str]:
         """最小生成探活（开局健康门禁用）：对 /api/chat 发一个极简请求，验证模型
         能正常生成、不是只活着却持续 5xx。
 
         ping() 只打 /api/tags，Ollama 进程在就返回 200，探不出「生成链路挂了」这类
         复测里真实出现的 500；warmup 直接走真实 /api/chat，并把 5xx 交给 _post_chat
         的指数退避重试。返回值：(是否可用, 失败原因非空时才有)。
+
+        只要求「出一个 token」（num_predict=1 + think=false）：不等它把「hi」
+        答完，也不让思考型模型先烧几百个思考 token——这是探活能便宜的全部来源。
+        不缓存结果：探活本就是对「此刻」的判定，模型是否还驻留是 Ollama 按
+        keep_alive 管的，缓存判断会把「已经被卸载」误判成「还活着」，省下的是
+        一次几十毫秒，赔上的是开局门禁本身的意义。
         """
         payload: dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": "hi"}],
             "stream": False,
             "keep_alive": self.keep_alive,
+            "think": False,
+            # 加载参数必须与真实调用一致（num_ctx 决定 KV 缓冲分配，Ollama 按它
+            # 区分 runner）：带上来才能让这次探活**就是**那次加载，而不是让真实
+            # 调用再加载一遍。num_predict 压到 1：只验证「能吐 token」。
+            "options": {**(options or {}), "num_predict": 1},
         }
+        data: dict[str, Any] = {}
         try:
             resp = self._post_chat(payload, stream=False)
-            data = resp.json()
-            msg = ((data.get("message") or {}).get("content") or "").strip()
-            if msg:
-                return True, ""
-            return False, "模型返回了空响应（可能正处于加载/异常态）"
+            data = resp.json() or {}
         except requests.HTTPError as e:
             code = e.response.status_code if e.response is not None else None
-            if code == 404:
+            # 4xx 里 404 是模型没装，其余多半是参数不被这版 Ollama 认（比如旧版本
+            # 不认 think）——退回最保守的 payload 再问一次，别把参数问题误报成
+            # 「模型不可用」。
+            if code is not None and code >= 400 and code < 500 and code != 404:
+                try:
+                    resp = self._post_chat(
+                        {"model": model,
+                         "messages": [{"role": "user", "content": "hi"}],
+                         "stream": False, "keep_alive": self.keep_alive,
+                         "options": {**(options or {}), "num_predict": 1}},
+                        stream=False)
+                    data = resp.json() or {}
+                except requests.HTTPError as e2:
+                    code2 = e2.response.status_code if e2.response is not None else None
+                    if code2 == 404:
+                        return False, f"Ollama 中找不到模型 {model}（请先 ollama pull）"
+                    return False, f"Ollama 返回 {code2}（请求参数或模型配置问题）"
+                except requests.RequestException as e2:  # noqa: BLE001
+                    return False, f"无法连接 Ollama（{type(e2).__name__}: {e2}）"
+            elif code == 404:
                 return False, f"Ollama 中找不到模型 {model}（请先 ollama pull）"
-            if code is not None and code < 500:
+            elif code is not None and code < 500:
                 return False, f"Ollama 返回 {code}（请求参数或模型配置问题）"
-            return False, f"Ollama 持续返回 5xx（{code}）"
+            else:
+                return False, f"Ollama 持续返回 5xx（{code}）"
         except requests.RequestException as e:
             return False, f"无法连接 Ollama（{type(e).__name__}: {e}）"
+
+        msg = data.get("message") or {}
+        # 一个 token 的探活，正文/思考/计数任一见即有就说明生成链路是活的：
+        # 单 token 预算下，思考型模型这一 token 可能落在 thinking 里、正文为空。
+        alive = bool((msg.get("content") or "").strip()
+                     or (msg.get("thinking") or "").strip()
+                     or int(data.get("eval_count") or 0) > 0)
+        if alive:
+            return True, ""
+        return False, "模型返回了空响应（可能正处于加载/异常态）"
 
     def model_info(self, name: str) -> dict:
         """向 Ollama 询问模型元信息（原生上下文长度、参数量、架构等）。

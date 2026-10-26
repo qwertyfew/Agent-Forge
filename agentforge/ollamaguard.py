@@ -246,4 +246,85 @@ def snapshot(cfg) -> dict:
         "exe": exe,
         "launcher": label,
         "last": dict(_last_result) if _last_result else {},
+        # 后台预热的状态：界面可以据此显示「模型正在加载 / 已就绪」。
+        "warm": warm_state(),
     }
+
+
+# ---------------------------------------------------------------- 开机预热
+#
+# 模型加载是 Ollama 的一次性重活（20B 权重 5~15 秒，取决于磁盘与显存），
+# 而它跟「用户打开界面」在时间上是分开的两件事。不预热的时候，这份等待
+# 全压在用户按下回车之后；预热把它挪到服务启动的后台线程里，第一条消息
+# 的等待就只剩生成本身。
+#
+# 只预热**一个**模型：显存只够常驻一个大模型，同时预热多个等于让它们互相
+# 挤出去（这正是旧版每次任务前对整池探活造成的浪费）。冷却是 Ollama 的
+# keep_alive 负责的事，这里只负责提前加载一次。
+
+_warm_state: dict = {}
+
+
+def pick_prewarm_entry(cfg, store):
+    """挑出「第一条任务最可能用到」的本地模型。纯选择，不加载。
+
+    顺序：路由默认模型（在池子里就用它）→ 池子里能力分最高的本地模型。
+    在线/付费模型不预热：它们没有加载成本，预热反而多花一次请求。
+    """
+    try:
+        pool = list(store.usable() or store.fallback_pool())
+    except Exception:  # noqa: BLE001  目录没建好就别预热，别把启动搞挂
+        return None
+    local = [e for e in pool if getattr(e, "kind", "") == "local"]
+    if not local:
+        return None
+    default_key = getattr(cfg, "routing_default", "") or ""
+    for e in local:
+        if getattr(e, "key", "") == default_key:
+            return e
+    return max(local, key=lambda e: getattr(e, "total", 0))
+
+
+def prewarm(cfg, store, client, *, model: str | None = None) -> dict:
+    """把默认模型提前加载进显存（应在启动时的后台线程里调用）。
+
+    返回 {"ok", "model", "seconds", "detail"}，并记进 _warm_state 供界面/日志读。
+    用的是与真实调用完全相同的 options（含 num_ctx）——Ollama 按「模型+加载参数」
+    缓存 runner，参数不一致就等于没预热，真实调用还得再加载一遍。
+    """
+    global _warm_state
+    started = time.time()
+    if model:
+        name = model
+        opts: dict = {}
+    else:
+        entry = pick_prewarm_entry(cfg, store)
+        if entry is None:
+            info = {"ok": False, "model": "", "seconds": 0.0,
+                    "detail": "没有需要预热的本地模型（任务池里没有可用本地模型）"}
+            _warm_state = info
+            return info
+        try:
+            spec = cfg.model(getattr(entry, "key", ""))
+            name = spec.name
+            opts = spec.options()
+        except Exception as e:  # noqa: BLE001
+            info = {"ok": False, "model": getattr(entry, "name", ""), "seconds": 0.0,
+                    "detail": f"读取模型配置失败：{type(e).__name__}: {e}"}
+            _warm_state = info
+            return info
+    _warm_state = {"ok": False, "model": name, "seconds": 0.0, "detail": "预热中…"}
+    try:
+        ok, err = client.warmup(name, opts)
+    except Exception as e:  # noqa: BLE001  预热失败不该影响服务可用
+        ok, err = False, f"{type(e).__name__}: {e}"
+    info = {"ok": bool(ok), "model": name,
+            "seconds": round(time.time() - started, 2),
+            "detail": "" if ok else (err or "未知原因")}
+    _warm_state = info
+    return info
+
+
+def warm_state() -> dict:
+    """上一次预热的结果（不触发任何动作）。"""
+    return dict(_warm_state) if _warm_state else {}

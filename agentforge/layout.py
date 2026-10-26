@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import os
 import re
 from pathlib import Path
 
@@ -128,6 +129,7 @@ _SEED_COPY_EXCLUDE_DIRS = {
 }
 _SEED_COPY_MAX_FILE = 5 * 1024 * 1024      # 单文件 >5MB 不拷（大文件工具读不“顺”）
 _SEED_COPY_MAX_FILES = 500                 # 总数上限：真实仓库任务也不至于失控
+_SEED_COPY_MAX_BYTES = 64 * 1024 * 1024    # 总量上限：500 个文件也不该吃掉几百 MB
 
 
 def seed_output(root: str | Path, outdir: str) -> Path:
@@ -138,9 +140,15 @@ def seed_output(root: str | Path, outdir: str) -> Path:
     output/ 上——「写完就运行」「改种子文件」与「新写交付物」三种工作流在
     同一个目录里自洽。返回 output 目录的绝对路径。
 
-    有界：跳过排除目录（.git/.venv/history…）、>5MB 的单文件、总量 500 文件——
-    评测沙盒只有几颗种子必然全量拷入；真实仓库任务也不会失控。拷不全的部分
-    由读侧镜像的「根回退」兜底（工具读仍可达），只是脚本内裸 IO 看不见。
+    有界：跳过排除目录（.git/.venv/history…）、>5MB 的单文件、总量 500 文件 +
+    64MB 字节——评测沙盒只有几颗种子必然全量拷入；真实仓库任务也不会失控。
+    拷不全的部分由读侧镜像的「根回退」兜底（工具读仍可达），只是脚本内裸 IO
+    看不见。
+
+    为什么用 os.walk 剪枝而不是 rglob：rglob 会把排除目录**整棵走一遍**再判断
+    要不要拷——.venv / node_modules / history 动辄几万个文件，走目录本身就要
+    1~4 秒（实测），而真正拷进去的不过几百个。剪枝后同一仓库降到 0.1 秒级，
+    等于把开局白等的时间直接还给了用户。
     """
     import shutil
 
@@ -150,24 +158,31 @@ def seed_output(root: str | Path, outdir: str) -> Path:
     if outdir.rstrip("/").split("/")[-1] in _SEED_COPY_EXCLUDE_DIRS:
         return dst_root
     n = 0
-    for src in base.rglob("*"):
-        if n >= _SEED_COPY_MAX_FILES:
-            break
-        rel = src.relative_to(base)
-        first = rel.parts[0] if rel.parts else ""
-        if first in _SEED_COPY_EXCLUDE_DIRS:
-            continue
-        if src.is_dir():
-            continue
-        try:
-            if src.stat().st_size > _SEED_COPY_MAX_FILE:
+    copied = 0
+    for cur, dirs, files in os.walk(base):
+        # 原地剪枝：排除目录既不进、也不出现在后续遍历里
+        dirs[:] = sorted(d for d in dirs if d not in _SEED_COPY_EXCLUDE_DIRS)
+        rel_dir = Path(cur).relative_to(base)
+        for name in sorted(files):
+            if n >= _SEED_COPY_MAX_FILES or copied >= _SEED_COPY_MAX_BYTES:
+                return dst_root
+            src = Path(cur) / name
+            try:
+                size = src.stat().st_size
+            except OSError:
                 continue
-            dst = dst_root / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+            if size > _SEED_COPY_MAX_FILE:
+                continue
+            if copied + size > _SEED_COPY_MAX_BYTES:
+                return dst_root
+            dst = dst_root / rel_dir / name
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            except OSError:
+                continue
             n += 1
-        except OSError:
-            continue
+            copied += size
     return dst_root
 
 
