@@ -23,13 +23,13 @@ from agentforge import (layout, autonote, autoskill, gaps, interact, reveal,
 from agentforge.runtime import ollamaguard, runcontrol, runstate
 from agentforge.cli import CLI
 from agentforge.loop import display_history
-from agentforge.config import Config
+from agentforge.core.config import Config
 from agentforge.evalsdesk import EvalsDesk
 from agentforge.memory import MemoryStore
 from agentforge.llm.ollama import ollama_probe, set_local_serial
-from agentforge.modelstore import ModelStore
+from agentforge.core.modelstore import ModelStore
 from agentforge.orchestrator import run_task
-from agentforge.planner import short_title
+from agentforge.core.planner import short_title
 from agentforge.prefs import PERMISSION_LABEL, PrefsStore
 from agentforge.resume import repair_history, resume_brief
 from agentforge.skills import write_meta

@@ -9,13 +9,13 @@ from rich.prompt import Prompt
 from rich.table import Table
 from rich.text import Text
 
-from .config import Config
+from .core.config import Config
 from .llm.ollama import OllamaClient, ollama_probe, set_local_serial
 from .loop import Agent
-from .modelstore import ModelStore
+from .core.modelstore import ModelStore
 from .permissions import Guard
 from .llm.providers import ClientHub
-from .router import Router
+from .core.router import Router
 from .session import Session
 from .skills import SkillRegistry, default_dirs
 from .tools import build_registry

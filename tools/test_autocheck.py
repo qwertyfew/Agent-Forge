@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from agentforge import autocheck as A                       # noqa: E402
 from agentforge import grounding as G                       # noqa: E402
-from agentforge.config import Config                        # noqa: E402
+from agentforge.core.config import Config                        # noqa: E402
 from agentforge.loop import Agent                           # noqa: E402
 from agentforge.permissions import Guard                    # noqa: E402
 from agentforge.tools import build_registry                 # noqa: E402

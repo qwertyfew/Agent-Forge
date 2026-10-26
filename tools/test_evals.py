@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 import yaml                                        # noqa: E402
 
 from agentforge.evals import _norm, judge, load_cases   # noqa: E402
-from agentforge.planner import stakes_of                # noqa: E402
+from agentforge.core.planner import stakes_of                # noqa: E402
 
 _n = [0]
 

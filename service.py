@@ -36,7 +36,7 @@ RUN = ROOT / ".run"
 sys.path.insert(0, str(ROOT))
 
 from agentforge.runtime import ollamaguard  # noqa: E402
-from agentforge.config import Config  # noqa: E402
+from agentforge.core.config import Config  # noqa: E402
 
 CHECK_INTERVAL = 10      # 每多少秒体检一次
 OLLAMA_EVERY = 6         # 每几次体检复查一次 Ollama（≈1 分钟）

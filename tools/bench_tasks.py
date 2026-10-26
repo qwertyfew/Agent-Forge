@@ -38,7 +38,7 @@ sys.path.insert(0, str(ROOT))
 from agentforge import gaps                       # noqa: E402
 from agentforge import grounding                   # noqa: E402
 from agentforge.cli import CLI                     # noqa: E402
-from agentforge.config import Config               # noqa: E402
+from agentforge.core.config import Config               # noqa: E402
 from agentforge.evals import judge, load_cases     # noqa: E402
 from agentforge.orchestrator import run_task       # noqa: E402
 

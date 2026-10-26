@@ -39,10 +39,10 @@ agentforge/
 
 | # | 内容 | 风险 | 状态 |
 |---|---|---|---|
-| 0 | 建立评测基线（代表集 6 条） | — | 进行中 |
-| 1 | `runtime/`（runstate + runcontrol + ollamaguard） | 低 | 待做 |
-| 2 | `llm/`（llm + providers + streamprobe） | 中（导入面广） | 待做 |
-| 3 | `core/`（config + modelstore + scores + router + pricing） | 中 | 待做 |
+| 0 | 建立评测基线（代表集 12 条） | — | ✅ 490a109 |
+| 1 | `runtime/`（runstate + runcontrol + ollamaguard） | 低 | ✅ 0d632aa |
+| 2 | `llm/`（llm + providers + streamprobe） | 中（导入面广） | ✅ 8595f40 |
+| 3 | `core/`（config + modelstore + scores + router + pricing + planner） | 中 | ✅ 本提交 |
 | 4 | `ledger/`（taskstore/journal/record/artifact/layout/tasksession/session/prefs/writepolicy） | 中 | 待做 |
 | 5 | `gates/`（verify/grounding/sources/skeleton/evidence/honesty_guard/autocheck） | 高（loop 与 webui 大量引用） | 待做 |
 | 6 | `memory/`（memory/autonote/autoskill/skills/gaps） | 中 | 待做 |
@@ -74,6 +74,9 @@ agentforge/
 - **全量 40 条只在「大文件切分」前后跑**（步骤 9 前后），其余步骤不跑——
   全量一轮 10~15 分钟，放在每步跑会挤掉真正该花的审查时间。
 
+- **节奏（用户 2026-10-27 明确）**：每步只做「记录 + 一次快速校验」；
+  「每小时结束当前轮、歇半小时」是针对**全部迭代完成后的最终评测**的节奏，
+  不是每步都套。最终评测（全量 40 条、必要时 `--repeat`）才按轮推进。
 - 结果落在 `evals/results/<label>.json`，与基线 `base-12` 对比：
   **通过数不得下降（基线 12/12）**；下降即视为回归，回到上一步提交。
   单条失败也要看 `failed_layer`：若是同一条用例在历史上本就波动，要连跑
@@ -185,6 +188,54 @@ test_model_timeout / test_streamprobe / test_autocheck / debug.test_think_levels
 **12/12 通过，总耗时 85.8s**（跑在步骤 2 代码上）→ 后续每一步的对照基准。
 
 结论：步骤 2 无回归，保留。
+
+### 步骤 3 · 抽 `core/`（2026-10-27 06:12）
+
+搬动：`config.py`、`modelstore.py`、`scores.py`、`router.py`、`pricing.py`
+→ `agentforge/core/`，并按依赖关系追加 `planner.py`。
+
+为什么追加 planner：`router.py`（核心层）依赖 `planner.py` 的
+`kind_of / stakes_of / KIND_DIM`；而 planner 只 import 标准库，是纯叶子模块，
+本质就是「任务性质怎么判」的核心知识。放在 core/ 才能让 router 保持同层依赖，
+不出现「核心层反向依赖 agent 层」。
+
+踩到的坑（记下来避免重犯）：批量替换脚本用 `str(Path(...))` 跟 `rel.as_posix()`
+比较，在 Windows 上一个是反斜杠一个是正斜杠，**跳过规则没生效**，于是 core/
+内部本应保持的兄弟导入被多加了一层，变成 `from .core.config import` →
+报 `No module named 'agentforge.core.core'`。修正方式是：只对 `agentforge/core/`
+之外的文件做改写；包内兄弟一律 `from .xxx import`。
+
+改写规模：**53 个文件、61 处导入**（含 debug/、tools/ 下的测试与脚本）。
+
+评测：`--label step03-core`，**12/12 通过**，总耗时 240.8s（比基线 85.8s 慢，
+是用例逐条耗时波动，通过数一致）。
+
+结论：无回归，保留。
+
+## 迭代暂停（2026-10-27 06:14，用户决定）
+
+用户改变主意：**步骤 3 之后停止迭代**，不再继续拆其余层。已完成的：
+
+| 步骤 | 内容 | 提交 |
+|---|---|---|
+| 0 | 建立 12 条代表集基线（base-12 → base-12b） | 490a109 |
+| 1 | `runtime/`（runstate / runcontrol / ollamaguard） | 0d632aa |
+| 2 | `llm/`（ollama / providers / streamprobe） | 8595f40 |
+| 3 | `core/`（config / modelstore / scores / router / pricing / planner） | 本提交 |
+
+当前 `agentforge/` 的分层：
+
+```
+agentforge/
+  core/     config modelstore scores router pricing planner   ← 底座，被依赖但不依赖别人
+  llm/      ollama providers streamprobe                      ← 只跟「某家 HTTP 协议」打交道
+  runtime/  runstate runcontrol ollamaguard                   ← 随任务结束而消失的运行期状态
+  tools/    工具注册表与具体工具（未动）
+  其余       loop / orchestrator / verify / grounding / ... 仍在顶层（未拆）
+```
+
+未做的步骤（4~10）原样保留在计划里，将来要续做时按同一套「一步一提交 +
+一步一校验」继续即可，步骤 4 起是 `ledger/`。
 
 ## 回滚办法
 

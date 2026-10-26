@@ -16,11 +16,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agentforge.planner import (                        # noqa: E402
+from agentforge.core.planner import (                        # noqa: E402
     KIND_DIM, KIND_LABEL, KIND_SIGNALS, kind_of, looks_like_change,
     resolve_kind, short_title,
 )
-from agentforge.router import _CAP_DIMS                 # noqa: E402
+from agentforge.core.router import _CAP_DIMS                 # noqa: E402
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:

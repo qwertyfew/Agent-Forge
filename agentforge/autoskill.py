@@ -27,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import Config
+from .core.config import Config
 
 # 用户明确表达「这条要做成 skill」的信号词
 SIGNALS = (

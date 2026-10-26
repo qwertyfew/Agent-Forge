@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agentforge.config import Config                        # noqa: E402
+from agentforge.core.config import Config                        # noqa: E402
 from agentforge.gaps import snapshot as gaps_snapshot        # noqa: E402
 from agentforge.loop import Agent, _is_malformed_tool_name  # noqa: E402
 from agentforge.permissions import Guard                    # noqa: E402

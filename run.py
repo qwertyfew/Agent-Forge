@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agentforge.cli import CLI  # noqa: E402
-from agentforge.config import Config  # noqa: E402
+from agentforge.core.config import Config  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:

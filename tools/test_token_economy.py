@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agentforge.config import Config                          # noqa: E402
+from agentforge.core.config import Config                          # noqa: E402
 from agentforge.context import (Compressor, measure,           # noqa: E402
                                 truncate_tool_results)
 from agentforge.loop import tidy_tool_args                     # noqa: E402

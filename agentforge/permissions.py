@@ -6,7 +6,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-from .config import Config
+from .core.config import Config
 from .layout import output_dir, record_dir
 
 # 「当前这次工具调用是否放行工作区之外的路径」。完全访问权限的任务里为 True。

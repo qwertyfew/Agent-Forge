@@ -11,9 +11,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agentforge.config import Config                # noqa: E402
-from agentforge.planner import stakes_of            # noqa: E402
-from agentforge.router import Router                # noqa: E402
+from agentforge.core.config import Config                # noqa: E402
+from agentforge.core.planner import stakes_of            # noqa: E402
+from agentforge.core.router import Router                # noqa: E402
 
 _n = [0]
 

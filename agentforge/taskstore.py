@@ -22,7 +22,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .planner import short_title
+from .core.planner import short_title
 
 MAX_TASKS = 120                # 台账最多保留多少条任务（含正在跑的）
 MAX_HISTORY_CHARS = 150_000    # 单条任务保存的对话历史总体积上限

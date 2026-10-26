@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agentforge.config import Config
+from agentforge.core.config import Config
 
 
 def check(name, cond, detail=""):

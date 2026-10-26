@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agentforge.config import Config                    # noqa: E402
+from agentforge.core.config import Config                    # noqa: E402
 from agentforge.context import measure                  # noqa: E402
 from agentforge.journal import Journal, replay          # noqa: E402
 from agentforge.loop import Agent, _msg_source          # noqa: E402

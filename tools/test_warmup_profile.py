@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from agentforge import warmup                      # noqa: E402
-from agentforge.config import Config               # noqa: E402
+from agentforge.core.config import Config               # noqa: E402
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:

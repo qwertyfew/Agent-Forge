@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from agentforge import layout                                # noqa: E402
-from agentforge.config import Config                         # noqa: E402
+from agentforge.core.config import Config                         # noqa: E402
 from agentforge.permissions import (                         # noqa: E402
     Guard, OUTDIR_CTX, WRITE_ALLOW)
 from agentforge.record import Recorder                        # noqa: E402

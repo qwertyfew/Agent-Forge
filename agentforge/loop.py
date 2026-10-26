@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-from .config import Config
+from .core.config import Config
 from . import gaps
 from . import skeleton
 from . import verify as verify_gate
@@ -35,9 +35,9 @@ from .permissions import (
     PermissionDenied,
     claim_write,
 )
-from .pricing import cost_of, is_free
+from .core.pricing import cost_of, is_free
 from .llm.providers import ClientHub
-from .router import Router
+from .core.router import Router
 from .runtime.runcontrol import current_task
 from .skills import SkillRegistry
 from .tools import ToolRegistry

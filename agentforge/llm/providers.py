@@ -24,7 +24,7 @@ from typing import Any, Iterator
 import requests
 
 # 本模块已随 llm 包下沉一层：原来在 agentforge/ 下，config 是同级，现在是上级
-from ..config import ModelSpec
+from ..core.config import ModelSpec
 from .ollama import (LLMResult, ThinkFilter, GenerationStopped, clean_messages,
                      _finalize_tool_calls, _merge_tool_calls)
 from . import streamprobe

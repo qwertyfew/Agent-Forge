@@ -91,7 +91,7 @@ def ctx_of_models() -> dict[str, int]:
             pass
     try:
         sys.path.insert(0, str(ROOT))
-        from agentforge.config import Config  # noqa: E402
+        from agentforge.core.config import Config  # noqa: E402
         for spec in Config.load().models.values():
             if getattr(spec, "kind", "") != "paid" and getattr(spec, "num_ctx", 0):
                 out[spec.name] = int(spec.num_ctx)

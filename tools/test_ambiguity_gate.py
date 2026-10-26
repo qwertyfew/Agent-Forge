@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from agentforge import interact as amb_interact            # noqa: E402
-from agentforge.config import Config                       # noqa: E402
+from agentforge.core.config import Config                       # noqa: E402
 from agentforge.loop import (Agent, _has_clarify_intent,   # noqa: E402
                              _lookup_signal)
 from agentforge.permissions import Guard                   # noqa: E402

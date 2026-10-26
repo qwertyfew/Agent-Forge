@@ -106,7 +106,7 @@ def _system_sections(text: str) -> list[tuple[str, int]]:
 def _tool_budget() -> dict:
     """工具 schema 的体积：PTC 常驻下只下发 core 那几个，量出来才知道省了多少。"""
     try:
-        from agentforge.config import Config
+        from agentforge.core.config import Config
         from agentforge.tools import build_registry
         cfg = Config.load(str(ROOT / "config.yaml"))
         reg = build_registry(None, cfg)

@@ -25,7 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agentforge.config import Config                        # noqa: E402
+from agentforge.core.config import Config                        # noqa: E402
 from agentforge.evidence import EvidenceLedger              # noqa: E402
 from agentforge.record import Recorder, RECORDER_CTX        # noqa: E402
 from agentforge.permissions import Guard                    # noqa: E402

@@ -106,7 +106,7 @@ def test_remote_providers_idle() -> None:
 
 
 def test_config_exposes_knob() -> None:
-    from agentforge.config import Config
+    from agentforge.core.config import Config
     cfg = Config.load(ROOT / "config.yaml")
     check("配置里有 stream_idle_timeout", hasattr(cfg, "stream_idle_timeout"),
           str(getattr(cfg, "stream_idle_timeout", None)))

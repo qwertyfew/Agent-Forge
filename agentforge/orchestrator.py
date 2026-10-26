@@ -27,7 +27,7 @@ from typing import Any, Iterator
 from pathlib import Path
 
 from .loop import Agent
-from .planner import (
+from .core.planner import (
 
     KIND_DIM, KIND_LABEL, Subtask, kind_of, looks_like_change, make_plan,
     needs_plan, plan_summary,
