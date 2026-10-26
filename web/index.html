@@ -4670,6 +4670,7 @@ function paintSvc(state, text, title){
 let ollamaBusy = false;
 let svcLocal = true;        // 本地部署才可重启；云端由 /api/health 判定后置 false
 let svcRestarting = false;  // 重启流程进行中：期间轮询不与其抢状态
+let uiStamp = null;           // 前端版本戳（见 /api/health 的 ui 字段）
 const svcWait = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Ollama 是本地模型的上游。本机长期不关机，它可能被手动退出或升级时重启，
@@ -4721,6 +4722,14 @@ async function checkHealth(){
       paintSvc('ok', '云端部署 · 服务运行中', '云端部署：服务由托管平台管理，无需本地重启');
       return;
     }
+    // 前端版本变了 → 自动刷新到新页面。修复类改动只落在 web/index.html，
+    // 而打开着的标签页跑的是旧脚本：不自动刷新，就会出现「修了、服务也重启了、
+    // 红条还在」的假象。只在空闲时刷新，正在跑任务不打断（下次体检再刷）。
+    if(h.ui && uiStamp && h.ui !== uiStamp && !busy){
+      location.reload();
+      return;
+    }
+    if(h.ui) uiStamp = h.ui;
     if(h.ollama){ paintSvc('ok', '本地服务运行中', 'Ollama 与 Web 服务都正常。点击重启本地服务'); return; }
     if(h.ollama_auto_start === false){
       paintSvc('bad', 'Ollama 未连接', '配置里已关闭自动拉起（ollama.auto_start: false）');

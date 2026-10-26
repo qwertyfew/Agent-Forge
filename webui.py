@@ -37,6 +37,20 @@ from agentforge import verify as verify_gate
 HERE = Path(__file__).resolve().parent
 INDEX = HERE / "web" / "index.html"
 
+
+def ui_stamp() -> str:
+    """前端版本戳 = index.html 的修改时间。浏览器据此判断「要不要自动刷新」。
+
+    前端改动只改 web/index.html，而用户打开着的标签页里跑的是**旧脚本**——光靠
+    服务端重启，旧页面不会自己更新，于是出现「修了、服务也重启了、红条还在」。
+    把版本戳放进 /api/health，前端每次体检都对一次，不一致就自动 reload，
+    部署新前端后最多等一个体检周期（30 秒）就能无感切到新页面。
+    """
+    try:
+        return str(round(INDEX.stat().st_mtime, 2))
+    except OSError:
+        return ""
+
 # 算力闸门（任务级）：同时「执行中」的任务上限，配置 compute.max_running（默认 1）。
 # serve() 启动时按配置重建；超出上限的任务登记为「排队中」，有空位自动开跑。
 # 注意：调大上限需要重启服务（信号量在启动时定容）。
@@ -339,6 +353,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(self._tools_snapshot())
         elif path == "/api/health":
             self._json({
+                "ui": ui_stamp(),
                 "ollama": self.cli.client.ping(),
                 # 界面发现 ollama=false 时会去 /api/ollama/ensure 拉一把；
                 # auto_start 关掉时就不发这个请求，别做无谓动作
