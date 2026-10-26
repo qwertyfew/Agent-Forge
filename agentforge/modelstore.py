@@ -143,6 +143,9 @@ class ModelStore:
         self.enabled_ids: list[str] | None = None   # None = 尚未初始化，默认全选
         self.budget: int = 3                        # 最优组合最多挑几个模型
         self.score_overrides: dict[str, dict] = {}   # 用户手动覆盖的维度分
+        # P35：最后一次「自动配置」记录（scope + 该方案勾选的模型 id）。
+        # 「生效中」标记与「再次点击=取消」都以此为对照——勾选偏离方案即不再生效。
+        self.last_auto_config: dict | None = None
         # 自动发现的本地模型的自动配置：模型名 -> {num_ctx, native_ctx, probed_at}
         # 第一次见到某个模型时问一次 Ollama（原生窗口只有模型自己知道），
         # 结果存这里，以后不再重复问；用户手填 config.yaml 时以用户的为准。
@@ -185,6 +188,8 @@ class ModelStore:
         self.budget = int(raw.get("budget") or 3)
         if isinstance(raw.get("score_overrides"), dict):
             self.score_overrides = dict(raw["score_overrides"])
+        if isinstance(raw.get("last_auto_config"), dict):
+            self.last_auto_config = dict(raw["last_auto_config"])
         # 兼容旧格式：早期把本地模型配置混在 models.json 里，读到就顺手迁走
         if not self.local_cfg and isinstance(raw.get("local_cfg"), dict):
             self.local_cfg = dict(raw["local_cfg"])
@@ -198,6 +203,7 @@ class ModelStore:
             "paid": self.paid,
             "budget": self.budget,
             "score_overrides": self.score_overrides,
+            "last_auto_config": self.last_auto_config,
         }
         self.path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -579,11 +585,35 @@ class ModelStore:
         picks = self.best_combo(budget, local_only=local_only)
         if picks:
             self.set_enabled([e.id for e in picks])
+            # P35：记住这套方案勾了哪些模型——「生效中」以当前勾选与方案一致为准，
+            # 再次点击生效中的按钮 = 取消（勾选同步取消）。
+            self.last_auto_config = {
+                "scope": "local" if local_only else "best",
+                "ids": [e.id for e in picks],
+            }
+            self.save()
         return picks
 
     def apply_best_local(self, budget: int | None = None) -> list[ModelEntry]:
         """一键应用「本地最佳配置」：启用组合收窄为本地最优的这一组。"""
         return self.apply_best(budget, local_only=True)
+
+    def cancel_auto_config(self) -> tuple[list[str], list[str]]:
+        """P35：取消最后一次自动配置——方案勾选的模型同步取消勾选。
+
+        返回 (取消勾选的 id, 取消后仍勾选的 id)。没有方案记录时返回 ([], 当前勾选)。
+        手动勾选偏离方案的（当前勾选 ⊃ 方案 id），只取消方案勾过的那部分，
+        用户手动加的不动。"""
+        ac = self.last_auto_config or {}
+        preset_ids = set(ac.get("ids") or [])
+        current = [e.id for e in (self._catalog or self.catalog()) if e.enabled]
+        removed = [i for i in current if i in preset_ids]
+        if removed:
+            self.set_enabled([i for i in current if i not in preset_ids])
+        self.last_auto_config = None
+        self.save()
+        remaining = [i for i in current if i not in preset_ids]
+        return removed, remaining
 
     # ------------------------------------------------------------ 展示
     def snapshot(self, discovered: list[str] | None = None, probe=None) -> dict:

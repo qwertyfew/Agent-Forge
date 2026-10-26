@@ -1092,16 +1092,27 @@ class _Handler(BaseHTTPRequestHandler):
         # 结果落进 models.local.json，之后不再重复问。
         snap = self.store.snapshot(self._discover(), probe=ollama_probe(self.cli.client))
         snap["pool"] = self.store.summary_line()
+        # P35：「生效中」以**当前勾选与方案完全一致**为准，不再只看路由开关——
+        # 用户事后手动增删勾选，按钮上的「生效中」立即消失（勾选与生效永远一致）。
+        _ac = getattr(self.store, "last_auto_config", None) or {}
+        _ac_ids = set(_ac.get("ids") or [])
+        _en_ids = {e.id for e in self.store.enabled()}
+        _flags_best = (self.cfg.routing_capability
+                       and self.cfg.routing_allow_upgrade
+                       and self.cfg.routing_allow_paid_upgrade)
+        _flags_local = (self.cfg.routing_capability
+                        and self.cfg.routing_allow_upgrade
+                        and not self.cfg.routing_allow_paid_upgrade)
+        _match = bool(_ac_ids) and _ac_ids == _en_ids
         snap["routing"] = {
             "capability": bool(self.cfg.routing_capability),
             "allow_upgrade": bool(self.cfg.routing_allow_upgrade),
             "allow_paid_upgrade": bool(self.cfg.routing_allow_paid_upgrade),
             "local_serial": bool(getattr(self.cfg, "local_serial", True)),
-            "mode": ("best" if (self.cfg.routing_capability
-                                and self.cfg.routing_allow_upgrade
-                                and self.cfg.routing_allow_paid_upgrade)
-                     else "local" if (self.cfg.routing_capability
-                                      and self.cfg.routing_allow_upgrade)
+            "mode": ("best" if (_flags_best and _match
+                                and _ac.get("scope") == "best")
+                     else "local" if (_flags_local and _match
+                                      and _ac.get("scope") == "local")
                      else "off"),
         }
         # 决策/调度模型（多 agent 的 Dispatcher）当前指向谁、能不能用
@@ -1472,6 +1483,24 @@ class _Handler(BaseHTTPRequestHandler):
                 r.capability_on = flags["capability"]
                 r.allow_upgrade = flags["allow_upgrade"]
                 r.allow_paid_upgrade = flags["allow_paid_upgrade"]
+
+            elif action == "auto_config_off":
+                # P35：再次点击「生效中」的自动配置按钮 = 取消——
+                # 路由开关关闭 + 方案勾选的模型同步取消勾选（用户手动加的不动）。
+                scope = str(req.get("scope") or "")
+                removed, remaining = self.store.cancel_auto_config()
+                self._write_routing(False, False, False)
+                self.cfg.routing_capability = False
+                self.cfg.routing_allow_upgrade = False
+                self.cfg.routing_allow_paid_upgrade = False
+                r = self.cli.router
+                r.capability_on = False
+                r.allow_upgrade = False
+                r.allow_paid_upgrade = False
+                note = (f"已取消自动配置（{scope or '未知方案'}）：取消勾选 "
+                        f"{len(removed)} 个模型"
+                        + ("" if remaining else
+                           "；当前没有勾选任何模型，任务无法执行——请勾选或重新自动配置"))
 
             elif action == "test":
                 eid = str(req.get("id") or "")

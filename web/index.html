@@ -3003,9 +3003,9 @@ function updateApplyButtons(){
   bLocal.classList.toggle('primary', onLocal);
   bAll.innerHTML = ICON_BEST + ' 自动配置最佳模型' + (onBest ? '<span class="onnow">生效中</span>' : '');
   bLocal.innerHTML = ICON_LOCAL + ' 自动配置本地模型' + (onLocal ? '<span class="onnow">生效中</span>' : '');
-  bAll.title = onBest ? '入口模型按任务类型初选（含付费升级）正在生效；执行分配仍按小步骤交给各维度最强模型'
+  bAll.title = onBest ? '该配置正在生效。再次点击可取消：路由关闭，方案勾选的模型同步取消勾选'
                       : '一键勾选覆盖最全的组合（含付费），入口模型按任务类型初选；执行分配仍按小步骤规则';
-  bLocal.title = onLocal ? '入口模型按任务类型初选（仅本地）正在生效；执行分配仍按小步骤交给各维度最强模型'
+  bLocal.title = onLocal ? '该配置正在生效。再次点击可取消：路由关闭，方案勾选的模型同步取消勾选'
                          : '一键勾选本地最强组合（不用付费），入口模型按任务类型初选；执行分配仍按小步骤规则';
   const st = $('routingStatus');
   if(st){
@@ -3653,22 +3653,34 @@ function confirmModal(cfg){
    无需重启。勾选 = 同一时刻只跑一个本地模型（避免并发任务互抢显存）。 */
 $('btnBest').onclick = async ()=>{
   const b = $('btnBest');
+  const mode = ((catalog && catalog.routing) || {}).mode || 'off';
+  const canceling = mode === 'best';   // P35：再次点击「生效中」的按钮 = 取消
   b.disabled = true; b.textContent = '配置中…';
-  const r = await postModels({action:'auto_config', scope:'best'});
+  const r = await postModels(canceling
+    ? {action:'auto_config_off', scope:'best'}
+    : {action:'auto_config', scope:'best'});
   b.disabled = false;
   if(r.error){ toast(b, r.error, 'bad'); return; }
   catalog = r; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons();
-  toast(b, `已勾选最佳组合（含付费） · 入口模型按任务类型初选`, 'ok');
+  toast(b, canceling
+    ? (r.note || '已取消自动配置，勾选已同步取消')
+    : `已勾选最佳组合（含付费） · 入口模型按任务类型初选`, canceling ? 'bad' : 'ok');
 };
 
 $('btnBestLocal').onclick = async ()=>{
   const b = $('btnBestLocal');
+  const mode = ((catalog && catalog.routing) || {}).mode || 'off';
+  const canceling = mode === 'local';   // P35：再次点击「生效中」的按钮 = 取消
   b.disabled = true; b.textContent = '配置中…';
-  const r = await postModels({action:'auto_config', scope:'local'});
+  const r = await postModels(canceling
+    ? {action:'auto_config_off', scope:'local'}
+    : {action:'auto_config', scope:'local'});
   b.disabled = false;
   if(r.error){ toast(b, r.error, 'bad'); return; }
   catalog = r; renderCombo(); renderModelList(); updatePoolHint(); updateApplyButtons();
-  toast(b, `已勾选本地最佳组合 · 入口模型按任务类型初选（仅本地）`, 'ok');
+  toast(b, canceling
+    ? (r.note || '已取消自动配置，勾选已同步取消')
+    : `已勾选本地最佳组合 · 入口模型按任务类型初选（仅本地）`, canceling ? 'bad' : 'ok');
 };
 /* 决策模型下拉：多 agent 的「调度大脑」。可选任意模型（本地或在线）——
    只要它能稳定产出 JSON。留空 = 关闭调度，回退到规则拆解。 */
