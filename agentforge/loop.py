@@ -291,6 +291,24 @@ FAIL_NOTE = (
     "声称这一步已经完成。"
 )
 
+
+def display_history(history: list[dict]) -> list[dict]:
+    """给界面与台账看的历史：剔除 harness 自己插进去的内部指令（`_internal`）。
+
+    模型必须看到这些消息——它们是程序对模型下的指令（「程序补查 · 最后一轮」
+    「停止拦截·交付物未落盘」「核查诊断」…）。但它们**不是用户说的话**：
+    原样存进台账后，用户切到别的任务再切回来，会在对话流里看到一大段
+    「自己说的话」——里面还连着抓来的整篇 README，看起来像自己手滑粘进去的。
+
+    只在落盘/展示这一层过滤，模型上下文用的仍是完整历史；请求体里的标记由
+    `llm.clean_messages` 去掉。没有内部消息时原样返回（零拷贝）。
+    """
+    if not any(isinstance(m, dict) and m.get("_internal") for m in history):
+        return history
+    return [{k: v for k, v in m.items() if not str(k).startswith("_")}
+            for m in history
+            if isinstance(m, dict) and not m.get("_internal")]
+
 FAIL_REPEAT_NOTE = (
     "\n[升级警告] 同一工具已连续失败 {n} 次。停止用同样的参数重试："
     "先 read_file / list_dir 核实现场，换一种方法；还是不行就如实向用户说明卡在哪里。"
@@ -692,6 +710,12 @@ class Agent:
         if not res.changed:
             return history, None
         self.last_compact = res.note
+        if res.routine:
+            # 例行「工具结果老化」：每轮把超出保留窗口的旧工具返回压成一行，
+            # 属于日常维护，不是「压缩」。把结果留下来（token 该省还是要省），
+            # 但不发事件、不写日志快照——否则一个 24 轮的任务会播报 12 次
+            # 「上下文压缩」，用户看到的就是提示反复冒出来，还外加 24 份快照。
+            return res.messages, None
         before = [*system_msgs, *history]
         after = [*system_msgs, *res.messages]
         return res.messages, self._journal_compact(res, before, after)
@@ -916,6 +940,17 @@ class Agent:
             if self.journal is not None:
                 self.journal.message(msg, source=_msg_source(msg))
 
+        def _push_internal(content: str, kind: str = "note") -> None:
+            """把「程序对模型下的指令」推进历史：模型必须看到，但它不是用户说的话。
+
+            带 `_internal` 标记：界面与台账渲染时剔掉（见 _display_history），
+            发给模型前由 llm.clean_messages 去掉标记。不加这个标记的后果是
+            用户切回任务时，会看到一大段「自己说的话」——「程序补查 · 最后一轮」
+            连着整篇 README，看着像自己手滑粘进去的，实际是 harness 的核查指令。
+            """
+            _push({"role": "user", "content": content,
+                   "_internal": kind})
+
         def _pop() -> None:
             if history:
                 history.pop()
@@ -1015,6 +1050,12 @@ class Agent:
         # 一轮（berry 任务第一轮 web_search 直调被拒、返工重写脚本），现在改为
         # 自动转译照常执行；这里只计数，累计 ≥3 次在通知里升级为硬提醒。
         ptc_autowrap: dict[str, int] = {}
+        # 自动转译的播报节流：整场 run 只提醒一次（见下方 notify 处注释）。
+        # 旧版把「累计 ≥3 次直调」当作红灯条件，而计数是整场累加的——模型每轮
+        # 都直调时，用户会被同一条红色弹窗一路刷屏（实测一个任务弹 10 次），
+        # 可调用本身全都执行成功了。
+        ptc_notice_shown = False
+        ptc_hint_sent = False
         # 澄清判定（试行版 v0，docs/clarify-policy.md §12）：一场 run 一个 watcher。
         # 它按「单次调用的真实工具名 + 真实输出」记账（由 _execute 喂），所以 PTC
         # 常驻下脚本里的内层调用同样可见——这正是 PTC 之后被掐断的那条通道。
@@ -1146,10 +1187,10 @@ class Agent:
                            "message": (f"模型连续 {empty_turns} 轮没有输出任何内容"
                                        f"（既无工具调用也无正文），任务未完成。")}
                     return
-                _push({"role": "user",
-                       "content": ("你上一轮没有输出任何内容。请继续完成当前任务："
-                                   "素材已经读完，就直接调用 write_file 把结果写出来；"
-                                   "否则给出最终的完整答复。不要只思考不产出。")})
+                _push_internal(
+                    "你上一轮没有输出任何内容。请继续完成当前任务："
+                    "素材已经读完，就直接调用 write_file 把结果写出来；"
+                    "否则给出最终的完整答复。不要只思考不产出。", "empty")
                 continue
             empty_turns = 0
 
@@ -1191,7 +1232,7 @@ class Agent:
                                  else "fill_section(path=..., heading=..., content=...)")
                         _push({"role": "assistant",
                                "content": result.content or "", **replay_think})
-                        _push({"role": "user", "content": (
+                        _push_internal((
                             "【停止拦截·交付物未落盘】你宣布任务完成，但程序核对磁盘发现"
                             "任务书要求的交付物还不存在、自本轮开始后从未更新、"
                             "只有骨架而正文是空的，或者任务书点名要覆盖的项没写：\n- "
@@ -1202,7 +1243,7 @@ class Agent:
                               f"文件里已经有骨架的，用 {_fill} 把空着的小节逐节填完，"
                               "别整篇重写。"
                               "写完后给出最终答复。若你认为该文件不该由本轮写出，"
-                              "请在最终答复里明确说明原因。")})
+                              "请在最终答复里明确说明原因。"), "contract")
                         yield {"type": "contract_gate", "missing": missing,
                                "round": contract_blocks}
                         continue
@@ -1228,8 +1269,8 @@ class Agent:
                         ground_blocks += 1
                         _push({"role": "assistant",
                                "content": result.content or "", **replay_think})
-                        _push({"role": "user", "content": grounding.render_diagnosis(
-                            _g_diag, round_no=ground_blocks, max_rounds=2)})
+                        _push_internal(grounding.render_diagnosis(
+                            _g_diag, round_no=ground_blocks, max_rounds=2), "grounding")
                         yield {"type": "grounding_gate",
                                "issues": _g_diag.get("issues") or [],
                                "refs": _g_diag.get("refs") or [],
@@ -1281,8 +1322,8 @@ class Agent:
                                     # 最后一轮：把程序抓到的一手源交给模型，只做对齐
                                     _push({"role": "assistant",
                                            "content": result.content or "", **replay_think})
-                                    _push({"role": "user",
-                                           "content": autocheck.render_prompt(_got)})
+                                    _push_internal(autocheck.render_prompt(_got),
+                                                   "autocheck")
                                     yield {"type": "grounding_gate",
                                            "issues": _g_diag.get("issues") or [],
                                            "refs": _g_diag.get("refs") or [],
@@ -1341,12 +1382,12 @@ class Agent:
                         mem_src = str(sig.get("query") or "") + "\n" + (m.group(0) if m else "")
                         mem_lines = _memory_hits(self.memory, mem_src)
                     if mem_lines:
-                        _push({"role": "user", "content": (
+                        _push_internal((
                             "（系统侧自动检索记忆）任务需要的信息在本地没有检索到，"
                             "但长期记忆里有这些相关记录：\n- "
                             + "\n- ".join(mem_lines)
                             + "\n请基于记忆里的信息继续完成任务；"
-                              "若与任务无关，如实说明并按最常见的情况假设。")})
+                              "若与任务无关，如实说明并按最常见的情况假设。"), "memory")
                         continue          # 模型拿着记忆线索进入下一轮
 
                     # 第二步：记忆里也没有 → 发起澄清弹窗。
@@ -1428,14 +1469,26 @@ class Agent:
             ]
             _push({"role": "assistant", "content": result.content or "",
                    "tool_calls": tc_payload, **replay_think})
+            ptc_hint_pending = ""
             if ptc_wrapped:
                 _total = sum(ptc_autowrap.values())
-                yield {"type": "notify",
-                       "kind": "bad" if _total >= 3 else "ok",
-                       "text": (f"直调 {ptc_wrapped} 已自动转 ops_batch 执行"
-                                + ("——请直接用 ops_batch 写脚本把多个调用合并，"
-                                   "一次拿回全部结果，省轮次省 token"
-                                   if _total >= 3 else ""))}
+                # 自动转译是**正常执行**：调用照跑、结果照回，没有任何东西失败。
+                # 所以不能用红色错误弹窗播报——那不是给用户看的告警，是给模型看的
+                # 写法建议。旧版「累计 ≥3 次就点红灯」的结果是：模型一轮里直调了
+                # 五个工具，用户就吃一个红弹窗；下一轮再直调，再吃一个（实测一个
+                # 任务 10 次），而真正的指导模型压根看不到。
+                # 现在：整场只播一次中性色提示；指导挂在本轮工具结果里给模型读。
+                if not ptc_notice_shown:
+                    ptc_notice_shown = True
+                    yield {"type": "notify", "kind": "mute",
+                           "text": f"已自动把直调合并为 ops_batch 执行：{ptc_wrapped}"}
+                if _total >= 3 and not ptc_hint_sent:
+                    ptc_hint_sent = True
+                    ptc_hint_pending = (
+                        "\n\n[PTC 提示] 本轮的多个直调已被自动合并为 ops_batch 执行。"
+                        "下次要把多个调用一次做完时，请直接写一段 ops_batch 脚本"
+                        "（脚本里用 call('工具名', **参数)），一次拿回全部结果——"
+                        "比逐个直调省轮次也省 token。")
 
             for tc in result.tool_calls:
                 if stopped():
@@ -1577,6 +1630,11 @@ class Agent:
                         if note:
                             self.iv_fails += 1
                             out = out + "\n\n" + note
+                # 写法建议挂在本轮**第一条**工具结果上（模型读得到，用户不必被弹窗
+                # 打断）：只发一次，之后同一轮的其他结果不再重复。
+                if ptc_hint_pending:
+                    out += ptc_hint_pending
+                    ptc_hint_pending = ""
                 yield {"type": "tool_result", "name": tc.name, "output": out,
                        "dur_ms": round(_tool_ms, 1),
                        **({"failed": True} if (failed or denied) else {})}
@@ -1625,7 +1683,7 @@ class Agent:
                         if missing:
                             contract_blocks += 1
                             _push({"role": "assistant", "content": result.content or ""})
-                            _push({"role": "user", "content": (
+                            _push_internal((
                                 "【停止拦截·交付物未落盘】你刚才在 ops_batch 脚本里调用了写文件工具，"
                                 "但程序核对磁盘发现任务书要求的交付物仍不达标：\n- "
                                 + "\n- ".join(_owe_line(p) for p in missing)
@@ -1637,7 +1695,7 @@ class Agent:
                                   "用 call('fill_section', path=..., heading=..., content=...) 逐节/逐行填完即可，"
                                   "不必整篇重写。"
                                   "写完后给出最终答复。若你确认该文件不该由本轮写出，"
-                                  "请在最终答复里明确说明原因，不要声称已写入。")})
+                                  "请在最终答复里明确说明原因，不要声称已写入。"), "contract")
                             yield {"type": "contract_gate", "missing": missing,
                                    "round": contract_blocks, "via": "ops_batch"}
                             break

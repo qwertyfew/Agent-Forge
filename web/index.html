@@ -1631,16 +1631,29 @@ function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt
    侧栏的任务列表在轮询失败时会保留上次数据（不清空），所以必须有个
    显式提示，否则「12 条任务」和「没有可清理的任务」会同屏出现。 */
 let connOk = true;
+let connFails = 0;   // 连续失败次数：单次抖动不亮横幅（见下）
 function setConn(ok, msg, text){
   const bar = $('offlineBar'), txt = $('offlineTxt');
   if(!bar) return;
   if(ok){
+    connFails = 0;
     if(!connOk){ connOk = true; bar.hidden = true; }
     return;
   }
   // 重启流程自己管理横幅：非「重启中」的失败（如任务列表轮询）不覆盖它，
   // 否则服务刚恢复，一个延迟的失败请求会把已熄灭的横幅又点亮（绿之后闪红）。
   if(typeof svcRestarting !== 'undefined' && svcRestarting && text !== '服务重启中…') return;
+  // 连续两次失败才算离线：轮询是 5 秒一次，服务端在长任务里偶尔一次请求
+  // 超时/被掐就会点亮一次红横幅，随后下一次成功又熄灭——用户看到的就是
+  // 「干掉一会儿、红条又冒出来一会儿」。真挂了也只需多等 5 秒。
+  // 只对**被动失败**（apiGet 没带文案）做这个去抖：带 text 的都是主动点亮，
+  // 比如重启流程的「服务重启中…」，那种必须立刻显示。
+  if(!text){
+    connFails += 1;
+    if(connFails < 2) return;
+  }else{
+    connFails = 0;
+  }
   connOk = false;
   if(txt){
     txt.textContent = text || '服务未连接，列表为上次数据';
@@ -3808,7 +3821,7 @@ let liveTask = null;
    先重放缓冲、再续播实时事件，接管者和发起者看到一样的东西。 */
 let taskStream = null, taskStreamId = '';
 const STREAM_EVENTS = ['task','combo','plan','assign','subtask','verify','step','skill','route','stats','usage',
-  'thinking','delta','tool_start','tool_result','history','error','subtask_error','stopped','complete','memory','done','steered','gate_discard'];
+  'thinking','delta','tool_start','tool_result','history','error','subtask_error','stopped','complete','memory','done','steered','gate_discard','inline_note'];
 function followTaskStream(id){
   if(busy || (taskStream && taskStreamId === id)) return;   // 自己发起的流已在手上
   closeTaskStream();
@@ -4260,6 +4273,10 @@ function openTask(id){
       renderRunBar(); syncComposer();
       return;
     }
+    // 打开的是已完成的任务：把上一条任务的接管流关掉。留着它只会让连接
+    // 一直挂着（服务端还在发心跳），攒多了浏览器同域连接会被占满，之后
+    // 的轮询请求就会超时——表现为「服务好好的，红横幅却隔一会儿亮一次」。
+    closeTaskStream();
     enterTaskView(task);
   }).catch(()=>{});
 }
@@ -6571,6 +6588,13 @@ function handleTaskEvent(ev, data){
       // 计划卡里那一步立刻标红（task_done 随后会再确认一次，幂等）
       if(data.task_id || data.index) markPlanStep(data.index, 'error', data.task_id);
       addPillNote(`子任务失败：${esc(data.message || '')}（其它任务不受影响，继续执行）`, true);
+    }
+    else if(ev === 'inline_note'){
+      // 程序侧过程提示（上下文压缩、契约闸门…）：只做行内小字，不弹窗。
+      // 这些动作在长任务里会反复发生（压缩能触发十几次），弹一次就盖住正文
+      // 两秒，用户体感就是「提示隔一会儿又冒出来」。
+      addPillNote(esc(data.text || ''), !!data.warn);
+      scrollBottom();
     }
     else if(ev === 'notify'){
       // 系统侧提示（确定性架构动作的结果，如「已存入记忆」）：绿色 toast；

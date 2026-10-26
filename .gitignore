@@ -32,6 +32,7 @@ models.local.json
 
 # 任务历史与运行状态（每次运行都在变，不入库）
 .tasks.json
+.tasks.json.bak-*
 .prefs.json
 .tmp_research/
 .tmp_models_test.json

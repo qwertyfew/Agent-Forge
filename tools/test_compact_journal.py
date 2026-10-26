@@ -88,6 +88,22 @@ def main() -> int:
         check("返回的上下文确实比原文短",
               measure(after) < measure(history), f"{measure(history)}→{measure(after)} 字符")
 
+        # 例行「工具结果老化」不算压缩：它每轮都会发生（旧的工具返回压成一行），
+        # 但绝不能播报成 compact 事件——否则一个 24 轮的任务会弹 12 次提示，
+        # 用户看到的就是「提示反复冒出来」，日志里还多出几十份快照。
+        ag2 = build_agent(tmp, threshold=10 ** 9)     # 阈值拉到天上：只可能走老化分支
+        ag2.journal = Journal.open(ag2.cfg, "t-aging")
+        h2 = big_history()[1:]
+        aged, ev2 = ag2._compact(before[:1], h2)
+        check("老化确实生效（历史变短）", measure(aged) < measure(h2),
+              f"{measure(h2)}→{measure(aged)}")
+        check("例行老化不发 compact 事件", ev2 is None, str(ev2))
+        ag2_events = [json.loads(x) for x in
+                      ag2.journal.path.read_text(encoding="utf-8").splitlines() if x.strip()]
+        check("例行老化不写 compact 日志",
+              not any(e["type"] == "compact" for e in ag2_events),
+              str([e["type"] for e in ag2_events]))
+
         events = [json.loads(x) for x in ag.journal.path.read_text(encoding="utf-8").splitlines() if x.strip()]
         kinds = [e["type"] for e in events]
         check("事件流含 system 事件", "system" in kinds, str(kinds))

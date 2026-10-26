@@ -35,6 +35,11 @@ class CompactResult:
     before: int            # 压缩前字符数
     after: int             # 压缩后字符数
     note: str = ""         # 给人看的一句话说明
+    # 「例行老化」而非「真压缩」：每轮把超出保留窗口的旧工具结果压成一行，
+    # 属于日常维护（长任务里几乎每轮都会发生一次）。它会改变 messages，
+    # 但不该当成「压缩事件」播报给用户——否则一个 24 轮的任务会弹 12 次
+    # 「上下文压缩」提示，看起来像在反复压缩。
+    routine: bool = False
 
     @property
     def changed(self) -> bool:
@@ -461,6 +466,7 @@ class Compressor:
                 return _done(CompactResult(
                     aged, "truncate", before, after0,
                     f"工具结果老化 {before} → {after0} 字（只保留最近 {keep_recent} 条完整结果）",
+                    routine=True,
                 ))
             return CompactResult(messages, "none", before, before)
 

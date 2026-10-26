@@ -24,7 +24,8 @@ from typing import Any, Iterator
 import requests
 
 from .config import ModelSpec
-from .llm import LLMResult, ThinkFilter, GenerationStopped, _finalize_tool_calls, _merge_tool_calls
+from .llm import (LLMResult, ThinkFilter, GenerationStopped, clean_messages,
+                  _finalize_tool_calls, _merge_tool_calls)
 from . import streamprobe
 
 
@@ -132,6 +133,7 @@ class OpenAIClient:
         且通常只接受一条，否则直接 400（"System message must be at the beginning"）。
         在这里统一上提，等于给上层所有 append 行为兜底。
         """
+        messages = clean_messages(messages)   # 去掉 _internal 之类的 harness 元数据
         # 1) 收拢 system：一律上提到开头，合并成一条
         system_parts: list[str] = []
         body: list[dict] = []
@@ -342,6 +344,7 @@ class AnthropicClient:
         Anthropic 要求 tool_use 必须被下一条 user 消息里的 tool_result 应答，
         而内部历史里的 tool 消息不带 id，所以这里按出现顺序现场配对。
         """
+        messages = clean_messages(messages)   # 去掉 _internal 之类的 harness 元数据
         system_parts: list[str] = []
         out: list[dict] = []
         pending_ids: list[str] = []

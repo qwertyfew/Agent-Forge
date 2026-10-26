@@ -166,9 +166,16 @@ def test_top_level_guard() -> None:
           tr is not None and tr.get("name") == "ops_batch"
           and "已被禁用" not in (tr.get("output") or ""),
           str(tr)[:160])
+    # 自动转译是正常执行，不是失败：通知必须是中性色（mute），绝不能是红色告警
+    # ——旧版累计 ≥3 次就点红灯，模型每轮直调时用户会被同一条红弹窗刷屏。
     n1 = next((e for e in evs if e.get("type") == "notify"
-               and "自动转 ops_batch" in (e.get("text") or "")), None)
-    check("自动转译有通知", n1 is not None, repr(n1)[:160])
+               and "ops_batch" in (e.get("text") or "")), None)
+    check("自动转译有通知，且不是红色告警",
+          n1 is not None and n1.get("kind") != "bad", repr(n1)[:160])
+    check("自动转译只播一次（不按轮次刷屏）",
+          sum(1 for e in evs if e.get("type") == "notify"
+              and "ops_batch" in (e.get("text") or "")) == 1,
+          str([e for e in evs if e.get("type") == "notify"])[:200])
 
     # 常驻关闭：同样的调用不拦截（走原路径，此处 read_file 因文件不存在报错而非被拦）
     ag2 = _mk_agent(tmp, [

@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 from agentforge import artifact
 from agentforge import layout, autonote, autoskill, gaps, interact, ollamaguard, reveal, runcontrol, steering
 from agentforge.cli import CLI
+from agentforge.loop import display_history
 from agentforge.config import Config
 from agentforge.evalsdesk import EvalsDesk
 from agentforge.memory import MemoryStore
@@ -1910,8 +1911,11 @@ class _Handler(BaseHTTPRequestHandler):
                 elif kind == "compact":
                     # 上下文压缩：以前只发生在内存里，事件流里没有痕迹——用户
                     # 看不到「模型从这一轮起看的是摘要」，评测复盘也查不到。
-                    # 这里播报一条，同时把 journal 目录带给前端做溯源。
-                    emit("notify", {
+                    # 但它是 harness 的日常维护（长任务里能触发十几次），**不能弹窗**：
+                    # 每弹一次就盖住正文两秒，用户看到的就是「绿色弹窗隔一会儿
+                    # 又冒出来一次」。改成行内小字（pillnote），留在对话流里可查
+                    # 又不打断阅读；journal 目录照旧带给前端做溯源。
+                    emit("inline_note", {
                         "text": (f"上下文压缩（{ev.get('strategy')}）："
                                  f"{ev.get('before')} → {ev.get('after')} 字符"),
                     })
@@ -1921,9 +1925,10 @@ class _Handler(BaseHTTPRequestHandler):
                     # 事件被整条丢弃：前端看不到「已拦回」，评测的事件流里也查不到
                     # ——rerun24 诊断时 gate_skip 全 0 的假象就是它造成的。
                     _miss = ev.get("missing") or []
-                    emit("notify", {
+                    emit("inline_note", {
                         "text": (f"契约闸门：{len(_miss)} 个交付物未落盘，已退回继续"
                                  f"（第 {ev.get('round')} 次）"),
+                        "warn": True,
                     })
                 elif kind == "artifacts":
                     # 产出文件清单：随最终答复送给前端，渲染成可点击展开的文件卡片，
@@ -2023,7 +2028,10 @@ class _Handler(BaseHTTPRequestHandler):
                 "stopped" if was_stopped else ("error" if err_msg else "done"),
                 summary=summary[:800],
                 error=err_msg[:500],
-                history=final_history or None,
+                # 台账/界面只留「人说的话」：harness 插的内部指令（程序补查、
+                # 停止拦截…）打 _internal 标记，这里剔掉——否则用户切回任务会
+                # 看到一大段「自己说的话」。模型上下文不受影响（在 loop 内部）。
+                history=display_history(final_history) or None,
                 steps=steps,
                 files=merged,
             )
@@ -2414,6 +2422,20 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
 
+class _WebServer(ThreadingHTTPServer):
+    """监听队列加深的 HTTP 服务。
+
+    默认 `request_queue_size=5`：浏览器在长任务期间会同时挂着 SSE 流 + 每 5 秒
+    的任务轮询 + 每 30 秒的健康检查，刷新页面时还会并发拉一堆接口。队列满了
+    Linux/Windows 都会直接拒连，落到前端就是「服务未连接，列表为上次数据」的
+    红横幅——用户看到的却是「服务明明好好的，红条隔一会儿亮一次」。
+    加深到 128 之后，瞬时并发只会排队，不会被拒绝。
+    """
+
+    request_queue_size = 128
+    daemon_threads = True
+
+
 def serve(cfg: Config, auto_approve: bool, port: int, host: str = "127.0.0.1"):
     cli = CLI(cfg, auto_approve=auto_approve)
     # 任务台账与偏好的落盘目录：默认跟代码走（项目根），容器/云部署用
@@ -2435,7 +2457,7 @@ def serve(cfg: Config, auto_approve: bool, port: int, host: str = "127.0.0.1"):
     )
     global _COMPUTE_GATE
     _COMPUTE_GATE = threading.Semaphore(handler.max_running)
-    httpd = ThreadingHTTPServer((host, port), handler)
+    httpd = _WebServer((host, port), handler)
     url = f"http://{host}:{port}"
     print(f"AgentForge Web UI: {url}")
     print(f"工作区: {cfg.workspace_root}")

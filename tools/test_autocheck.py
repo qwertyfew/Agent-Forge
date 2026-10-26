@@ -274,6 +274,26 @@ def test_loop(tmp: Path) -> None:
     _check("E8 最后一轮提示带上了程序抓的源",
           "程序补查 · 最后一轮" in last_prompt and "github.com/akins20/ui-critic" in last_prompt,
           last_prompt[:200])
+    # ---- E13~E17：程序插的指令要打标记，且不进台账/界面（用户实测：切回任务
+    # 会看到一大段「自己说的话」——「程序补查 · 最后一轮」连着整篇 README）----
+    _check("E13 程序补查消息带 _internal 标记",
+          any(isinstance(m, dict) and m.get("_internal") for m in ag.hub.rounds[-1]),
+          str([sorted(m) for m in ag.hub.rounds[-1][-2:]])[:200])
+    from agentforge.loop import display_history                      # noqa: E402
+    shown = display_history(list(ag.hub.rounds[-1]))
+    _check("E14 台账/界面视图里看不到程序补查",
+          not any("程序补查" in str(m.get("content") or "") for m in shown),
+          str([str(m.get("content"))[:30] for m in shown])[:200])
+    _check("E15 用户原始任务仍在台账视图里",
+          any(m.get("role") == "user" and GOAL in str(m.get("content") or "")
+              for m in shown))
+    from agentforge.llm import clean_messages                         # noqa: E402
+    plain = [{"role": "user", "content": "x", "_internal": "autocheck"}]
+    _check("E16 请求体里不带 _internal 标记",
+          "_internal" not in clean_messages(plain)[0])
+    _check("E17 没有标记的消息不做拷贝",
+          clean_messages(plain)[0] is not plain[0])
+
     _check("E9 模型改对后不盖章",
           finals and "程序核查未通过" not in finals[-1]["content"],
           finals[-1]["content"][-60:] if finals else "无")

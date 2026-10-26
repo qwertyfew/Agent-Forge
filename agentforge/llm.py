@@ -17,6 +17,23 @@ LLM_RETRIES = 2          # 额外重试次数
 LLM_RETRY_BACKOFF = 2.0  # 指数退避基数（秒）：2s, 4s
 
 
+def clean_messages(messages: list[dict]) -> list[dict]:
+    """去掉消息里的 harness 元数据（下划线开头的键）再发给模型。
+
+    这类键是给程序自己看的标记，最典型的是 `_internal`——标记「这条 user 消息
+    其实是程序插给模型的指令」（程序补查、停止拦截、核查诊断…），它不是用户
+    说的话。标记必须留着才能从台账/界面里过滤掉，但绝不能出现在请求体里：
+    OpenAI 兼容接口对消息里的多余字段不做保证，严格实现会直接 400。
+    没有元数据时原样返回（零拷贝，热路径不受影响）。
+    """
+    if not any(isinstance(m, dict) and any(str(k).startswith("_") for k in m)
+               for m in messages):
+        return messages
+    return [{k: v for k, v in m.items() if not str(k).startswith("_")}
+            if isinstance(m, dict) else m
+            for m in messages]
+
+
 class ToolCall:
     def __init__(self, id: str, name: str, arguments: dict):
         self.id = id
@@ -453,7 +470,7 @@ class OllamaClient:
         """
         payload: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": clean_messages(messages),
             "stream": True,
             "keep_alive": keep_alive or self.keep_alive,
         }
