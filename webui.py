@@ -1535,9 +1535,10 @@ class _Handler(BaseHTTPRequestHandler):
             task_id = continue_of
             # 标题/提问气泡保持原任务指令不变；追问只是让对话继续，不改任务名
             display_prompt = cont_task.get("prompt") or message
-            # 上下文优先用前端传的完整历史；兜底用台账存的（被裁剪过，聊胜于无）
-            if not history:
-                history = cont_task.get("history") or []
+            # 续接统一锚定到「被续接任务自己」的台账历史，不依赖前端传来的 history——
+            # 前端 history 在切换窗口/回看别的任务后可能指向别的任务，续接必须
+            # 锚到 threadId 指向的那条任务本身，否则上下文会串到别的对话上。
+            history = cont_task.get("history") or []
             self.tasks.set_status(task_id, "running", progress="继续对话…")
         else:
             task_id = self.tasks.begin(display_prompt or message, permission=permission)

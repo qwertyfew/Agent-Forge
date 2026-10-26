@@ -3547,7 +3547,10 @@ function loadSkillsAndTools(){ refreshSkills(); refreshTools(); }
 
 /* ================= 任务管理 ================= */
 let taskData = [];
-let openTaskId = '';
+let openTaskId = '';      // 当前「打开/显示」的任务（切换窗口会跟着变）
+let threadId = '';        // 当前「对话线程」：本标签页上一次发起的任务。
+                          // 与 openTaskId 不同——切换窗口/回看别的任务都不动它，
+                          // 只有「发新消息」或「点新建任务」才会改，追问续接靠它。
 
 function fmtClock(ts){
   const d = new Date(ts * 1000);
@@ -4159,6 +4162,7 @@ function liveTaskFrom(rec){
 
 function enterTaskView(task, opts = {}){
   if(!task) return;
+  abortChatStream();   // 切到别的任务视图：中断当前直接流，避免旧任务内容污染新窗口
   const live = !!opts.live;
   openTaskId = task.id || '';
   viewingHistory = !live;
@@ -4764,10 +4768,12 @@ function enterChat(title){
   closeSidebar();
 }
 function resetChat(){
+  abortChatStream();   // 开新对话：旧任务若还在直接流里，先中断它，别再灌进新界面
   log.innerHTML = '';
   history = [];
   chatTitle = '';
   openTaskId = '';
+  threadId = '';          // 新建任务 = 新线程，追问不再续接到旧任务
   viewingHistory = false;
   attachments = [];
   renderAttach();
@@ -6166,11 +6172,13 @@ async function send(){
   // 任务「已完成」后 openTaskId 只是残留，此时发消息应续接当前上下文继续对话，
   // 而不是当作新任务——否则同一个对话里的第二条话会凭空变成新任务。
   if(viewingHistory){ resetChat(); }
-  // 追问续接：当前开着一条「已完成」的任务（非回看历史）时，接着问就续到它，
-  // 后端复用该任务的台账条目、不再新建——否则侧栏会凭空多一条新任务。
-  const contOf = (!viewingHistory && openTaskId && history.length)
-    ? ((taskData || []).some(t => t && t.id === openTaskId
-        && t.status !== 'running' && t.status !== 'queued') ? openTaskId : '')
+  // 追问续接：当前对话线程（threadId）指向上一条「已完成」的任务时，接着问就续
+  // 到它，后端复用该任务的台账条目、不再新建——否则侧栏会凭空多一条新任务。
+  // 用 threadId 而非 openTaskId：切换窗口/回看别的任务会改 openTaskId，但不会改
+  // 对话线程，追问必须锚定到「自己这条对话」上，不能锚到刚看过的别的任务。
+  const contOf = (!viewingHistory && threadId)
+    ? ((taskData || []).some(t => t && t.id === threadId
+        && t.status !== 'running' && t.status !== 'queued') ? threadId : '')
     : '';
   input.value = ''; autoGrow();
   attachments = []; renderAttach();
@@ -6512,6 +6520,7 @@ function handleTaskEvent(ev, data){
         addPillNote('算力空闲，任务开始执行。');
       }
       openTaskId = data.id || '';
+      threadId = data.id || '';   // 记录当前对话线程（追问续接靠它，不随切换窗口变）
       beginLiveTask(data);
       loadTasks();
     }
@@ -6639,12 +6648,23 @@ function handleTaskEvent(ev, data){
     ensurePromptBubble();
 }
 
+let chatAbort = null;   // 当前「直接流」的 AbortController；切换窗口时中断它，
+                        // 让旧任务的事件不再灌进新界面（任务本身在后台照常跑）。
+function abortChatStream(){
+  if(chatAbort){ try{ chatAbort.abort(); }catch(e){} chatAbort = null; }
+}
+
 async function streamChat(text, hist, extra){
   // 记下这次发出去的对话部分有多大、并把计数器归零，供第一条 stats 校准固定开销
   sentMsgs = (hist || []).concat(text ? [{ role: 'user', content: text }] : []);
   sentTokens = ctxTokens(sentMsgs);
   statsSeen = 0;
   resetLiveRender();   // 上一轮的计划卡/进度卡/泳道引用全部作废
+  // 中断上一个还没读完的直接流（切换窗口/连续发送都会走到这里）
+  abortChatStream();
+  chatAbort = new AbortController();
+  const myAbort = chatAbort;
+  let aborted = false;
   try{
     const res = await fetch('/api/chat',{
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -6655,7 +6675,8 @@ async function streamChat(text, hist, extra){
         permission: allowWrite ? 'full' : 'default',
         allow_write: allowWrite,
         multi_path: multiPath
-      }, extra || {}))
+      }, extra || {})),
+      signal: myAbort.signal
     });
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -6676,7 +6697,15 @@ async function streamChat(text, hist, extra){
       }
     }
   }catch(e){
-    addError('连接中断：' + e);
+    if(e && e.name === 'AbortError'){ aborted = true; }   // 切换窗口中断：不报错
+    else addError('连接中断：' + e);
+  }
+  if(aborted){
+    // 切换窗口主动中断：任务在后台继续跑（事件进总线，可点侧栏那条任务接管），
+    // 这里只收掉「发送中」状态，不把正常切换当成错误、也不误 settle。
+    hideShimmer(); closeThinking();
+    setBusy(false);
+    return;
   }
   // 流读完 = 这一轮流程走完了。终态事件（done / stopped / error）正常会先到；
   // 若没等到（服务进程崩了、连接被掐），由这里兜底收尾——「收尾」是「流程结束」
