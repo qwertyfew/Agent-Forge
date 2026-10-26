@@ -949,8 +949,11 @@ class _Handler(BaseHTTPRequestHandler):
                             "note": f"已请求停止 {len(hit)} 个任务"})
                 return
             ok = runcontrol.request_stop(tid)
+            # 停止是即时打断的（流式循环每收到一块就查一次停止标志，实测 0.5 秒内
+            # 出 stopped 事件），旧文案「当前这轮生成结束后即退出」会让人觉得停止
+            # 很慢，误导用户以为「点了没反应」。
             self._json({"ok": ok, "stopped": [tid] if ok else [],
-                        "note": "已请求停止，当前这轮生成结束后即退出。"
+                        "note": "已请求停止"
                                 if ok else "该任务不在执行中（可能已结束）"})
             return
 

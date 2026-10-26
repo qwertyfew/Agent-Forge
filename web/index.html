@@ -3969,15 +3969,32 @@ async function stopTask(){
   const id = (liveTask && liveTask.id) || '';
   if(liveTask) liveTask.stopping = true;
   renderRunBar();
-  const r = await fetch('/api/tasks',{
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({action:'stop', id})
-  }).then(x=>x.json()).catch(e=>({error:String(e)}));
+  let r = null;
+  try{
+    r = await fetch('/api/tasks',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'stop', id})
+    }).then(x=>x.json());
+  }catch(e){ r = {error: String(e)}; }
   if(r && r.note) addPillNote(r.note);
   if(!r || !r.ok){
     if(liveTask) liveTask.stopping = false;
     renderRunBar();
+    toast(null, '停止失败：' + ((r && (r.note || r.error)) || '服务未响应'), 'bad');
+    return;
   }
+  // 后端停止是即时生效的（实测 0.5 秒内 stopped 事件回来）。但若本标签页的
+  // 事件流已经断开（例如页面刚被刷新、任务在后台继续），stopped 就收不到，
+  // 界面会一直停在「执行中」。这里兜底：2 秒内没收到 stopped 就本地收尾，
+  // 绝不出现「点了停止半天没反应」。
+  const tid = liveTask ? liveTask.id : '';
+  setTimeout(()=>{
+    if(liveTask && (!tid || liveTask.id === tid) && liveTask.status === 'running'){
+      settleReply('stopped');
+      endLiveTask('stopped');
+      loadTasks();
+    }
+  }, 2000);
   loadTasks();
 }
 $('rbStop').onclick = stopTask;
