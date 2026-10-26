@@ -292,7 +292,7 @@ class ModelStore:
             self.enabled_ids = [e.id for e in entries]
 
         # 注册进 cfg，供 Agent / Router 使用；顺手标一下「这台机器能不能跑」。
-        # have 为 None 表示这次没问过 Ollama（例如 save()/set_dispatcher 等
+        # have 为 None 表示这次没问过 Ollama（例如 save()/apply_best 等
         # 内部修改触发的 catalog() 重建）——此时**保留上一轮的判断**，别乐观重置：
         # 否则每次改配置都会把「未安装」悄悄洗成「已启用」，黄字绿字来回翻。
         # 上一轮也没有（首次启动且 Ollama 没应答）才默认 True，宁可真报错。

@@ -188,34 +188,47 @@ class EvalsDesk:
 
     # ---------- 一键生成（LLM 出题助手） ----------
     def suggest_case(self, prompt: str) -> dict:
-        """用户只填任务指令，其余字段（id/分类/seed/expect）由决策模型生成。
+        """用户只填任务指令，其余字段（id/分类/seed/expect）由模型生成。
 
         模型产出必须过 _sanitize_suggestion 的收口：分类白名单、id 规范化、
         空判定拦截、核验命令危险动作过滤——生成是辅助，安全与「无判定不进
-        评测集」的底线不跟着让步。决策模型不可用/产出不可解析时如实报错，
+        评测集」的底线不跟着让步。没有可用模型/产出不可解析时如实报错，
         前端退回手动填写。
         """
         prompt = str(prompt or "").strip()
         if not prompt:
             return {"error": "任务指令为空：先填任务再生成"}
-        from .dispatcher import Dispatcher
-        from . import dispatcher as _disp
-        disp = Dispatcher(self.cfg, self.hub, None)
-        if not disp.available():
-            return {"error": "决策模型不可用：请先在设置里配置调度模型"
-                             "（config 的 agent.dispatcher.model）"}
+        spec = self._pick_suggest_model()
+        if spec is None:
+            return {"error": "没有可用模型：请先在设置里配置可用模型"}
         try:
-            raw = disp._chat(EVAL_SUGGEST_SYSTEM, prompt,
-                             num_predict=2048, temperature=0.2)
+            res = self.hub.chat(
+                spec,
+                [{"role": "system", "content": EVAL_SUGGEST_SYSTEM},
+                 {"role": "user", "content": prompt}],
+                tools=None,
+                options={"temperature": 0.2, "num_predict": 2048},
+                think=True,
+            )
+            raw = (res.content or "").strip()
         except Exception as e:  # noqa: BLE001
-            return {"error": f"决策模型调用失败：{type(e).__name__}: {e}"}
-        obj = _disp._extract_json(raw)
+            return {"error": f"模型调用失败：{type(e).__name__}: {e}"}
+        obj = _extract_json(raw)
         if not isinstance(obj, dict):
             return {"error": "模型没有产出可解析的 JSON，可再试一次或改用手动填写"}
         case = _sanitize_suggestion(obj, prompt)
         if case.get("error"):
             return case
         return {"case": case}
+
+    def _pick_suggest_model(self):
+        """选一个可用模型来做「任务建议生成」（原决策模型职责的替代）。"""
+        if not self.hub:
+            return None
+        for spec in self.cfg.models.values():
+            if getattr(spec, "available", False):
+                return spec
+        return None
 
     # ---------- 运行 ----------
     def snapshot(self) -> dict:
@@ -632,6 +645,45 @@ _SUGGEST_CHECK_BAD = (
     "reg add", "reg delete", "> /dev/", "dd if=", "git push", "git reset",
     "git clean", "curl ", "wget ", "invoke-webrequest", "start-process",
 )
+
+
+def _extract_json(text: str) -> dict | None:
+    """从模型输出里抠出 JSON 对象（容忍 ```json 围栏、前后废话、字符串里的花括号）。"""
+    if not text:
+        return None
+    s = text.strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", s, re.S)
+    if fence:
+        s = fence.group(1).strip()
+    start = s.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(s)):
+        ch = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    obj = json.loads(s[start : i + 1])
+                except json.JSONDecodeError:
+                    return None
+                return obj if isinstance(obj, dict) else None
+    return None
 
 
 def _sanitize_suggestion(obj: dict, prompt: str) -> dict:

@@ -17,8 +17,8 @@ req = urllib.request.Request(
     headers={"Content-Type": "application/json"}, method="POST")
 log("POST /api/chat", f"prompt_len={len(PROMPT)}")
 
-KEY = {"task", "leader_round", "dispatch", "plan", "assign", "subtask",
-       "task_done", "subtask_error", "artifacts", "complete", "done",
+KEY = {"task", "plan", "assign", "subtask",
+       "subtask_error", "artifacts", "complete", "done",
        "error", "stopped", "verify", "gate", "stats"}
 
 buf_event = None
@@ -40,9 +40,7 @@ try:
             OUT.flush()
             if buf_event in KEY:
                 brief = ""
-                if buf_event == "leader_round":
-                    brief = json.dumps({k: data.get(k) for k in ("phase", "round", "done", "batch_n", "note")}, ensure_ascii=False)
-                elif buf_event in ("task", "complete", "done", "error", "stopped"):
+                if buf_event in ("task", "complete", "done", "error", "stopped"):
                     brief = json.dumps(data, ensure_ascii=False)[:180]
                 elif buf_event in ("assign", "plan"):
                     brief = json.dumps(data, ensure_ascii=False)[:220]

@@ -200,44 +200,6 @@ class Config:
     # 治 w3 类「文件写对了、回复把关键事实丢了」。
     facts_gate: bool = True
 
-    # ---- 多 agent 调度（Dispatcher）----
-    # 由一个本地决策模型把请求拆成【语义独立】的任务、指派执行 agent、维护共享进度，
-    # 任务在 agent 之间接力流转。模型不可用或输出无法解析时自动回退到规则拆解。
-    dispatcher_enabled: bool = True
-    # 决策/调度模型。默认 Qwen3-14B：拆解与交接能力强、中文好，Q4 量化约 9GB，
-    # 16GB 显存能跑（32B 的 Q4 约 20GB，16GB 卡放不下）。可在「可用模型管理」里
-    # 换成任意本地或在线模型（留空=关闭调度，回退到规则拆解）。
-    dispatcher_model: str = "qwen3.5:4b"
-    # 独立任务并行执行（互不相关的任务同时跑，减少模型闲置）。只在「完全访问权限」
-    # 下生效——并发任务各自弹审批框会互相打架。本地模型仍受 ollama.local_serial 串行约束，
-    # 所以并行的收益主要在在线/付费模型上。
-    dispatcher_parallel: bool = True
-    dispatcher_translate: bool = True      # 弱中文模型做翻译桥接（先译入、结果再译回）
-    # 中文维度低于这个分的执行模型才做翻译桥接。桥接要多花两次调度调用，只有真
-    # 的不会中文的模型才值得；阈值定太高会让每个本地模型都白白绕一圈。
-    dispatcher_bridge_threshold: int = 55
-    # 是否允许决策模型自己动手执行「简单对话」类任务（闲聊/解释，不碰工具不做计算）。
-    # 工具/代码/数学/写作/分析这类要真本事的任务无论开关如何都不会派给决策模型。
-    dispatcher_execute_simple: bool = True
-    # 决策/调度模型是否同时作为「常驻员工」参与执行：本地模型能力有限时，让本就常驻的
-    # 规划/决策模型（dispatcher_model）也进入可分配执行者名单——它规划完一轮后顺手执行
-    # 小步骤，而不是闲置。默认关闭（保持原行为：决策模型只接简单对话，重活一律不派）。
-    # 开启时建议把 dispatcher_model 设为能力最强的本地模型，否则弱模型会被派去干重活。
-    leader_as_worker: bool = False
-
-    # ---- Leader 双环调度（第 47 步：七步架构更新）----
-    # 评估环轮次上限（规划→执行→判定为 1 轮）。Leader 上下文有固定槽位保护、
-    # 头部字节稳定可吃服务端缓存，轮次成本远低于员工执行轮，可以给多。
-    leader_max_rounds: int = 12
-    # 步骤⑤语义验收未通过后的整体重试次数（失败原因回灌重新规划）。
-    # 0 = 语义验收不过也直接放行（附系统侧声明）。
-    leader_max_retries: int = 2
-    # 单步失败去重上限：同一小步骤（按归一化目标去重）在评估环里最多被重排执行
-    # leader_step_retry_cap 次，超过即标记为「已放弃」、不再让 Leader 把它无限重排进
-    # 后续批次。复测里 Ollama 开局不稳时，一批 500 的分析步会被 R2–R5 反复重排，
-    # 纯属烧时长；2 次足够暴露「确实做不动」，再重排就是抖动。
-    leader_step_retry_cap: int = 2
-
     # ---- 工具按需下发（省固定开销，见 agentforge/toolselect.py）----
     tools_lazy: bool = True            # True = 只下发核心 + 关键词命中的工具
     tools_core: list[str] = field(default_factory=list)   # 常驻工具名，空则用内置清单
@@ -387,30 +349,6 @@ class Config:
         cfg.facts_gate = bool(a.get("facts_gate", True))
         relay = str(a.get("relay", "brief" if cfg.relay_brief else "full")).strip().lower()
         cfg.relay_brief = relay != "full"
-
-        d = a.get("dispatcher", {}) or {}
-        cfg.dispatcher_enabled = bool(d.get("enabled", cfg.dispatcher_enabled))
-        cfg.dispatcher_model = str(d.get("model", cfg.dispatcher_model))
-        cfg.dispatcher_parallel = bool(d.get("parallel", cfg.dispatcher_parallel))
-        cfg.dispatcher_translate = bool(d.get("translate", cfg.dispatcher_translate))
-        cfg.dispatcher_bridge_threshold = int(
-            d.get("bridge_threshold", cfg.dispatcher_bridge_threshold))
-        cfg.dispatcher_execute_simple = bool(
-            d.get("execute_simple", cfg.dispatcher_execute_simple))
-        # 决策模型常驻当员工（第55步 point 3）：开启后 dispatcher_model 不再被排除在
-        # 重活候选之外，规划完一轮可顺手执行小步骤。默认关，保持原行为。
-        cfg.leader_as_worker = bool(
-            d.get("leader_as_worker", cfg.leader_as_worker))
-
-        # ---- Leader 双环调度（第 47 步：七步架构更新）----
-        # 评估环：每轮「规划→执行→判定+规划+精简」算一轮，轮次可以给多——
-        # 员工的执行才是 token 大头，Leader 自身的上下文有固定槽位保护不膨胀。
-        ld = raw.get("leader", {}) or {}
-        cfg.leader_max_rounds = max(1, int(ld.get("max_rounds", cfg.leader_max_rounds)))
-        # 失败重试：语义验收未通过后带着失败原因重新规划的整体重试次数。
-        # 2 与任务级闸门的「至多三次执行」约定同口径。
-        cfg.leader_max_retries = max(0, int(ld.get("max_retries", cfg.leader_max_retries)))
-        cfg.leader_step_retry_cap = max(1, int(ld.get("step_retry_cap", cfg.leader_step_retry_cap)))
 
         t = raw.get("tools", {}) or {}
         cfg.tools_lazy = bool(t.get("lazy", cfg.tools_lazy))

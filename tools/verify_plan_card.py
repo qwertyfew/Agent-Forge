@@ -29,18 +29,18 @@ MOCK = """(() => {
     document.getElementById('mainPane').classList.remove('land');
     document.getElementById('hero').classList.add('hide');
     document.getElementById('thread').classList.remove('hide');
-    // 模拟 Leader 第 2 批（index 全局递增：4、5）——旧代码按 index 对位会错行
+    // 模拟多步任务第 2 批（index 全局递增：4、5）——旧代码按 index 对位会错行
     addPlan([
       {index:4, id:'l4', title:'分析 mini-swe-agent 核心机制',
        kind_label:'检视', model_name:'gpt-oss:20b',
-       reason:'决策模型不接这类要动手/要算力的任务，改派 gpt-oss:20b（检视难度 74 分）'},
+       reason:'检视维度最强（74 分）'},
       {index:5, id:'l5', title:'分析 learn-claude-code 核心机制',
        kind_label:'检视', model_name:'gpt-oss:20b',
-       reason:'决策模型不接这类要动手/要算力的任务，改派 gpt-oss:20b（检视难度 74 分）'},
+       reason:'检视维度最强（74 分）'},
       {index:6, id:'l6', title:'分析 AgentForge 现有实现',
        kind_label:'分析', model_name:'gpt-oss:20b',
        reason:'分析维度最强（74 分）'},
-    ], 'Leader 第 4 批：由于之前的尝试中 mini-swe-agent 和 AgentForge 本身的分析均失败，本批次优先并行补齐这两个关键仓库的维度分析，确保后续对比有据可依。');
+    ], '第 4 批：由于之前的尝试中 mini-swe-agent 和 AgentForge 本身的分析均失败，本批次优先并行补齐这两个关键仓库的维度分析，确保后续对比有据可依。');
     markPlanStep(4, 'done', 'l4');
     markPlanStep(5, 'error', 'l5');
     markPlanStep(6, 'running', 'l6');
@@ -99,7 +99,7 @@ def main():
             "摘要行": d["hasNote"],
             "进度计数": d["prog"] == "2/3",                       # done+error=2
             "chip": d["chipCount"] == 6 and d["kindText"] == "检视" and d["modelText"] == "gpt-oss:20b",
-            "原因悬停全文": d["reasonTitle"].startswith("决策模型不接"),
+            "原因悬停全文": d["reasonTitle"].startswith("检视维度最强"),
             "完成图标": d["doneRowHasSvg"],
             "失败图标": d["errRowHasSvg"],
             "运行中保留序号": d["runRowIsNum"] and "running" not in d["errRowClass"],

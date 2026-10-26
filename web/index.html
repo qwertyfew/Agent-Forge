@@ -720,7 +720,7 @@
   .fc-preview .fc-meta-line{font-size:10.5px;color:var(--ink3);margin-bottom:6px}
 
   /* 任务拆解卡片：WorkBuddy 风格的实体卡。头行（图标+标题+步骤数+进度），
-     摘要独立成行——原先挤在头行右侧，Leader 的规划理由一长就把标题挤糊。
+     摘要独立成行——原先挤在头行右侧，规划理由一长就把标题挤糊。
      步骤行 = 状态圆点 + 标题 + 元信息行：类型/模型做成 chip，指派原因单行
      截断、悬停看全文（原先原因整段铺出来，模型名在「交给 X（…改派 X…）」
      里重复两次，就是截图里最丑的那一行）。 */
@@ -940,16 +940,6 @@
     font-size:12px;color:var(--ink2)}
   .lserial input[type=checkbox]{width:15px;height:15px;margin:0;flex:none;
     accent-color:var(--accent);cursor:pointer}
-  /* 决策模型（多 agent 调度）选择 */
-  .dsel{margin-top:12px;padding-top:12px;border-top:1px dashed var(--line2)}
-  .dsel-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-  .dsel-row label{font-size:12.5px;font-weight:600;color:var(--ink2);white-space:nowrap}
-  .dsel-row select{height:32px;padding:0 10px;border:1px solid var(--line2);border-radius:9px;
-    background:var(--panel);color:var(--ink);outline:none;font-size:12.5px;min-width:230px;max-width:340px}
-  .dsel .fhint{margin-top:6px;font-size:11.5px;color:var(--ink3);display:block}
-  .dsel .fhint.bad{color:var(--warn,#c08000)}
-  .num-in{width:64px;height:30px;padding:0 8px;border:1px solid var(--line2);
-          border-radius:8px;background:var(--bg2);color:var(--ink);font-size:12.5px}
 
   /* 添加付费模型 */
   .addpaid{margin-top:22px;border:1px dashed var(--line2);border-radius:14px;padding:16px}
@@ -1415,26 +1405,6 @@
             </button>
           </div>
           <div class="routing-status sub" id="routingStatus"></div>
-          <div class="dsel">
-            <div class="dsel-row">
-              <label for="dispatcherModel">决策模型（Leader）</label>
-              <select id="dispatcherModel" title="Leader：滚动规划小步骤批次、评估执行结果、语义验收——只规划与验收，不亲自执行"></select>
-            </div>
-            <span class="fhint" id="dispatcherStatus"></span>
-          </div>
-          <div class="dsel">
-            <div class="dsel-row">
-              <label for="leaderMaxRounds">Leader 环：评估轮次 / 失败重试</label>
-              <span class="sp"></span>
-              <input type="number" id="leaderMaxRounds" class="num-in" min="1" max="60"
-                     title="评估环上限：规划→员工执行→判定+精简 算一轮。Leader 上下文有固定槽位保护，轮次成本低，可以给多">
-              <span class="fhint">轮 /</span>
-              <input type="number" id="leaderMaxRetries" class="num-in" min="0" max="10"
-                     title="语义验收未通过后，带失败原因重新规划的整体重试次数">
-              <span class="fhint">次重试</span>
-            </div>
-            <span class="fhint" id="leaderHint"></span>
-          </div>
         </div>
       </div>
     </section>
@@ -3025,8 +2995,6 @@ function refreshModels(){
     renderCombo();
     renderModelList();
     ensurePaidTests();   // 只在模型管理页里生效（进入页面时由 showView 触发本轮实测）
-    renderDispatcher();
-    renderLeader();
     updatePoolHint();
     updateApplyButtons();
     // 窗口与固定开销都来自这份目录，拿到后重算一次占比（首屏时它可能还没回来）
@@ -3682,75 +3650,6 @@ $('btnBestLocal').onclick = async ()=>{
     ? (r.note || '已取消自动配置，勾选已同步取消')
     : `已勾选本地最佳组合 · 入口模型按任务类型初选（仅本地）`, canceling ? 'bad' : 'ok');
 };
-/* 决策模型下拉：多 agent 的「调度大脑」。可选任意模型（本地或在线）——
-   只要它能稳定产出 JSON。留空 = 关闭调度，回退到规则拆解。 */
-function renderDispatcher(){
-  if(!catalog) return;
-  const sel = $('dispatcherModel'), st = $('dispatcherStatus');
-  if(!sel) return;
-  const d = catalog.dispatcher || {};
-  const cur = d.model || '';
-  // 保留用户当前选择，重建选项时不要把它顶掉
-  sel.innerHTML = '';
-  const off = document.createElement('option');
-  off.value = ''; off.textContent = '（关闭：回退到规则拆解）';
-  sel.appendChild(off);
-  for(const m of (catalog.models || [])){
-    const o = document.createElement('option');
-    o.value = m.key || m.name;
-    o.textContent = m.name + (m.kind === 'local' ? '（本地）' : '（在线）')
-      + (m.available === false ? ' · 不可用' : '');
-    sel.appendChild(o);
-  }
-  sel.value = cur;
-  if(st){
-    st.classList.remove('bad');
-    if(!cur){
-      st.textContent = '未启用调度：请求会走内置的规则拆解。选一个模型即可开启多 agent 调度。';
-    }else if(d.available){
-      st.textContent = `调度已启用：${d.name || cur}（${d.source === 'paid' ? '在线' : '本地'}）`
-        + '。任务按能力类型拆成小步骤，每一步交给该维度最强的模型。';
-    }else{
-      st.textContent = `调度模型「${d.name || cur}」当前不可用`
-        + (d.source === 'local' ? '（本地尚未安装，可 ollama pull）' : '（请检查 API Key / base_url）')
-        + '，任务会自动回退到规则拆解。';
-      st.classList.add('bad');
-    }
-  }
-}
-
-$('dispatcherModel').onchange = async function(){
-  const model = this.value;
-  const r = await postModels({action:'set_dispatcher', model});
-  if(r.error){ toast(this, r.error, 'bad'); renderDispatcher(); return; }
-  catalog = r; renderDispatcher();
-  toast(this, model ? '决策模型已更新，Leader 调度立即生效' : '已关闭 Leader 调度', 'ok');
-};
-
-/* ---- Leader 环轮次配置（第 47 步）：评估轮次 / 失败重试 ---- */
-function renderLeader(){
-  const r = $('leaderMaxRounds'), x = $('leaderMaxRetries'), hint = $('leaderHint');
-  if(!r || !x || !catalog) return;
-  const d = catalog.leader || {};
-  if(document.activeElement !== r) r.value = d.max_rounds ?? 12;
-  if(document.activeElement !== x) x.value = d.max_retries ?? 2;
-  if(hint){
-    hint.textContent = '默认：评估 12 轮（Leader 上下文有固定槽位保护、头部稳定可吃模型端缓存，'
-      + '轮次成本远低于员工执行）；语义验收失败重试 2 次，重试会把失败原因硬性带回下一轮规划。';
-  }
-}
-async function saveLeader(){
-  const r = $('leaderMaxRounds'), x = $('leaderMaxRetries');
-  const max_rounds = Math.min(60, Math.max(1, parseInt(r.value, 10) || 12));
-  const max_retries = Math.min(10, Math.max(0, parseInt(x.value, 10) || 0));
-  const resp = await postModels({action:'set_leader', max_rounds, max_retries});
-  if(resp.error){ toast(r, resp.error, 'bad'); return; }
-  if(resp.leader) catalog.leader = resp.leader;
-  renderLeader();
-  toast(r, `已保存：评估环 ≤${resp.leader.max_rounds} 轮，语义验收重试 ≤${resp.leader.max_retries} 次`, 'ok');
-}
-$('leaderMaxRounds').onchange = saveLeader;
-$('leaderMaxRetries').onchange = saveLeader;
 
 function updatePoolHint(){
   if(!catalog) return;
@@ -4110,7 +4009,7 @@ let liveTask = null;
    现在服务端把事件广播进 TaskBus，这里用 EventSource 订阅：
    先重放缓冲、再续播实时事件，接管者和发起者看到一样的东西。 */
 let taskStream = null, taskStreamId = '';
-const STREAM_EVENTS = ['task','combo','plan','assign','subtask','dispatch','task_done','bridge','conflict','verify','step','skill','route','stats','usage',
+const STREAM_EVENTS = ['task','combo','plan','assign','subtask','verify','step','skill','route','stats','usage',
   'thinking','delta','tool_start','tool_result','history','error','subtask_error','stopped','complete','memory','done','steered','gate_discard'];
 function followTaskStream(id){
   if(busy || (taskStream && taskStreamId === id)) return;   // 自己发起的流已在手上
@@ -5554,8 +5453,7 @@ function planProgress(){
   p.textContent = fin + '/' + planSteps.length;
 }
 function markPlanStep(index, state, taskId){
-  // Leader 双环的 index 跨批次全局递增（l4、l5…），而 planSteps 每批重建——
-  // 按 task_id 定位才是本批正确的那一行；旧路径事件没有 id，退回 index 对位
+  // 按 task_id 定位本批正确的那一行；没有 id 时退回 index 对位
   let s = taskId ? planSteps.find(x=>x.id === taskId) : null;
   if(!s) s = planSteps[index - 1];
   if(!s) return;
@@ -6534,10 +6432,6 @@ function handleTaskEvent(ev, data){
       if(data.task_id && planSteps.length && !laneOf(data.task_id)){
         workerCard(data.task_id, data.title);
       }
-      // 决策模型点的执行者被系统换掉时明确说一句——否则用户会以为小模型在硬扛
-      if(data.reassigned && data.reason && !data.multi){
-        addPillNote(`调度指派：<b>${esc(data.model_name||'')}</b> —— ${esc(data.reason)}`);
-      }
       if(liveTask){
         if(data.total > 1){ liveTask.stepIndex = data.index; liveTask.stepTotal = data.total; }
         if(data.model_name){
@@ -6557,64 +6451,14 @@ function handleTaskEvent(ev, data){
         noteAction(`执行第 ${data.index}/${data.total} 步${st && st.title ? '：' + st.title : ''}`);
       }
     }
-    else if(ev === 'dispatch'){
-      // 多 agent：决策模型先把请求拆成【语义独立】的任务，并为每个任务指派 agent
-      const tasks = data.tasks || [];
-      if(data.multi){
-        const who = data.dispatcher ? ` · 决策模型 ${esc(data.dispatcher)}` : '';
-        const mode = data.parallel
-          ? '，互不相关的任务<b>并行</b>执行'
-          : (data.local_serial ? '，任务串行接力（本地模型一次只跑一个）' : '，任务串行接力');
-        addPillNote(`多 agent 调度：拆成 <b>${tasks.length}</b> 个任务${who}${mode}`
-          + (data.source === 'llm' ? '' : '（决策模型不可用，已按规则拆解）'));
-      }
-      if(data.rationale) addPillNote('调度说明：' + esc(data.rationale));
-      if(data.parallel && tasks.length > 1) addTaskLanes(tasks);
-    }
     else if(ev === 'steered'){
-      // 中途补充已被运行侧采纳：leader 规划边界消费的没有 task_id，
-      // 员工注入的带 task_id（顺带在进度卡上留痕）
-      addPillNote(`<b>用户补充已生效</b>（${data.phase === 'leader' ? '下一批规划' : '员工下一步'}采纳）：${esc(data.text || '')}`);
-      if(data.task_id) workerNote(data.task_id, '已采纳用户补充');
-    }
-    else if(ev === 'task_done'){
-      // 某个 agent 任务完成：计划卡里那一步打勾（唯一的进度展示处）
-      if(data.index || data.task_id) markPlanStep(data.index, data.status === 'error' ? 'error' : 'done', data.task_id);
-      const ln = laneOf(data.task_id);
-      if(ln && ln.think) ln.think = null;
-      // 进度卡同步收口：图标定格 + 摘要行写结局 + 过程自动收起。
-      // 员工回复里的「任务已完成。」只活在卡片内部——主对话流的终态由
-      // leader 的最终答复（complete 时渲染）承担，两者不再混淆。
-      const wc = data.task_id && workerCards[data.task_id];
-      if(wc){
-        closeLaneThinking(wc, '整理结论并作答');
-        workerSeal(data.task_id, data.status !== 'error',
-          data.status === 'error' ? '执行失败'
-            : `已完成 · ${wc.tools} 次工具调用`);
-      }
-      if(liveTask && data.summary) liveTask.progress = String(data.summary).slice(0, 60);
-      renderRunBar();
-    }
-    else if(ev === 'leader_round'){
-      // Leader 双环的每轮结论：规划/判定/重试都以胶囊提示播报，滚动规划对用户可见
-      const ph = data.phase === 'eval' ? '判定'
-               : data.phase === 'retry' ? '重试' : '规划';
-      addPillNote(`Leader ${ph}（第 ${data.round} 批）：${esc(data.note || '')}`);
-    }
-    else if(ev === 'bridge'){
-      // 能力桥接：调度器替弱中文模型做了翻译预处理
-      addPillNote(`能力桥接：${esc(data.reason || '已为执行模型翻译输入')}`);
+      // 中途补充已被运行侧采纳
+      addPillNote(`<b>用户补充已生效</b>（已采纳）：${esc(data.text || '')}`);
     }
     else if(ev === 'warmup'){
-      // 任务开局预热注入：项目速览（目录树/README/命中文件）已进员工系统提示
+      // 任务开局预热注入：项目速览（目录树/README/命中文件）已进模型系统提示
       addPillNote(`预热注入：项目速览（${data.tree_entries || 0} 条目录条目、`
-        + `${data.hit_files || 0} 个命中文件，约 ${data.chars || 0} 字）已注入员工系统提示`);
-    }
-    else if(ev === 'conflict'){
-      // 并行任务改到同一个文件：写入已排队，但最终内容需要人工核对
-      addPillNote(`并行写入冲突：<b>${esc(data.path || '')}</b>`
-        + ` 被「${(data.tasks||[]).map(esc).join('」和「')}」同时修改`
-        + (data.note ? ` —— ${esc(data.note)}` : ''), true);
+        + `${data.hit_files || 0} 个命中文件，约 ${data.chars || 0} 字）已注入模型系统提示`);
     }
     else if(ev === 'verify'){
       if(Array.isArray(data.unverified_local) && data.unverified_local.length){

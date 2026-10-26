@@ -252,15 +252,14 @@ with tempfile.TemporaryDirectory() as td:
 v = git_version()
 check("E24 git_version 返回 commit+dirty", "commit" in v and isinstance(v["dirty"], bool), str(v))
 
-# ---- E25-E30 一键生成（suggest_case）：替身决策模型，不碰真模型 ----
+# ---- E25-E30 一键生成（suggest_case）：替身模型，不碰真模型 ----
 class _Spec:
     name = "stub-decision"
-    display = "Stub 决策模型"
+    display = "Stub 模型"
     available = True
 
 
 class _StubCfg:
-    dispatcher_model = "stub"
     models = {"stub": _Spec()}
 
 
@@ -271,8 +270,6 @@ class _FakeHub:
     def chat(self, spec, messages, tools=None, options=None, think=False):
         class _R:
             content = self.reply
-            # dispatcher._ask 现在按 done_reason 判「被 num_predict 截断」，
-            # 失败留档还会读 thinking / token 统计——桩要跟上，否则首轮就 AttributeError
             done_reason = "stop"
             thinking = ""
             prompt_eval_count = 0
@@ -334,10 +331,10 @@ empty = EvalsDesk(cfg=_StubCfg(), hub=_FakeHub(_reply_for(
 check("E27 空 expect 拒绝出题", "error" in empty.suggest_case("随便写点东西") and
       "判定条件" in empty.suggest_case("随便写点东西")["error"], "")
 
-# E28 决策模型不可用 → 如实报错（不装死也不假装生成）
+# E28 没有可用模型 → 如实报错（不装死也不假装生成）
 none_desk = EvalsDesk(cfg=None, hub=None)
-check("E28 无决策模型 → 报「决策模型不可用」",
-      "决策模型不可用" in none_desk.suggest_case("任务")["error"], "")
+check("E28 无可用模型 → 报「没有可用模型」",
+      "没有可用模型" in none_desk.suggest_case("任务")["error"], "")
 
 # E29 模型产出不是 JSON → 如实报错
 badjson = EvalsDesk(cfg=_StubCfg(), hub=_FakeHub("我觉得这条任务很好，无需改动。"))

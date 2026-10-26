@@ -545,7 +545,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(self.evals.save_tasks(req.get("cases") or []))
 
     def _handle_evals_suggest(self):
-        """一键生成评测任务字段：用户只填任务指令，其余由决策模型产出。"""
+        """一键生成评测任务字段：用户只填任务指令，其余由模型产出。"""
         req = self._evals_body()
         if "__error__" in req:
             self._json({"error": req["__error__"]}, 400)
@@ -894,8 +894,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_steer(self):
         """中途补充（Steering）：任务运行中用户回车插话。
 
-        任务在跑 → 进收件箱，运行侧在下一个检查点（员工下一轮推理/leader 下批
-        规划）采纳；没在跑 → ok=False，前端回落为普通新消息。 """
+        任务在跑 → 进收件箱，运行侧在下一个检查点采纳；没在跑 → ok=False，
+        前端回落为普通新消息。 """
         length = int(self.headers.get("Content-Length") or 0)
         try:
             req = json.loads(self.rfile.read(length) or b"{}")
@@ -1115,78 +1115,8 @@ class _Handler(BaseHTTPRequestHandler):
                                       and _ac.get("scope") == "local")
                      else "off"),
         }
-        # 决策/调度模型（多 agent 的 Dispatcher）当前指向谁、能不能用
-        snap["dispatcher"] = self._dispatcher_snapshot()
-        # Leader 双环的轮次配置（第 47 步：评估环上限 / 语义验收重试上限）
-        snap["leader"] = {
-            "max_rounds": int(getattr(self.cfg, "leader_max_rounds", 12)),
-            "max_retries": int(getattr(self.cfg, "leader_max_retries", 2)),
-        }
         snap.update(self._prompt_budget())
         return snap
-
-    def _dispatcher_snapshot(self) -> dict:
-        dkey = (getattr(self.cfg, "dispatcher_model", "") or "").strip()
-        spec = None
-        if dkey:
-            spec = self.cfg.models.get(dkey) or next(
-                (s for s in self.cfg.models.values() if s.name == dkey), None)
-        kind = getattr(spec, "kind", "") if spec is not None else ""
-        return {
-            "enabled": bool(getattr(self.cfg, "dispatcher_enabled", False)),
-            "model": dkey,
-            "name": spec.display if spec is not None else "",
-            "source": ("paid" if kind == "paid" else "local") if spec is not None else "none",
-            "available": bool(getattr(spec, "available", False)) if spec is not None else False,
-            "any_available": any(getattr(e, "available", False) for e in getattr(self.store, "_catalog", [])),
-        }
-
-    def _write_dispatcher_model(self, model: str) -> bool:
-        """把决策/调度模型写回配置文件（agent.dispatcher.model）。已有则替换，没有则补块。
-
-        用逐行扫描而不是整体 dump，避免把 config 里的注释和其它节全部重排。
-        """
-        p = getattr(self.cfg, "source_path", None)
-        if not p:
-            return False
-        p = Path(p)
-        if not p.exists():
-            return False
-        val = f'{model}'
-        quoted = f'"{val}"'
-        lines = p.read_text(encoding="utf-8").splitlines()
-        out: list[str] = []
-        in_disp = False
-        replaced = False
-        for ln in lines:
-            if re.match(r'^(\s*)dispatcher\s*:\s*(.*)$', ln):
-                in_disp = True
-                out.append(ln)
-                continue
-            if in_disp and not replaced:
-                if ln.strip() and not ln.startswith("    "):
-                    in_disp = False                 # 遇到更浅的非空行 → 离开该块
-                else:
-                    mm = re.match(r'^(\s+)model\s*:\s*(.*)$', ln)
-                    if mm:
-                        out.append(f"{mm.group(1)}model: {quoted}")
-                        replaced = True
-                        continue
-            out.append(ln)
-        if not replaced:
-            final: list[str] = []
-            inserted = False
-            for ln in out:
-                final.append(ln)
-                if not inserted and re.match(r'^agent\s*:\s*$', ln):
-                    final.append("  dispatcher:")
-                    final.append(f"    model: {quoted}")
-                    inserted = True
-            if not inserted:
-                return False
-            out = final
-        p.write_text("\n".join(out) + "\n", encoding="utf-8")
-        return True
 
     def _write_routing(self, capability: bool, allow_upgrade: bool,
                         allow_paid_upgrade: bool,
@@ -1247,53 +1177,6 @@ class _Handler(BaseHTTPRequestHandler):
                             final.append(f"  {key}: {_fmt(keys.get(key, missing[key]))}")
                             missing.pop(key, None)
             out = final
-        p.write_text("\n".join(out) + "\n", encoding="utf-8")
-        return True
-
-    def _write_leader(self, max_rounds: int, max_retries: int) -> bool:
-        """把 Leader 双环轮次写回配置文件（leader: 块），尽量不动其它内容。"""
-        p = getattr(self.cfg, "source_path", None)
-        if not p:
-            return False
-        p = Path(p)
-        keys = {"max_rounds": int(max_rounds), "max_retries": int(max_retries)}
-        text = p.read_text(encoding="utf-8") if p.exists() else ""
-        lines = text.splitlines()
-        missing = dict(keys)
-        out: list[str] = []
-        in_block = False
-        for ln in lines:
-            m = re.match(r'^(\s*)leader\s*:\s*(.*)$', ln)
-            if m:
-                in_block = True
-                out.append(ln)
-                continue
-            if in_block:
-                km = re.match(r'^(\s{2})([\w-]+)\s*:\s*(.*)$', ln)
-                if km and km.group(2) in keys:
-                    out.append(f"{km.group(1)}{km.group(2)}: {keys[km.group(2)]}")
-                    missing.pop(km.group(2), None)
-                    continue
-                if ln.strip() and not ln.startswith('  '):
-                    in_block = False
-            out.append(ln)
-        if missing:
-            if any(re.match(r'^leader\s*:', ln) for ln in out):
-                final = []
-                for ln in out:
-                    final.append(ln)
-                    if re.match(r'^leader\s*:', ln):
-                        for key in ("max_rounds", "max_retries"):
-                            if key in missing:
-                                final.append(f"  {key}: {missing[key]}")
-                                missing.pop(key, None)
-                out = final
-            else:
-                if out and out[-1].strip():
-                    out.append("")
-                out.append("leader:")
-                for key in ("max_rounds", "max_retries"):
-                    out.append(f"  {key}: {keys[key]}")
         p.write_text("\n".join(out) + "\n", encoding="utf-8")
         return True
 
@@ -1430,24 +1313,6 @@ class _Handler(BaseHTTPRequestHandler):
                 note = "本地模型已改为串行执行（同时只跑一个）" if on \
                     else "本地模型已允许并行执行"
 
-            elif action == "set_dispatcher":
-                # 配置多 agent 的决策/调度模型（本地或在线都行；空=关闭，回退规则拆解）
-                model = str(req.get("model") or "").strip()
-                if model:
-                    found = self.store.find_any(model) or next(
-                        (e for e in self.store._catalog if e.name == model), None)
-                    if found is None:
-                        self._json({"error": f"未知模型：{model}"}, 400)
-                        return
-                    model = found.key        # 统一存 cfg.models 里的 key，Dispatcher 好查
-                self.cfg.dispatcher_model = model
-                self._write_dispatcher_model(model)
-                if model:
-                    spec = self.cfg.models.get(model)
-                    note = "已把决策模型设为 " + (spec.display if spec else model)
-                else:
-                    note = "已关闭多 agent 调度（回退到规则拆解）"
-
             elif action == "apply_best":
                 picks = self.store.apply_best(int(req.get("budget") or 0) or None)
                 note = "已应用最优配置：" + "、".join(e.display for e in picks)
@@ -1511,26 +1376,6 @@ class _Handler(BaseHTTPRequestHandler):
                 spec = self.cfg.models.get(entry.key)
                 ok, msg = self.cli.hub.ping_spec(spec) if spec else (False, "模型配置缺失")
                 self._json({"ok": ok, "message": msg, "snapshot": self._models_snapshot()})
-                return
-
-            elif action == "set_leader":
-                # Leader 双环轮次配置：写回配置文件 + 热更新运行中的 cfg
-                mr = int(req.get("max_rounds") or 0)
-                mr = min(60, max(1, mr)) if mr else None
-                xr = int(req.get("max_retries") or 0)
-                xr = min(10, max(0, xr)) if req.get("max_retries") is not None else None
-                if mr is not None:
-                    self.cfg.leader_max_rounds = mr
-                if xr is not None:
-                    self.cfg.leader_max_retries = xr
-                ok = self._write_leader(
-                    self.cfg.leader_max_rounds, self.cfg.leader_max_retries)
-                self._json({
-                    "ok": ok,
-                    "leader": {"max_rounds": self.cfg.leader_max_rounds,
-                               "max_retries": self.cfg.leader_max_retries},
-                    "snapshot": self._models_snapshot(),
-                })
                 return
 
             elif action == "set_scores":
@@ -1750,7 +1595,7 @@ class _Handler(BaseHTTPRequestHandler):
                 cap_route = self.cli.router.capability(message, self.store)
                 if cap_route.get("upgrade"):
                     # 只当作「优先模型」上报，不直接钉死 model_key——
-                    # 否则会挡住多 agent 调度（调度模型要按任务重新指派模型）。
+                    # 否则会挡住能力路由的自动指派。
                     # 用 chosen_key（本档实际选中的）而不是 best_key（全局最强）：
                     # 后果路由的价值就在「够用且更省」，不在于永远上最强。
                     preferred_key = cap_route.get("chosen_key") or cap_route["best_key"]
@@ -1821,8 +1666,8 @@ class _Handler(BaseHTTPRequestHandler):
                                auto_approve=auto_approve, file_log=file_log,
                                multi_path=multi_path, task_id=task_id):
                 kind = ev["type"]
-                # 员工流的三个特征事件带 task_id 透传：前端靠它把员工过程
-                # （思考/工具/正文）收进折叠的进度卡，主对话流只留 leader 骨架。
+                # 带 task_id 的事件透传：前端靠它把过程（思考/工具/正文）
+                # 收进折叠的进度卡。
                 # 普通聊天（无编排）没有 task_id，行为不变。
                 if kind in ("delta", "thinking", "tool_start", "tool_result",
                             "step") and ev.get("task_id"):
@@ -1852,7 +1697,7 @@ class _Handler(BaseHTTPRequestHandler):
                         payload["failed"] = True
                     emit("tool_result", payload)
                 elif kind == "progress":
-                    # 员工的阶段成果汇报（产出新文件时随流上报）：此前没有分支
+                    # 阶段成果汇报（产出新文件时随流上报）：此前没有分支
                     # 被静默丢弃——前端进度卡靠它显示「做到哪了」
                     emit("progress", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "notify":
@@ -2032,26 +1877,10 @@ class _Handler(BaseHTTPRequestHandler):
                     emit("assign", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "subtask":
                     emit("subtask", {"index": ev["index"], "total": ev["total"], "text": ev["text"]})
-                elif kind == "dispatch":
-                    # 多 agent：决策模型给出的拆解与指派
-                    emit("dispatch", {k: v for k, v in ev.items() if k != "type"})
-                elif kind == "task_done":
-                    # 某个 agent 任务完成，前端据此把计划里的这一步标记为完成
-                    emit("task_done", {k: v for k, v in ev.items() if k != "type"})
-                elif kind == "leader_round":
-                    # Leader 双环每轮的规划/评估结论：原先是这里没分支被静默丢弃，
-                    # 前端渲染函数早就备好（plan 卡上方的胶囊播报）——滚动规划
-                    # 对用户可见就差这一行
-                    emit("leader_round", {k: v for k, v in ev.items() if k != "type"})
-                elif kind == "bridge":
-                    emit("bridge", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "warmup":
                     # 任务开局预热注入：项目速览（目录树/README/命中文件）已进
-                    # 员工系统提示。注入本身在 orchestrator 侧完成，这里只是播报。
+                    # 模型系统提示。注入本身在 orchestrator 侧完成，这里只是播报。
                     emit("warmup", {k: v for k, v in ev.items() if k != "type"})
-                elif kind == "conflict":
-                    # 并行任务写到了同一个文件：写入已排队，这里提醒用户核对结果
-                    emit("conflict", {k: v for k, v in ev.items() if k != "type"})
                 elif kind == "verify":
                     # 收尾验证闸门：系统亲自运行验证命令的真实结果（模型只有解读权）
                     emit("verify", {k: v for k, v in ev.items() if k != "type"})

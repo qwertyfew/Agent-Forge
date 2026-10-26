@@ -195,7 +195,7 @@ SYSTEM_TEMPLATE = """你是 AgentForge，一个运行在本机上的智能体。
      包目录——若实际是包 `agentforge/tools/`，必须落实到具体文件如 `agentforge/tools/fs.py`；
      别把包目录名当文件引用，读者按你写的路径去找会找不到。
   3. 行号绑定符号而非裸行号：引用具体代码位置时，优先写稳定的符号锚点
-     （如「`class Agent` 内」「`def run()` 处」「`LeaderContext.add_progress`」），
+     （如「`class Agent` 内」「`def run()` 处」「`short_title()` 处」），
      不要只写 `loop.py:96-124` 这样的裸行号——行号会随代码改动漂移，符号锚点才可复现
      （架构层会对此给软提醒，但不阻断写入）。
   4. 二手数字不当仓库证据：清单 / 报告里引用的任何数字（star / fork / 准确率 /

@@ -90,7 +90,7 @@ def test_change_beats_writing() -> None:
     同处一个小句，就是「要动手改东西」，不猜意图。
     """
     accident = [
-        # 子任务书原样（调度模型复述后的那一条）
+        # 子任务书原样（拆步后的那一条）
         "根据用户的文字偏好（从记忆或上下文获取），修改思维链输出机制：1. 在完全打印出"
         "思维链后，将其隐藏；2. 将完整的思维链结果总结成简短的一句话（例如：'决定调用"
         "工具 fetch_json' 或 '将任务拆解为若干步骤...'）并展示。",
@@ -116,8 +116,8 @@ def test_change_beats_writing() -> None:
         k = kind_of(t)
         check(f"真写作任务不误收：{t[:18]} → {k}", k in allowed, k)
 
-    # 调度模型给的 kind 也要过规则复核（dispatcher._llm_plan 走的是这条）
-    check("调度模型误标 writing → 纠回 coding",
+    # 上游给的 kind 也要过规则复核
+    check("误标 writing → 纠回 coding",
           resolve_kind(accident[0], "writing") == "coding",
           resolve_kind(accident[0], "writing"))
     check("真写作任务：模型说 writing 就随它",
@@ -167,16 +167,6 @@ def test_kind_contract() -> None:
           f"{sorted(KIND_SIGNALS)}")
 
 
-def test_dispatcher_prompt_lists_every_kind() -> None:
-    """Leader 规划提示里得把每种 kind 都告诉决策模型，否则它永远拆不出这一类。"""
-    from agentforge.leader import LEADER_PLAN_SYSTEM, KINDS
-    from agentforge.dispatcher import NOT_SIMPLE_KINDS
-    for k in KINDS:
-        check(f"Leader 提示写到「{k}」", k in LEADER_PLAN_SYSTEM)
-    for k in ("coding", "writing", "analysis", "math", "inspect"):
-        check(f"「{k}」算重活（不交给只会调度的小模型）", k in NOT_SIMPLE_KINDS)
-
-
 def test_short_title() -> None:
     """短标题不许按字数硬切。
 
@@ -218,19 +208,6 @@ def test_short_title() -> None:
     check("空输入不炸", short_title("", 26) == "" and short_title(None, 26) == "",
           repr(short_title(None, 26)))
 
-    # 计划卡与派工标题必须同源：dispatcher 不许再自己硬切一遍
-    import inspect as _inspect
-    from agentforge import dispatcher as _d
-    src = _inspect.getsource(_d)
-    check("dispatcher 里不再有 goal[:26] 这种硬切", "goal[:26]" not in src, "还有硬切")
-    check("dispatcher 用的是 planner.short_title", "short_title" in src)
-    # 同上：光有 kind_of 这个函数不算数，Leader 采纳批次条目的 kind 时必须真的过它
-    # （第 47 步起 kind 采纳点从旧 dispatcher.plan 移到了 leader.parse_batch）
-    from agentforge import leader as _l
-    lsrc = _inspect.getsource(_l)
-    check("Leader 采纳批次 kind 时过了规则复核（kind_of 兜底）",
-          "kind_of(" in lsrc, "没接上 kind_of")
-
 
 def main() -> None:
     test_regressions()
@@ -240,7 +217,6 @@ def main() -> None:
     test_change_beats_writing()
     test_unknown_text()
     test_kind_contract()
-    test_dispatcher_prompt_lists_every_kind()
     test_short_title()
     print("\n全部通过。")
 

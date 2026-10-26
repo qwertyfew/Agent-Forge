@@ -24,7 +24,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from agentforge.config import Config                       # noqa: E402
-from agentforge.dispatcher import TaskSpec, is_simple_chat  # noqa: E402
 from agentforge.permissions import Guard                   # noqa: E402
 from agentforge.toolselect import FAMILIES                 # noqa: E402
 from agentforge.tools import build_registry                # noqa: E402
@@ -100,21 +99,6 @@ def test_all_names_exist() -> None:
     check("下发清单全是真实工具", all(n in reg.names() for n in got), str(got))
 
 
-# ---------------------------------------------------------------- 简单对话判据
-
-def test_is_simple_chat() -> None:
-    def simple(goal: str, kind: str = "general") -> bool:
-        return is_simple_chat(TaskSpec(id="t", goal=goal, kind=kind))
-
-    check("事故现场：短检索句不再判成简单对话", not simple(SHORT_VAGUE))
-    check("短但含取数需求：不判简单", not simple("帮我查查那个仓库现在多少 star"))
-    check("纯闲聊仍然判简单（决策模型接得住）", simple("你好，你是谁"))
-    check("追问式闲聊仍判简单", simple("谢谢，再说说上一条"))
-    check("超长目标一律不判简单（单向上限）", not simple("嗯" * 200))
-    check("非 general 类一律不判简单", not simple("你好", kind="coding"))
-    check("kind=inspect 不判简单", not simple("看一下这个目录", kind="inspect"))
-
-
 def test_github_search_in_family() -> None:
     """「找某个 GitHub 项目」光有 web_search 会静默劣化——候选清单得靠官方接口。
 
@@ -136,8 +120,7 @@ def test_github_search_in_family() -> None:
 def main() -> int:
     for fn in (test_first_party_available, test_family_complete,
                test_length_does_not_gate, test_no_false_family,
-               test_all_names_exist, test_github_search_in_family,
-               test_is_simple_chat):
+               test_all_names_exist, test_github_search_in_family):
         print(f"\n--- {fn.__name__} ---")
         fn()
     print("\n全部通过")
