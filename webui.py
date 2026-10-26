@@ -73,8 +73,10 @@ def _venv_interpreters() -> tuple[str, str]:
 
 # 服务端重启单飞锁：重启是「会停掉本服务」的操作，HTTP 响应发出后前后端
 # 都没有兜底。同一瞬间连点两次（或多开一个标签页再点）会让两轮 stop/start
-# 链叠在一起互相残杀——上一轮弹窗风暴的放大器之一。60s 内的重复请求直接拒绝。
-_RESTART_LOCK_TTL = 60.0
+# 链叠在一起互相残杀——上一轮弹窗风暴的放大器之一。但防「瞬间连点」只需几秒，
+# 60s 太长，会挡住正常的频繁重启（调试期改代码→重启→验证的节奏）。10s 既防
+# 瞬间连点，又允许一轮重启链完成后立刻再重启。要更快可走命令行 stop/start。
+_RESTART_LOCK_TTL = 10.0
 
 
 def _restart_locked(run_dir: Path | None = None) -> str | None:
