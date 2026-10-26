@@ -131,7 +131,7 @@ def citation_issue(mode: str, reply: str, process: list[dict]) -> str:
 
 
 def run_case_once(case, label: str, model: str, timeout: int,
-                  check_timeout: int) -> dict:
+                  check_timeout: int, orchestration: str = "") -> dict:
     """单跑一条任务一次，返回该次的判定记录（不动台账）。
 
     过程记录（rec["process"]）忠实还原 harness 的处理顺序：轮次、skill
@@ -147,6 +147,11 @@ def run_case_once(case, label: str, model: str, timeout: int,
     _interact.begin(answers=getattr(case, "ask_answers", None))
 
     cfg = Config.load(ROOT / "config.yaml")
+    # A/B 对照：--orchestration 透传编排档位（always=强制走 leader 多 LLM 环，
+    # never=永不拆、单模型直跑）。空串 = 不干预，用 config.yaml 的默认值。
+    # 这是评测专用的运行期覆盖，不写回磁盘——避免脏掉产品配置。
+    if orchestration.strip():
+        cfg.orchestration = orchestration.strip().lower()
     # 必须是 Path 不是 str：shell 工具收尾会调 workspace_root.resolve()，
     # 传 str 会让 run_command（不传 cwd 时）全灭——第三轮评测 17/24 的元凶，
     # c2/c5 的代码其实是对的，死在工具层 AttributeError 上。
@@ -379,6 +384,8 @@ def main() -> int:
     ap.add_argument("--check-timeout", type=int, default=60, help="check 层命令超时（秒）")
     ap.add_argument("--repeat", type=int, default=1,
                     help="每条任务跑几遍（pass^k 口径：全过才算过）")
+    ap.add_argument("--orchestration", default="",
+                    help="编排档位：always=强制走 leader 多 LLM / never=单模型直跑 / auto=默认（空=不干预）")
     args = ap.parse_args()
 
     try:
@@ -404,7 +411,7 @@ def main() -> int:
     t_all = time.time()
     for i, case in enumerate(cases, 1):
         recs = [run_case_once(case, args.label, args.model,
-                              args.timeout, args.check_timeout)
+                              args.timeout, args.check_timeout, args.orchestration)
                 for _ in range(reps)]
         p = sum(1 for r in recs if r["verdict"] == "pass")
         final = dict(recs[-1])
@@ -451,6 +458,7 @@ def main() -> int:
     out = RESULTS_DIR / f"{args.label}.json"
     out.write_text(json.dumps({
         "meta": {"label": args.label, "model": args.model or "auto",
+                 "orchestration": args.orchestration or "auto",
                  "config": args.config, "tasks": args.tasks,
                  "repeat": reps,
                  "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")},
