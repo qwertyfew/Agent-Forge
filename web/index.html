@@ -4237,6 +4237,7 @@ function addResumeNote(){
 }
 
 function openTask(id){
+  const prevOpen = openTaskId;   // 点击前打开的任务：判断「界面是否已经显示它」用
   openTaskId = id;
   renderTasks();
   fetch('/api/tasks?id=' + encodeURIComponent(id)).then(r=>r.json()).then(d=>{
@@ -4244,8 +4245,12 @@ function openTask(id){
     if(!task) return;
     if(task.status === 'running'){
       // 正在跑的任务：画面得挂上它的实时流（缓冲会重放，整段过程都补得回来）。
-      // 但本标签页就是发起者时流已经在手上，重进只会把画好的内容清掉——切回视图就行。
-      if(busy && liveTask && liveTask.id === task.id){ showView('chat'); forceScrollBottom(); return; }
+      // 只有「界面本来就显示它 + 本标签页正在流它」才只切回视图不重画；切换过
+      // 窗口（prevOpen 不是它）就必须重新接管渲染，否则会停在别的任务画面上——
+      // 「切回执行中任务却显示其他任务」和「要点两下」都源于旧判断漏了 prevOpen。
+      if(prevOpen === task.id && busy && liveTask && liveTask.id === task.id){
+        showView('chat'); forceScrollBottom(); return;
+      }
       if(!liveTask || liveTask.id !== task.id) liveTask = liveTaskFrom(task);
       enterTaskView(task, {live: true});
       followTaskStream(task.id);
