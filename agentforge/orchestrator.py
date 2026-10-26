@@ -937,9 +937,11 @@ def run_task(
 
     # 任务开局预热注入：单模型/接力执行先给 agent 一份项目速览。开关关闭时
     # 置空串，不会把上一个任务残留的预热块带进本任务。
-    warm_block, warm_stats = warmup_gate.build_once(agent.cfg, message)
+    warm_block, warm_stats, warm_reused = warmup_gate.build_once(
+        agent.cfg, message, task_id=task_id)
     agent.warmup_block = warm_block
-    if warm_block:
+    # 续接追问（reused）复用原任务的工作区速览：不重扫、也不再播报一次「预热注入」。
+    if warm_block and not warm_reused:
         yield {"type": "warmup", **warm_stats}
 
     # 单模型 / 计划接力路径过开局健康门禁：Ollama 开局不稳时在这里就被拦下，

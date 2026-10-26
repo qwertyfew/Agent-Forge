@@ -378,16 +378,20 @@ def build_block(cfg, task_text: str) -> tuple[str, dict]:
     return block, stats
 
 
-def build_once(cfg, task_text: str, *, ttl: float = 600.0):
-    """带缓存的一次性构建：同一任务内多员工共享一份（工作区秒级不变）。
+def build_once(cfg, task_text: str, *, task_id: str = "", ttl: float = 600.0):
+    """带缓存的一次性构建：同一任务内（含续接追问）共享一份工作区速览。
 
-    缓存挂在 cfg 对象上（跟随配置生命周期），ttl 过期或任务原文变化才重建。
+    缓存挂在 cfg 对象上（跟随配置生命周期）。缓存键优先用 task_id——续接任务
+    （continue_of）复用的正是原任务 id，于是追问不再重扫工作区、也不再重复播报
+    「预热注入」；没有 task_id 的路径退回 task_text。ttl 过期才重建。
+    返回 (block, stats, reused)：reused=True 表示命中缓存，调用方据此决定是否播报。
     """
     key = "_warmup_cache"
     cache = getattr(cfg, key, None)
     now = time.time()
-    if cache and now - cache[0] < ttl and cache[1] == task_text:
-        return cache[2], cache[3]
+    cache_key = task_id or task_text
+    if cache and now - cache[0] < ttl and cache[1] == cache_key:
+        return cache[2], cache[3], True
     block, stats = build_block(cfg, task_text)
-    setattr(cfg, key, (now, task_text, block, stats))
-    return block, stats
+    setattr(cfg, key, (now, cache_key, block, stats))
+    return block, stats, False

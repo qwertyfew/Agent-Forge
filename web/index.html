@@ -6265,9 +6265,8 @@ function handleTaskEvent(ev, data){
       addPillNote(`<b>用户补充已生效</b>（已采纳）：${esc(data.text || '')}`);
     }
     else if(ev === 'warmup'){
-      // 任务开局预热注入：项目速览（目录树/README/命中文件）已进模型系统提示
-      addPillNote(`预热注入：项目速览（${data.tree_entries || 0} 条目录条目、`
-        + `${data.hit_files || 0} 个命中文件，约 ${data.chars || 0} 字）已注入模型系统提示`);
+      // 预热注入已静默：工作区速览是「开局就有项目地图」的内部动作，不该每次
+      // 任务都弹提示打扰用户（后端在续接追问时也不再重复播报）。
     }
     else if(ev === 'verify'){
       if(Array.isArray(data.unverified_local) && data.unverified_local.length){

@@ -197,8 +197,9 @@ class Config:
     # 关键事实回显核查（verify.required_fact_tokens）：任务书里明确要求「保留 X /
     # 确保 Y / 写明 Z」时，提取其中的硬 token（引号内容、时间、日期、数字），
     # 汇总后程序比对答复是否包含；缺了给一轮修正，仍缺则附系统侧声明。
-    # 治 w3 类「文件写对了、回复把关键事实丢了」。
-    facts_gate: bool = True
+    # 已停用（默认 False）：信号词匹配太脆弱——「必须」这类词会碰巧落在专有名词里
+    # （如游戏名「忍者必须死3」）触发「必须回显 3」的假阳性。需要时把默认值改回 True。
+    facts_gate: bool = False
 
     # ---- 工具按需下发（省固定开销，见 agentforge/toolselect.py）----
     tools_lazy: bool = True            # True = 只下发核心 + 关键词命中的工具
@@ -346,7 +347,8 @@ class Config:
         # 通用诚实守卫：基于执行轨迹证据比对，任务未达成却甩锅时逼其坦白
         cfg.honesty_gate = bool(a.get("honesty_gate", True))
         # 关键事实回显核查：任务书点名「保留 X / 确保 Y」时，答复缺了先修正一轮
-        cfg.facts_gate = bool(a.get("facts_gate", True))
+        # （已停用：信号词匹配脆弱，见字段定义；默认 False，配置里可显式打开）
+        cfg.facts_gate = bool(a.get("facts_gate", False))
         relay = str(a.get("relay", "brief" if cfg.relay_brief else "full")).strip().lower()
         cfg.relay_brief = relay != "full"
 
