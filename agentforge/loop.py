@@ -996,6 +996,10 @@ class Agent:
         # 每次都返回同一批无关结果，模型就这么原地打转到把 token 烧完。
         # 这里只计数不拦截：第 3 次起在结果后挂硬提示，第 5 次起不再执行。
         ops_repeat: dict[str, int] = {}
+        # P32-a：直调自动转译计数（一场 run 一个）。旧硬闸「拒绝+教育」实证会白烧
+        # 一轮（berry 任务第一轮 web_search 直调被拒、返工重写脚本），现在改为
+        # 自动转译照常执行；这里只计数，累计 ≥3 次在通知里升级为硬提醒。
+        ptc_autowrap: dict[str, int] = {}
         # 澄清判定（试行版 v0，docs/clarify-policy.md §12）：一场 run 一个 watcher。
         # 它按「单次调用的真实工具名 + 真实输出」记账（由 _execute 喂），所以 PTC
         # 常驻下脚本里的内层调用同样可见——这正是 PTC 之后被掐断的那条通道。
@@ -1380,12 +1384,43 @@ class Agent:
             # 每轮重发，一条就能把上下文撑到 5 万字（rerun62）。
             for _tc in result.tool_calls:
                 _tc.arguments = tidy_tool_args(_tc.arguments)
+            # P32-a：PTC 直调自动转译（预处理，改写发生在入历史之前）——
+            # 非脚本面工具原地改写成等价的 ops_batch 脚本照常执行：
+            #   ① 模型第一轮就拿到真结果，不再「被拒→返工重写」白烧一轮
+            #     （berry 任务实证：第一轮 web_search 直调被拒，多花一整轮）；
+            #   ② 历史里留下的就是脚本形态，模型从自己的历史里学到正确写法。
+            # 旧硬闸「拒绝+教育」只保证正确、保证不了省轮次；12B 模型看到
+            # 「可编入脚本清单」里的工具名仍会凭训练先验直调，拦不住。
+            ptc_wrapped = ""
+            if getattr(self.cfg, "ptc_resident", False):
+                for _tc in result.tool_calls:
+                    if _tc.name in PTC_SURFACE:
+                        continue
+                    orig = _tc.name
+                    ptc_autowrap[orig] = ptc_autowrap.get(orig, 0) + 1
+                    if _tc.arguments:
+                        _script = f"print(call({orig!r}, **{_tc.arguments!r}))"
+                    else:
+                        _script = f"print(call({orig!r}))"
+                    _tc.name = "ops_batch"
+                    _tc.arguments = {"script": _script}
+                if ptc_autowrap:
+                    ptc_wrapped = "、".join(
+                        f"{k}×{v}" for k, v in ptc_autowrap.items())
             tc_payload = [
                 {"function": {"name": tc.name, "arguments": tc.arguments}}
                 for tc in result.tool_calls
             ]
             _push({"role": "assistant", "content": result.content or "",
                    "tool_calls": tc_payload, **replay_think})
+            if ptc_wrapped:
+                _total = sum(ptc_autowrap.values())
+                yield {"type": "notify",
+                       "kind": "bad" if _total >= 3 else "ok",
+                       "text": (f"直调 {ptc_wrapped} 已自动转 ops_batch 执行"
+                                + ("——请直接用 ops_batch 写脚本把多个调用合并，"
+                                   "一次拿回全部结果，省轮次省 token"
+                                   if _total >= 3 else ""))}
 
             for tc in result.tool_calls:
                 if stopped():
@@ -1396,10 +1431,10 @@ class Agent:
                     yield {"type": "stopped", "step": step,
                            "reason": "用户停止（工具尚未执行）", "history": history}
                     return
-                # PTC 常驻：只允许「脚本面」工具（ops_batch / ask_user / find_tools）
-                # 直接调用，其余一律改走 ops_batch 写脚本——这是把 PTC 常驻真正落地的
-                # 硬闸，否则模型仍会绕过系统提示直接发工具调用。
-                if getattr(self.cfg, "ptc_resident", False) and tc.name not in PTC_SURFACE:
+                # PTC 常驻：非脚本面工具已在上面预处理里自动转译为 ops_batch
+                # （P32-a），走到这里 tc.name 必然在 PTC_SURFACE 里。原「拒绝+
+                # 教育」硬闸已删——它只保证正确、保证不了省轮次（berry 实证）。
+                if getattr(self.cfg, "ptc_resident", False) and tc.name not in PTC_SURFACE:  # pragma: no cover - 防御性不可达
                     msg = (f"[PTC 常驻] 直接调用 {tc.name} 已被禁用：所有工具必须通过 "
                            f"ops_batch 写脚本调用（脚本内 tools.call('{tc.name}', ...)）。"
                            "请把你要做的工具操作写进一段 Python 脚本用 ops_batch 执行。")

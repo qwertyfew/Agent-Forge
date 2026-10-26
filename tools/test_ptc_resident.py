@@ -154,15 +154,21 @@ def test_malformed_helper() -> None:
 
 def test_top_level_guard() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="af_ptc_"))
-    # 常驻开启：直接发 read_file 应被拦截
+    # P32-a：常驻开启 + 直接发 read_file → 不再拒绝，自动转译为 ops_batch 执行
+    # （berry 任务实证：旧硬闸「拒绝+教育」白烧一轮；现在第一轮就拿到真结果）
     ag1 = _mk_agent(tmp, [
         _Res(tool_calls=[_TC("read_file", {"path": "nope.txt"})]),
-        _Res(content="收到拦截提示。"),
+        _Res(content="收到。"),
     ], ptc=True)
     evs = list(ag1.run([], "测试直接调用", auto_approve=True))
-    tr = next((e for e in evs if e.get("type") == "tool_result" and e.get("name") == "read_file"), None)
-    check("常驻模式拦截直接非脚本面调用", tr is not None and "[PTC 常驻]" in (tr.get("output") or ""),
+    tr = next((e for e in evs if e.get("type") == "tool_result"), None)
+    check("常驻模式直调自动转译为 ops_batch 执行（不再拒绝）",
+          tr is not None and tr.get("name") == "ops_batch"
+          and "已被禁用" not in (tr.get("output") or ""),
           str(tr)[:160])
+    n1 = next((e for e in evs if e.get("type") == "notify"
+               and "自动转 ops_batch" in (e.get("text") or "")), None)
+    check("自动转译有通知", n1 is not None, repr(n1)[:160])
 
     # 常驻关闭：同样的调用不拦截（走原路径，此处 read_file 因文件不存在报错而非被拦）
     ag2 = _mk_agent(tmp, [
