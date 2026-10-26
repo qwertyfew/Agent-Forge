@@ -1631,24 +1631,29 @@ function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt
    侧栏的任务列表在轮询失败时会保留上次数据（不清空），所以必须有个
    显式提示，否则「12 条任务」和「没有可清理的任务」会同屏出现。 */
 let connOk = true;
-let connFails = 0;   // 连续失败次数：单次抖动不亮横幅（见下）
+let connFails = 0;             // 连续失败次数：单次抖动不亮横幅（见下）
+let connGraceUntil = 0;        // 重启宽限期：这段时间里的失败必是重启尾巴，不算
+let connWatch = null;          // 横幅亮着时的快速恢复轮询
 function setConn(ok, msg, text){
   const bar = $('offlineBar'), txt = $('offlineTxt');
   if(!bar) return;
   if(ok){
     connFails = 0;
+    if(connWatch){ clearInterval(connWatch); connWatch = null; }
     if(!connOk){ connOk = true; bar.hidden = true; }
     return;
   }
   // 重启流程自己管理横幅：非「重启中」的失败（如任务列表轮询）不覆盖它，
   // 否则服务刚恢复，一个延迟的失败请求会把已熄灭的横幅又点亮（绿之后闪红）。
   if(typeof svcRestarting !== 'undefined' && svcRestarting && text !== '服务重启中…') return;
-  // 连续两次失败才算离线：轮询是 5 秒一次，服务端在长任务里偶尔一次请求
-  // 超时/被掐就会点亮一次红横幅，随后下一次成功又熄灭——用户看到的就是
-  // 「干掉一会儿、红条又冒出来一会儿」。真挂了也只需多等 5 秒。
-  // 只对**被动失败**（apiGet 没带文案）做这个去抖：带 text 的都是主动点亮，
-  // 比如重启流程的「服务重启中…」，那种必须立刻显示。
+  // 只对**被动失败**（apiGet 没带文案）做下面这些抑制；带 text 的是主动点亮
+  // （比如重启流程的「服务重启中…」），必须立刻显示。
   if(!text){
+    // ① 重启宽限期：重启窗口里发出去的请求（health/tasks 轮询）会因为连接被
+    // 掐断而失败，但它们的结果往往在「重启完成」提示之后才回到前端——正好
+    // 落成「绿字刚出来，红条又亮」。这类失败一律忽略，不算离线。
+    if(Date.now() < connGraceUntil) return;
+    // ② 连续两次失败才算离线：长任务里偶发一次超时不该点亮红条。
     connFails += 1;
     if(connFails < 2) return;
   }else{
@@ -1660,6 +1665,19 @@ function setConn(ok, msg, text){
     txt.title = msg || '';
   }
   bar.hidden = false;
+  // ③ 亮着的时候 1.5 秒自愈一次：正常轮询是 5 秒，红条会「多挂几秒」；
+  // 服务真回来了就立刻熄掉并补拉列表。
+  if(!connWatch){
+    connWatch = setInterval(async ()=>{
+      try{
+        const r = await fetch('/api/health', {cache:'no-store'});
+        if(!r.ok) return;
+        await r.json();
+        setConn(true);
+        loadTasks();
+      }catch(e){ /* 还没回来，继续等 */ }
+    }, 1500);
+  }
 }
 
 async function apiGet(url){
@@ -1667,8 +1685,16 @@ async function apiGet(url){
   try{
     res = await fetch(url, {cache:'no-store'});
   }catch(e){
-    const err = new Error('连不上本地服务 ' + location.host + '，请确认它还在运行');
-    err.offline = true; setConn(false, err.message); throw err;
+    // 网络层失败先重试一次：服务刚重启完时，浏览器可能还握着一条指向旧进程
+    // 的死连接，第一次用就报 net error，换条连接立刻就好——这种一次性的
+    // 抖动不该升级成「服务未连接」的红横幅。
+    try{
+      await new Promise(r => setTimeout(r, 300));
+      res = await fetch(url, {cache:'no-store'});
+    }catch(e2){
+      const err = new Error('连不上本地服务 ' + location.host + '，请确认它还在运行');
+      err.offline = true; setConn(false, err.message); throw err;
+    }
   }
   if(!res.ok){
     const err = new Error('后端返回 HTTP ' + res.status + '，服务可能已异常');
@@ -4733,6 +4759,9 @@ $('ollamaMeta').onclick = async () => {
   if(!okGo) return;
   svcRestarting = true;
   paintSvc('busy', '正在重启服务…', '已发出重启指令：停旧服务 → 拉起新服务，稍候自动恢复');
+  // 整个重启窗口（连同完成后的几秒）内的请求失败都不算离线：那些失败的请求
+  // 可能是重启前发出去的，结果在「重启完成」提示之后才回到前端。
+  connGraceUntil = Date.now() + 40000;
   setConn(false, '正在重启本地服务', '服务重启中…');   // 侧栏横幅也立即提示，别等服务真正断开才亮
   let issued = false;
   try{
@@ -4759,15 +4788,20 @@ $('ollamaMeta').onclick = async () => {
         clearInterval(iv);
         svcRestarting = false;
         paintSvc('ok', '本地服务运行中', '重启完成：Ollama 与 Web 服务都正常。点击可再次重启');
+        connGraceUntil = Date.now() + 10000;   // 绿字之后 10 秒内仍不判离线
+        setConn(true);                          // 重启流程自己挂的「服务重启中…」当场熄掉
+        loadTasks();
         toast(null, '本地服务已重启完成', 'ok');
       }else if(Date.now() - t0 > 120000){
         clearInterval(iv); svcRestarting = false;
+        connGraceUntil = 0;
         paintSvc('bad', 'Ollama 未连接', '服务已恢复但 Ollama 未就绪；可稍后再点一次重启');
       }
     }catch(e){
       paintSvc('busy', '服务重启中…', '正在重启本地服务，稍候自动恢复');
       if(Date.now() - t0 > 120000){
         clearInterval(iv); svcRestarting = false;
+        connGraceUntil = 0;
         paintSvc('bad', '服务未恢复', '重启超时：请到项目目录手动运行 start.bat');
       }
     }
