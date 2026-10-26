@@ -3835,6 +3835,10 @@ async function loadTasks(){
     renderTasks();
     adoptRunning();
     restoreThread();
+    // 「执行中」角标必须跟着轮询重算：它原来只在切换视图/右键菜单时才更新，
+    // 于是任务停了、台账里 status 已经是 stopped，角标却一直亮着（点停止后
+    // 灯不灭的根源）。
+    syncTopRun();
   }catch(e){
     // 拉不到就保持侧栏原样，别清空——清空会让「数据没了」和「服务挂了」更难分辨。
     // 原因由侧栏的离线横幅交代（apiGet 已经点亮了它）。
@@ -3976,8 +3980,13 @@ function endLiveTask(status){
   headTimeOverride = 0;
   renderRunBar();
   syncComposer();
+  syncTopRun();          // 收尾即灭灯，不等下一次轮询
   const id = liveTask.id;
-  setTimeout(()=>{ if(liveTask && liveTask.id === id && liveTask.status !== 'running'){ liveTask = null; renderRunBar(); } }, 6000);
+  setTimeout(()=>{
+    if(liveTask && liveTask.id === id && liveTask.status !== 'running'){
+      liveTask = null; renderRunBar(); syncTopRun();
+    }
+  }, 6000);
 }
 
 function renderRunBar(){
