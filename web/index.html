@@ -1631,16 +1631,19 @@ function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt
    侧栏的任务列表在轮询失败时会保留上次数据（不清空），所以必须有个
    显式提示，否则「12 条任务」和「没有可清理的任务」会同屏出现。 */
 let connOk = true;
-function setConn(ok, msg){
+function setConn(ok, msg, text){
   const bar = $('offlineBar'), txt = $('offlineTxt');
   if(!bar) return;
   if(ok){
     if(!connOk){ connOk = true; bar.hidden = true; }
     return;
   }
+  // 重启流程自己管理横幅：非「重启中」的失败（如任务列表轮询）不覆盖它，
+  // 否则服务刚恢复，一个延迟的失败请求会把已熄灭的横幅又点亮（绿之后闪红）。
+  if(typeof svcRestarting !== 'undefined' && svcRestarting && text !== '服务重启中…') return;
   connOk = false;
   if(txt){
-    txt.textContent = '服务未连接，列表为上次数据';
+    txt.textContent = text || '服务未连接，列表为上次数据';
     txt.title = msg || '';
   }
   bar.hidden = false;
@@ -4713,6 +4716,7 @@ $('ollamaMeta').onclick = async () => {
   if(!okGo) return;
   svcRestarting = true;
   paintSvc('busy', '正在重启服务…', '已发出重启指令：停旧服务 → 拉起新服务，稍候自动恢复');
+  setConn(false, '正在重启本地服务', '服务重启中…');   // 侧栏横幅也立即提示，别等服务真正断开才亮
   let issued = false;
   try{
     const r = await fetch('/api/service/restart',{
