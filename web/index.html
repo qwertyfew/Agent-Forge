@@ -4750,10 +4750,14 @@ async function checkHealth(){
     // 红条还在」的假象。只在空闲时刷新，正在跑任务不打断（下次体检再刷）。
     // 只有页面「干净」（无对话内容、不在跑任务）才自动刷新：有对话时刷新会把
     // 屏上的对话清空、看着像被重置；此时先记下版本，等用户开新对话时再刷。
+    // 刷新前先确认首页真的能取到（200）：服务重启期间 /api/health 可能已经能答、
+    // 但整页导航仍会撞上短暂的「无法访问」，这里加一道保险，绝不导航到死连接上。
     if(h.ui && uiStamp && h.ui !== uiStamp){
-      if(!busy && !history.length){
-        location.reload();
-        return;
+      if(!busy && !history.length && !svcRestarting){
+        try{
+          const probe = await fetch('/', {cache:'no-store'});
+          if(probe.ok){ location.reload(); return; }
+        }catch(e){ /* 还没真正就绪，等下一轮体检再试 */ }
       }
       pendingReload = true;
     }
